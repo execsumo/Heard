@@ -29,9 +29,13 @@ struct MenuBarView: View {
     private var statusSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 8, height: 8)
+                if model.phase == .recording {
+                    PulsingDot()
+                } else {
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 8, height: 8)
+                }
                 Text(model.phase.title)
                     .font(.headline)
             }
@@ -45,12 +49,17 @@ struct MenuBarView: View {
                         .foregroundStyle(.red)
                 }
                 .foregroundStyle(.secondary)
-            } else if let job = model.queueStore.activeJob {
+            } else if let job = model.queueStore.activeJob, job.stage != .complete && job.stage != .failed {
                 HStack {
                     Text(job.meetingTitle)
                     Spacer()
                     Text(job.stage.displayName)
                         .foregroundStyle(.orange)
+                    if let stageStart = job.stageStartTime {
+                        RecordingTimerView(startTime: stageStart)
+                            .monospacedDigit()
+                            .foregroundStyle(.orange)
+                    }
                 }
                 .foregroundStyle(.secondary)
             } else {
@@ -189,6 +198,24 @@ struct RecordingTimerView: View {
             return String(format: "%d:%02d:%02d", h, m, s)
         }
         return String(format: "%02d:%02d", m, s)
+    }
+}
+
+// MARK: - Pulsing Recording Dot
+
+struct PulsingDot: View {
+    @State private var isPulsing = false
+
+    var body: some View {
+        Circle()
+            .fill(.red)
+            .frame(width: 8, height: 8)
+            .opacity(isPulsing ? 0.3 : 1.0)
+            .animation(
+                .easeInOut(duration: 0.4).repeatForever(autoreverses: true),
+                value: isPulsing
+            )
+            .onAppear { isPulsing = true }
     }
 }
 

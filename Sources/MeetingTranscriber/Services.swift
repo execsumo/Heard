@@ -189,6 +189,13 @@ final class RecordingManager: ObservableObject {
     private var micBufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
     private(set) var micBufferStream: AsyncStream<AVAudioPCMBuffer>?
 
+    /// Callback for max-duration split: enqueue current session, optionally restart.
+    var onMaxDurationReached: (@MainActor (RecordingSession) -> Void)?
+
+    /// The Teams PID and title for the current recording (needed for re-start on split).
+    private var currentTeamsPID: pid_t?
+    private var currentTitle: String = ""
+
     func startRecording(title: String, teamsPID: pid_t?) throws {
         guard activeSession == nil else { return }
 
@@ -219,6 +226,9 @@ final class RecordingManager: ObservableObject {
         } else {
             micDelay = 0
         }
+
+        currentTeamsPID = teamsPID
+        currentTitle = title
 
         activeSession = RecordingSession(
             title: title,
@@ -372,8 +382,21 @@ final class RecordingManager: ObservableObject {
     }
 
     private func handleMaxDurationReached() {
-        // TODO: enqueue current session and restart recording if meeting still active
-        _ = stopRecording()
+        guard let session = stopRecording() else { return }
+
+        // Enqueue the finished session
+        onMaxDurationReached?(session)
+
+        // Restart recording if we had a Teams PID (meeting still active)
+        let pid = currentTeamsPID
+        let title = currentTitle
+        if pid != nil {
+            do {
+                try startRecording(title: title + " (cont.)", teamsPID: pid)
+            } catch {
+                NSLog("MeetingTranscriber: Failed to restart recording after max duration: \(error)")
+            }
+        }
     }
 }
 

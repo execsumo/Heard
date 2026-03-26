@@ -7,6 +7,7 @@ final class AppModel: ObservableObject {
     @Published var phase: AppPhase = .dormant
     @Published var errorMessage: String?
     @Published var namingCandidates: [NamingCandidate] = []
+    private var namingDismissTask: Task<Void, Never>?
     @Published var selectedSettingsTab: SettingsTab = .general
     @Published var speakerFilter = ""
     @Published var speakerSortMode: SpeakerSortMode = .lastSeen
@@ -62,6 +63,14 @@ final class AppModel: ObservableObject {
         if settingsStore.settings.autoWatch {
             model.startWatching()
         }
+
+        // Retry failed jobs once on relaunch (handles transient failures from previous session)
+        for var job in queueStore.jobs where job.stage == .failed {
+            job.stage = .queued
+            job.error = nil
+            queueStore.update(job)
+        }
+
         model.pipelineProcessor.runNextIfNeeded()
         return model
     }
@@ -91,8 +100,14 @@ final class AppModel: ObservableObject {
             onNamingRequired: { [weak self] candidates in
                 self?.namingCandidates = candidates
                 self?.phase = .userAction
+                self?.startNamingAutoDismiss()
             }
         )
+
+        self.recordingManager.onMaxDurationReached = { [weak self] session in
+            guard let self else { return }
+            self.pipelineProcessor.enqueueFinishedRecording(session, endedAt: Date())
+        }
 
         self.meetingDetector = MeetingDetector(
             onMeetingStarted: { [weak self] snapshot in
@@ -253,6 +268,8 @@ final class AppModel: ObservableObject {
         )
         namingCandidates.removeAll { $0.id == candidate.id }
         if namingCandidates.isEmpty {
+            namingDismissTask?.cancel()
+            namingDismissTask = nil
             phase = queueStore.activeJob == nil ? .dormant : .processing
         }
     }
@@ -262,5 +279,31 @@ final class AppModel: ObservableObject {
         guard ids.count == 2 else { return }
         speakerStore.merge(primaryID: ids[0], secondaryID: ids[1])
         mergeSelection.removeAll()
+    }
+
+    // MARK: - Speaker Naming Auto-Dismiss
+
+    private func startNamingAutoDismiss() {
+        namingDismissTask?.cancel()
+        namingDismissTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(120))
+            guard let self, !Task.isCancelled else { return }
+            guard !self.namingCandidates.isEmpty else { return }
+            // Store remaining unnamed candidates with generic names
+            for candidate in self.namingCandidates {
+                self.speakerStore.upsert(
+                    SpeakerProfile(
+                        id: UUID(),
+                        name: candidate.temporaryName,
+                        embeddings: [],
+                        firstSeen: Date(),
+                        lastSeen: Date(),
+                        meetingCount: 1
+                    )
+                )
+            }
+            self.namingCandidates.removeAll()
+            self.phase = self.queueStore.activeJob == nil ? .dormant : .processing
+        }
     }
 }
