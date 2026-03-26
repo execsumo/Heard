@@ -4,24 +4,26 @@ import SwiftUI
 
 struct MenuBarView: View {
     @ObservedObject var model: AppModel
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // Status section
+        VStack(alignment: .leading, spacing: 10) {
+            // Status + core actions
             statusSection
 
             Divider()
 
-            // Queue section
-            queueSection
-
-            Divider()
-
-            // Actions
+            // Primary actions always visible
             actionsSection
+
+            // Queue at bottom — can be clipped if many jobs
+            if !model.queueStore.recentJobs.isEmpty {
+                Divider()
+                queueSection
+            }
         }
-        .padding(16)
-        .frame(width: 360)
+        .padding(14)
+        .frame(width: 340)
     }
 
     private var statusSection: some View {
@@ -150,13 +152,11 @@ struct MenuBarView: View {
                 model.openOutputDirectory()
             }
 
-            Divider()
-
             Button("Settings...") {
-                model.openSettings(tab: nil)
+                openSettings()
             }
 
-            Button("Quit Meeting Transcriber") {
+            Button("Quit") {
                 NSApplication.shared.terminate(nil)
             }
         }
