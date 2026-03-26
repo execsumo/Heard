@@ -165,7 +165,7 @@ public struct AppSettings: Codable, Equatable {
         userName: "",
         launchAtLogin: false,
         autoWatch: true,
-        outputDirectory: FileManager.default.meetingTranscriberOutputDirectory.path,
+        outputDirectory: FileManager.default.lurkOutputDirectory.path,
         customVocabulary: []
     )
 

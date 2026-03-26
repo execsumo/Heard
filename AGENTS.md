@@ -17,12 +17,12 @@ Future Codex sessions should treat `spec.md` as the product source of truth and 
 ## Current Codebase Shape
 
 - `Package.swift` defines a macOS Swift package executable target.
-- `Sources/MeetingTranscriber/MTApp.swift` contains the app entry point.
-- `Sources/MeetingTranscriber/AppModel.swift` is the main app state container.
-- `Sources/MeetingTranscriber/CoreModels.swift` holds app, pipeline, speaker, transcript, and settings models.
-- `Sources/MeetingTranscriber/Stores.swift` contains persistence and file-system helpers.
-- `Sources/MeetingTranscriber/Services.swift` contains the current service scaffolding for detection, recording, models, queue processing, and transcript writing.
-- `Sources/MeetingTranscriber/Views.swift` contains the current menu bar and settings UI.
+- `Sources/Lurk/MTApp.swift` contains the app entry point.
+- `Sources/Lurk/AppModel.swift` is the main app state container.
+- `Sources/Lurk/CoreModels.swift` holds app, pipeline, speaker, transcript, and settings models.
+- `Sources/Lurk/Stores.swift` contains persistence and file-system helpers.
+- `Sources/Lurk/Services.swift` contains the current service scaffolding for detection, recording, models, queue processing, and transcript writing.
+- `Sources/Lurk/Views.swift` contains the current menu bar and settings UI.
 
 ## Expectations For Future Sessions
 

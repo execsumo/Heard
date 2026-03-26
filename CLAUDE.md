@@ -18,11 +18,11 @@ No Xcode project — this is a Swift Package Manager executable. macOS 14.2+ req
 
 - `spec.md` — Product spec (source of truth for features and architecture)
 - `handoff.md` — Current implementation status and next steps
-- `Sources/MeetingTranscriber/AppModel.swift` — Central state orchestration
-- `Sources/MeetingTranscriber/Services.swift` — Detection, recording, pipeline, permissions
-- `Sources/MeetingTranscriber/Views.swift` — All UI (menu bar dropdown + settings window)
-- `Sources/MeetingTranscriber/CoreModels.swift` — Data types
-- `Sources/MeetingTranscriber/Stores.swift` — Persistence layer
+- `Sources/Lurk/AppModel.swift` — Central state orchestration
+- `Sources/Lurk/Services.swift` — Detection, recording, pipeline, permissions
+- `Sources/Lurk/Views.swift` — All UI (menu bar dropdown + settings window)
+- `Sources/Lurk/CoreModels.swift` — Data types
+- `Sources/Lurk/Stores.swift` — Persistence layer
 
 ## Working Rules
 
@@ -40,7 +40,7 @@ No Xcode project — this is a Swift Package Manager executable. macOS 14.2+ req
 
 - `MenuBarExtra` with `.window` style — renders SwiftUI views in a floating panel
 - `Settings` scene for the preferences window — use `@Environment(\.openSettings)` to open it
-- All persistence is JSON files in `~/Library/Application Support/MeetingTranscriber/`
+- All persistence is JSON files in `~/Library/Application Support/Lurk/`
 - Pipeline stages run sequentially on a background task, one job at a time
 - Meeting detection polls every 3 seconds via `IOPMCopyAssertionsByProcess()`
 - Audio capture uses `CATapDescription` (app tap) + `AVAudioEngine` (mic)

@@ -1,5 +1,5 @@
 import Foundation
-import MeetingTranscriberCore
+import LurkCore
 
 // MARK: - Lightweight Test Harness (no Xcode required)
 
@@ -286,7 +286,7 @@ func runTranscriptWriterTests() {
 
     test("Write creates markdown with correct content") {
         let tmpDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MeetingTranscriberTests-\(UUID().uuidString)")
+            .appendingPathComponent("LurkTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
@@ -313,7 +313,7 @@ func runTranscriptWriterTests() {
 
     test("Write avoids duplicate filenames") {
         let tmpDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MeetingTranscriberTests-\(UUID().uuidString)")
+            .appendingPathComponent("LurkTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
@@ -346,7 +346,7 @@ func runTranscriptWriterTests() {
 
     test("SpeakerStore upsert and persist") {
         let tmpDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MeetingTranscriberTests-\(UUID().uuidString)")
+            .appendingPathComponent("LurkTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
@@ -366,7 +366,7 @@ func runTranscriptWriterTests() {
 
     test("SpeakerStore rename") {
         let tmpDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MeetingTranscriberTests-\(UUID().uuidString)")
+            .appendingPathComponent("LurkTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
@@ -382,7 +382,7 @@ func runTranscriptWriterTests() {
 
     test("SpeakerStore merge") {
         let tmpDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MeetingTranscriberTests-\(UUID().uuidString)")
+            .appendingPathComponent("LurkTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
@@ -398,7 +398,7 @@ func runTranscriptWriterTests() {
 
     test("SpeakerStore delete") {
         let tmpDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MeetingTranscriberTests-\(UUID().uuidString)")
+            .appendingPathComponent("LurkTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
@@ -411,7 +411,7 @@ func runTranscriptWriterTests() {
 
     test("PipelineQueueStore enqueue and retrieve") {
         let tmpDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MeetingTranscriberTests-\(UUID().uuidString)")
+            .appendingPathComponent("LurkTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
@@ -430,7 +430,7 @@ func runTranscriptWriterTests() {
 
     test("PipelineQueueStore recent jobs limited to 3") {
         let tmpDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MeetingTranscriberTests-\(UUID().uuidString)")
+            .appendingPathComponent("LurkTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmpDir) }
 
@@ -455,7 +455,7 @@ func runTranscriptWriterTests() {
 @main
 struct TestRunner {
     @MainActor static func main() {
-        print("🧪 MeetingTranscriber Tests\n")
+        print("🧪 Lurk Tests\n")
 
         runVadSegmentMapTests()
         runSpeakerMatcherTests()

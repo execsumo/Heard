@@ -16,7 +16,7 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 14
 ### Audio Capture
 - **App audio**: `CATapDescription` process tap on the Teams PID, recorded via `AVAudioEngine` to WAV
 - **Microphone**: Separate `AVAudioEngine` instance recording to WAV
-- Both tracks saved to `~/Library/Application Support/MeetingTranscriber/recordings/`
+- Both tracks saved to `~/Library/Application Support/Lurk/recordings/`
 - Mic delay calibration stored per session for alignment
 - Temp file cleanup on app launch (removes stale `.wav` files older than 24 hours)
 
@@ -39,8 +39,8 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 14
 
 ### Persistence
 - `SettingsStore`: UserDefaults-backed app settings
-- `SpeakerStore`: JSON file at `~/Library/Application Support/MeetingTranscriber/speakers.json`
-- `PipelineQueueStore`: JSON file at `~/Library/Application Support/MeetingTranscriber/queue.json`
+- `SpeakerStore`: JSON file at `~/Library/Application Support/Lurk/speakers.json`
+- `PipelineQueueStore`: JSON file at `~/Library/Application Support/Lurk/queue.json`
 
 ## What's Stubbed
 
@@ -55,7 +55,7 @@ All pipeline stages in `PipelineProcessor.processJob()` currently simulate work 
 ### Model Download Manager
 `ModelDownloadManager` has the interface but `downloadAllModels()` is a no-op. Needs:
 - URLs for CoreML model files (Silero VAD, Parakeet TDT, LS-EEND, WeSpeaker)
-- Download with progress tracking to `~/Library/Application Support/MeetingTranscriber/Models/`
+- Download with progress tracking to `~/Library/Application Support/Lurk/Models/`
 - Checksum verification
 
 ### CoreML Models
@@ -85,6 +85,6 @@ The models referenced in `spec.md` (Parakeet TDT V2, Silero VAD v6, LS-EEND, WeS
 
 ## Known Issues
 
-- Running via `swift run` in a terminal causes macOS to attribute microphone permission to the terminal app (e.g., Ghostty) rather than Meeting Transcriber itself. This resolves when packaged as a `.app` bundle.
+- Running via `swift run` in a terminal causes macOS to attribute microphone permission to the terminal app (e.g., Ghostty) rather than Lurk itself. This resolves when packaged as a `.app` bundle.
 - The `.window` style MenuBarExtra panel has a fixed max height; if many jobs accumulate, the bottom of the panel may clip.
 - FluidAudio is listed as a dependency but its actual integration is pending model availability.

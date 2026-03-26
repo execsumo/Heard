@@ -25,7 +25,7 @@ public final class AppModel: ObservableObject {
     public var meetingDetector: MeetingDetector! = nil
 
     public static func bootstrap() -> AppModel {
-        try? FileManager.default.ensureMeetingTranscriberDirectories()
+        try? FileManager.default.ensureLurkDirectories()
 
         let settingsStore = SettingsStore()
         let speakerStore = SpeakerStore()
@@ -227,7 +227,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func chooseDefaultOutputDirectory() {
-        settingsStore.settings.outputDirectory = FileManager.default.meetingTranscriberOutputDirectory.path
+        settingsStore.settings.outputDirectory = FileManager.default.lurkOutputDirectory.path
     }
 
     public func openOutputDirectory() {

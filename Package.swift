@@ -2,33 +2,33 @@
 import PackageDescription
 
 let package = Package(
-    name: "MeetingTranscriber",
+    name: "Lurk",
     platforms: [
         .macOS("14.2")
     ],
     products: [
-        .executable(name: "MeetingTranscriber", targets: ["MeetingTranscriber"])
+        .executable(name: "Lurk", targets: ["Lurk"])
     ],
     dependencies: [
         .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.4"),
     ],
     targets: [
         .target(
-            name: "MeetingTranscriberCore",
+            name: "LurkCore",
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ],
-            path: "Sources/MeetingTranscriberCore"
+            path: "Sources/LurkCore"
         ),
         .executableTarget(
-            name: "MeetingTranscriber",
-            dependencies: ["MeetingTranscriberCore"],
-            path: "Sources/MeetingTranscriber"
+            name: "Lurk",
+            dependencies: ["LurkCore"],
+            path: "Sources/Lurk"
         ),
         .executableTarget(
-            name: "MeetingTranscriberTests",
-            dependencies: ["MeetingTranscriberCore"],
-            path: "Tests/MeetingTranscriberTests"
+            name: "LurkTests",
+            dependencies: ["LurkCore"],
+            path: "Tests/LurkTests"
         )
     ]
 )

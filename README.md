@@ -1,4 +1,4 @@
-# Meeting Transcriber
+# Lurk
 
 macOS menu bar app that automatically detects Microsoft Teams meetings, records dual-track audio (app + mic), and produces on-device transcripts with speaker diarization. No cloud, no LLM, no external APIs.
 

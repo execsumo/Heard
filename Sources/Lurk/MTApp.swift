@@ -1,18 +1,18 @@
 import AppKit
-import MeetingTranscriberCore
+import LurkCore
 import SwiftUI
 
 @main
-struct MeetingTranscriberApp: App {
+struct LurkApp: App {
     @StateObject private var appModel = AppModel.bootstrap()
 
     var body: some Scene {
-        MenuBarExtra("Meeting Transcriber", systemImage: appModel.menuBarIconName) {
+        MenuBarExtra("Lurk", systemImage: appModel.menuBarIconName) {
             MenuBarView(model: appModel)
         }
         .menuBarExtraStyle(.window)
 
-        Window("Meeting Transcriber Settings", id: "settings") {
+        Window("Lurk Settings", id: "settings") {
             SettingsView(model: appModel)
                 .frame(minWidth: 760, minHeight: 520)
                 .onAppear {

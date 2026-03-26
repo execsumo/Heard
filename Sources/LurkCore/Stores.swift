@@ -2,32 +2,32 @@ import Combine
 import Foundation
 
 public extension FileManager {
-    var meetingTranscriberAppSupportDirectory: URL {
+    var lurkAppSupportDirectory: URL {
         let base = urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("MeetingTranscriber", isDirectory: true)
+        return base.appendingPathComponent("Lurk", isDirectory: true)
     }
 
-    var meetingTranscriberOutputDirectory: URL {
+    var lurkOutputDirectory: URL {
         let base = urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("MeetingTranscriber", isDirectory: true)
+        return base.appendingPathComponent("Lurk", isDirectory: true)
     }
 
-    func ensureMeetingTranscriberDirectories() throws {
-        let support = meetingTranscriberAppSupportDirectory
+    func ensureLurkDirectories() throws {
+        let support = lurkAppSupportDirectory
         try createDirectory(at: support, withIntermediateDirectories: true)
         try createDirectory(at: support.appendingPathComponent("Models", isDirectory: true), withIntermediateDirectories: true)
         try createDirectory(at: support.appendingPathComponent("recordings", isDirectory: true), withIntermediateDirectories: true)
-        try createDirectory(at: meetingTranscriberOutputDirectory, withIntermediateDirectories: true)
+        try createDirectory(at: lurkOutputDirectory, withIntermediateDirectories: true)
     }
 }
 
 public enum AppPaths {
     public static var queueFile: URL {
-        FileManager.default.meetingTranscriberAppSupportDirectory.appendingPathComponent("pipeline_queue.json")
+        FileManager.default.lurkAppSupportDirectory.appendingPathComponent("pipeline_queue.json")
     }
 
     public static var speakersFile: URL {
-        FileManager.default.meetingTranscriberAppSupportDirectory.appendingPathComponent("speakers.json")
+        FileManager.default.lurkAppSupportDirectory.appendingPathComponent("speakers.json")
     }
 }
 

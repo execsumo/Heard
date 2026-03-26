@@ -33,7 +33,7 @@ public final class ModelDownloadManager: ObservableObject {
         // Parakeet V2: FluidAudio stores in ~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v2-coreml/
         // Also check our custom Models dir (where load(from:) puts it)
         let asrDefaultDir = AsrModels.defaultCacheDirectory(for: .v2)
-        let asrCustomDir = FileManager.default.meetingTranscriberAppSupportDirectory
+        let asrCustomDir = FileManager.default.lurkAppSupportDirectory
             .appendingPathComponent(Repo.parakeetV2.folderName, isDirectory: true)
         if fm.fileExists(atPath: asrDefaultDir.path) || fm.fileExists(atPath: asrCustomDir.path) {
             catalog.markReady(.batchParakeet)
@@ -101,7 +101,7 @@ public final class ModelDownloadManager: ObservableObject {
             } catch {
                 errors[kind] = error.localizedDescription
                 downloadProgress[kind] = nil
-                NSLog("MeetingTranscriber: Model download failed for \(kind): \(error)")
+                NSLog("Lurk: Model download failed for \(kind): \(error)")
             }
             activeTasks[kind] = nil
         }

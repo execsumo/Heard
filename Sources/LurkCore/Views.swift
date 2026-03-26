@@ -498,7 +498,7 @@ public struct SettingsView: View {
 
     private var aboutTab: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Meeting Transcriber")
+            Text("Lurk")
                 .font(.title2.weight(.semibold))
             Text("Version 0.1.0")
             Text("Distribution: Direct Download")

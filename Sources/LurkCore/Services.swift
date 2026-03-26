@@ -221,7 +221,7 @@ public final class RecordingManager: ObservableObject {
         guard activeSession == nil else { return }
 
         let stamp = Formatting.recordingFileFormatter.string(from: Date())
-        let base = FileManager.default.meetingTranscriberAppSupportDirectory
+        let base = FileManager.default.lurkAppSupportDirectory
             .appendingPathComponent("recordings", isDirectory: true)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
 
@@ -237,7 +237,7 @@ public final class RecordingManager: ObservableObject {
                 try setupAppAudioRecording(pid: pid, to: appPath)
             } catch {
                 // App audio is best-effort — continue with mic-only if tap fails
-                NSLog("MeetingTranscriber: App audio tap failed: \(error.localizedDescription)")
+                NSLog("Lurk: App audio tap failed: \(error.localizedDescription)")
             }
         }
 
@@ -339,7 +339,7 @@ public final class RecordingManager: ObservableObject {
 
     private func setupAppAudioRecording(pid: pid_t, to url: URL) throws {
         let tapDesc = CATapDescription(stereoMixdownOfProcesses: [AudioObjectID(pid)])
-        tapDesc.name = "MeetingTranscriber"
+        tapDesc.name = "Lurk"
 
         var objectID: AudioObjectID = 0
         let status = AudioHardwareCreateProcessTap(tapDesc, &objectID)
@@ -415,7 +415,7 @@ public final class RecordingManager: ObservableObject {
             do {
                 try startRecording(title: title + " (cont.)", teamsPID: pid)
             } catch {
-                NSLog("MeetingTranscriber: Failed to restart recording after max duration: \(error)")
+                NSLog("Lurk: Failed to restart recording after max duration: \(error)")
             }
         }
     }
@@ -535,7 +535,7 @@ public final class PermissionCenter: ObservableObject {
 public enum TempFileCleanup {
     /// Delete recording WAVs older than 48 hours. Called on app launch.
     public static func cleanStaleRecordings(activeJobPaths: Set<URL> = []) {
-        let recordingsDir = FileManager.default.meetingTranscriberAppSupportDirectory
+        let recordingsDir = FileManager.default.lurkAppSupportDirectory
             .appendingPathComponent("recordings", isDirectory: true)
         let fm = FileManager.default
 
@@ -576,7 +576,7 @@ public enum LaunchAtLogin {
                 try SMAppService.mainApp.unregister()
             }
         } catch {
-            NSLog("MeetingTranscriber: Launch at login toggle failed: \(error.localizedDescription)")
+            NSLog("Lurk: Launch at login toggle failed: \(error.localizedDescription)")
         }
     }
 }
@@ -723,10 +723,10 @@ public final class PipelineProcessor: ObservableObject {
 
                 if attempt < Self.maxRetries - 1 {
                     let delay = Self.retryDelays[min(attempt, Self.retryDelays.count - 1)]
-                    NSLog("MeetingTranscriber: Stage \(working.stage.rawValue) failed (attempt \(attempt + 1)), retrying in \(Int(delay))s: \(error)")
+                    NSLog("Lurk: Stage \(working.stage.rawValue) failed (attempt \(attempt + 1)), retrying in \(Int(delay))s: \(error)")
                     try? await Task.sleep(for: .seconds(delay))
                 } else {
-                    NSLog("MeetingTranscriber: Exhausted retries for job \(working.id): \(error)")
+                    NSLog("Lurk: Exhausted retries for job \(working.id): \(error)")
                     working.stage = .failed
                     queueStore.update(working)
                 }

@@ -42,7 +42,7 @@ The app manages three CoreML models with different lifecycles:
 - Load when a pipeline job's diarization stage begins, unload when diarization completes
 - These models are larger and only used in batch mode, so don't keep them resident
 
-**Model download:** All models download automatically on first use. Show download progress in the menu bar dropdown. Downloads are idempotent — if interrupted, resume on next attempt. Store downloaded models in `~/Library/Application Support/MeetingTranscriber/Models/`.
+**Model download:** All models download automatically on first use. Show download progress in the menu bar dropdown. Downloads are idempotent — if interrupted, resume on next attempt. Store downloaded models in `~/Library/Application Support/Lurk/Models/`.
 
 **Memory timeline for a typical meeting:**
 ```
@@ -377,7 +377,7 @@ Minimal settings surface. Organized in a standard macOS Settings window with tab
 - **Your Name:** Text field for the local user's display name (used for mic track speaker label in transcripts). Default: empty (falls back to "Me").
 - **Launch at Login:** Toggle (registers/unregisters login item via `SMAppService`)
 - **Auto-Watch:** Toggle (start watching for meetings on launch). Default: on.
-- **Output Folder:** Folder picker with "Choose..." and "Reset to Default" buttons. Default: `~/Documents/MeetingTranscriber/`. Persisted as a plain string path (no sandbox bookmarking required).
+- **Output Folder:** Folder picker with "Choose..." and "Reset to Default" buttons. Default: `~/Documents/Lurk/`. Persisted as a plain string path (no sandbox bookmarking required).
 
 ### Transcription Tab
 - **Custom Vocabulary:** Text field + tag chips. Add terms (min 4 chars, max 50 terms). Removable chips.
@@ -439,7 +439,7 @@ One build target, one binary. Without App Store distribution requirements, the a
 ### Files on Disk
 
 ```
-~/Library/Application Support/MeetingTranscriber/
+~/Library/Application Support/Lurk/
 ├── Models/                        # Downloaded CoreML models (managed by FluidAudio)
 │   ├── parakeet-tdt-0.6b-v2/
 │   ├── silero-vad-v6/
@@ -452,7 +452,7 @@ One build target, one binary. Without App Store distribution requirements, the a
     └── 20260324_140000_mic.wav      # 48 kHz mono, deleted after 48h
     # (All 16 kHz conversion and VAD trimming happens in-memory)
 
-~/Documents/MeetingTranscriber/    # Default output (user-configurable)
+~/Documents/Lurk/    # Default output (user-configurable)
 └── 260324_Sprint_Planning.md
 ```
 
@@ -463,7 +463,7 @@ One build target, one binary. Without App Store distribution requirements, the a
 | `userName` | String | "" (falls back to "Me") |
 | `launchAtLogin` | Bool | false |
 | `autoWatch` | Bool | true |
-| `outputDirectory` | String | "~/Documents/MeetingTranscriber/" |
+| `outputDirectory` | String | "~/Documents/Lurk/" |
 | `customVocabulary` | [String] | [] |
 
 That's it — 6 settings. Everything else is either fixed (VAD threshold, speaker count, model variant, detection parameters) or managed through dedicated UI (speakers).
