@@ -1,3 +1,5 @@
+import AppKit
+import MeetingTranscriberCore
 import SwiftUI
 
 @main
@@ -10,9 +12,21 @@ struct MeetingTranscriberApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Settings {
+        Window("Meeting Transcriber Settings", id: "settings") {
             SettingsView(model: appModel)
                 .frame(minWidth: 760, minHeight: 520)
+                .onAppear {
+                    // Menu bar apps use .accessory policy which prevents keyboard focus.
+                    // Switch to .regular so the settings window can receive keystrokes.
+                    NSApp.setActivationPolicy(.regular)
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+                .onDisappear {
+                    // Revert to accessory (no dock icon) when settings closes.
+                    NSApp.setActivationPolicy(.accessory)
+                }
         }
+        .defaultSize(width: 760, height: 520)
+        .windowResizability(.contentSize)
     }
 }

@@ -3,28 +3,28 @@ import Combine
 import Foundation
 
 @MainActor
-final class AppModel: ObservableObject {
-    @Published var phase: AppPhase = .dormant
-    @Published var errorMessage: String?
-    @Published var namingCandidates: [NamingCandidate] = []
+public final class AppModel: ObservableObject {
+    @Published public var phase: AppPhase = .dormant
+    @Published public var errorMessage: String?
+    @Published public var namingCandidates: [NamingCandidate] = []
     private var namingDismissTask: Task<Void, Never>?
-    @Published var selectedSettingsTab: SettingsTab = .general
-    @Published var speakerFilter = ""
-    @Published var speakerSortMode: SpeakerSortMode = .lastSeen
-    @Published var vocabularyDraft = ""
-    @Published var mergeSelection = Set<UUID>()
+    @Published public var selectedSettingsTab: SettingsTab = .general
+    @Published public var speakerFilter = ""
+    @Published public var speakerSortMode: SpeakerSortMode = .lastSeen
+    @Published public var vocabularyDraft = ""
+    @Published public var mergeSelection = Set<UUID>()
 
-    let settingsStore: SettingsStore
-    let speakerStore: SpeakerStore
-    let queueStore: PipelineQueueStore
-    let modelCatalog: ModelCatalog
-    let permissionCenter: PermissionCenter
-    let recordingManager: RecordingManager
-    let downloadManager: ModelDownloadManager
-    var pipelineProcessor: PipelineProcessor! = nil
-    var meetingDetector: MeetingDetector! = nil
+    public let settingsStore: SettingsStore
+    public let speakerStore: SpeakerStore
+    public let queueStore: PipelineQueueStore
+    public let modelCatalog: ModelCatalog
+    public let permissionCenter: PermissionCenter
+    public let recordingManager: RecordingManager
+    public let downloadManager: ModelDownloadManager
+    public var pipelineProcessor: PipelineProcessor! = nil
+    public var meetingDetector: MeetingDetector! = nil
 
-    static func bootstrap() -> AppModel {
+    public static func bootstrap() -> AppModel {
         try? FileManager.default.ensureMeetingTranscriberDirectories()
 
         let settingsStore = SettingsStore()
@@ -75,7 +75,7 @@ final class AppModel: ObservableObject {
         return model
     }
 
-    init(
+    public init(
         settingsStore: SettingsStore,
         speakerStore: SpeakerStore,
         queueStore: PipelineQueueStore,
@@ -133,7 +133,7 @@ final class AppModel: ObservableObject {
         )
     }
 
-    var menuBarIconName: String {
+    public var menuBarIconName: String {
         switch phase {
         case .dormant: return "mic"
         case .recording: return "record.circle.fill"
@@ -143,7 +143,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var filteredSpeakers: [SpeakerProfile] {
+    public var filteredSpeakers: [SpeakerProfile] {
         let filtered = speakerStore.speakers.filter {
             speakerFilter.isEmpty || $0.name.localizedCaseInsensitiveContains(speakerFilter)
         }
@@ -158,34 +158,34 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func startWatching() {
+    public func startWatching() {
         meetingDetector.startWatching()
         phase = .dormant
     }
 
-    func stopWatching() {
+    public func stopWatching() {
         meetingDetector.stopWatching()
         phase = .dormant
     }
 
-    func toggleWatching() {
+    public func toggleWatching() {
         meetingDetector.isWatching ? stopWatching() : startWatching()
     }
 
-    func simulateMeeting() {
+    public func simulateMeeting() {
         meetingDetector.simulateMeetingStart(title: "Sprint Planning")
     }
 
-    func endSimulatedMeeting() {
+    public func endSimulatedMeeting() {
         meetingDetector.simulateMeetingEnd()
     }
 
-    func acknowledgeError() {
+    public func acknowledgeError() {
         errorMessage = nil
         phase = .dormant
     }
 
-    func addVocabularyTerm() {
+    public func addVocabularyTerm() {
         let term = vocabularyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard term.count >= 3 else { return }
         guard settingsStore.settings.customVocabulary.count < 50 else { return }
@@ -195,23 +195,23 @@ final class AppModel: ObservableObject {
         vocabularyDraft = ""
     }
 
-    func removeVocabularyTerm(_ term: String) {
+    public func removeVocabularyTerm(_ term: String) {
         settingsStore.settings.customVocabulary.removeAll { $0 == term }
     }
 
-    func setLaunchAtLogin(_ enabled: Bool) {
+    public func setLaunchAtLogin(_ enabled: Bool) {
         settingsStore.settings.launchAtLogin = enabled
         LaunchAtLogin.setEnabled(enabled)
     }
 
-    func openSettings(tab: SettingsTab?) {
+    public func openSettings(tab: SettingsTab?) {
         if let tab { selectedSettingsTab = tab }
         // Open the Settings window reliably from MenuBarExtra
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func chooseOutputDirectory() {
+    public func chooseOutputDirectory() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -225,25 +225,25 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func chooseDefaultOutputDirectory() {
+    public func chooseDefaultOutputDirectory() {
         settingsStore.settings.outputDirectory = FileManager.default.meetingTranscriberOutputDirectory.path
     }
 
-    func openOutputDirectory() {
+    public func openOutputDirectory() {
         NSWorkspace.shared.open(URL(fileURLWithPath: settingsStore.settings.outputDirectory, isDirectory: true))
     }
 
-    func openTranscript(_ job: PipelineJob) {
+    public func openTranscript(_ job: PipelineJob) {
         guard let transcriptPath = job.transcriptPath else { return }
         NSWorkspace.shared.open(transcriptPath)
     }
 
-    func retry(_ job: PipelineJob) {
+    public func retry(_ job: PipelineJob) {
         pipelineProcessor.retryFailedJob(job)
         phase = .processing
     }
 
-    func dismissJob(_ job: PipelineJob) {
+    public func dismissJob(_ job: PipelineJob) {
         // Delete associated audio files if job is complete or failed
         if job.stage == .complete || job.stage == .failed {
             let fm = FileManager.default
@@ -253,7 +253,7 @@ final class AppModel: ObservableObject {
         queueStore.remove(job)
     }
 
-    func saveSpeakerName(candidate: NamingCandidate, name: String) {
+    public func saveSpeakerName(candidate: NamingCandidate, name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         speakerStore.upsert(
@@ -274,7 +274,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func mergeSelectedSpeakers() {
+    public func mergeSelectedSpeakers() {
         let ids = Array(mergeSelection)
         guard ids.count == 2 else { return }
         speakerStore.merge(primaryID: ids[0], secondaryID: ids[1])

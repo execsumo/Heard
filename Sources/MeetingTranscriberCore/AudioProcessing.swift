@@ -6,22 +6,33 @@ import Foundation
 
 /// Maps trimmed-audio timestamps back to original-audio timestamps after VAD silence removal.
 /// Uses binary search for O(log n) lookups.
-struct VadSegmentMap {
-    struct Mapping {
-        let trimmedStart: TimeInterval
-        let trimmedEnd: TimeInterval
-        let originalStart: TimeInterval
-        let originalEnd: TimeInterval
+public struct VadSegmentMap {
+    public struct Mapping {
+        public let trimmedStart: TimeInterval
+        public let trimmedEnd: TimeInterval
+        public let originalStart: TimeInterval
+        public let originalEnd: TimeInterval
+
+        public init(trimmedStart: TimeInterval, trimmedEnd: TimeInterval, originalStart: TimeInterval, originalEnd: TimeInterval) {
+            self.trimmedStart = trimmedStart
+            self.trimmedEnd = trimmedEnd
+            self.originalStart = originalStart
+            self.originalEnd = originalEnd
+        }
     }
 
-    let mappings: [Mapping]
+    public let mappings: [Mapping]
 
-    var trimmedDuration: TimeInterval {
+    public init(mappings: [Mapping]) {
+        self.mappings = mappings
+    }
+
+    public var trimmedDuration: TimeInterval {
         mappings.last?.trimmedEnd ?? 0
     }
 
     /// Convert a timestamp in trimmed-audio space to original-audio space.
-    func toOriginalTime(_ trimmedTime: TimeInterval) -> TimeInterval {
+    public func toOriginalTime(_ trimmedTime: TimeInterval) -> TimeInterval {
         guard !mappings.isEmpty else { return trimmedTime }
 
         var lo = 0, hi = mappings.count - 1
@@ -48,12 +59,18 @@ struct VadSegmentMap {
 // MARK: - Preprocessed Track
 
 /// The result of preprocessing one audio track: 16 kHz mono float samples + VAD map.
-struct PreprocessedTrack {
-    let samples: [Float]
-    let sampleRate: Double // always 16000
-    let vadMap: VadSegmentMap
+public struct PreprocessedTrack {
+    public let samples: [Float]
+    public let sampleRate: Double // always 16000
+    public let vadMap: VadSegmentMap
 
-    var duration: TimeInterval {
+    public init(samples: [Float], sampleRate: Double, vadMap: VadSegmentMap) {
+        self.samples = samples
+        self.sampleRate = sampleRate
+        self.vadMap = vadMap
+    }
+
+    public var duration: TimeInterval {
         Double(samples.count) / sampleRate
     }
 }
@@ -62,13 +79,13 @@ struct PreprocessedTrack {
 
 /// Stage 1: Load WAV → resample to 16 kHz mono → run Silero VAD → trim silence.
 /// Uses FluidAudio's AudioConverter for resampling and VadManager for voice activity detection.
-enum AudioPreprocessor {
+public enum AudioPreprocessor {
 
-    static let targetSampleRate: Double = 16_000
+    public static let targetSampleRate: Double = 16_000
     private static let vadChunkSize = 4096 // Silero VAD expects 4096-sample chunks (256ms at 16kHz)
 
     /// Preprocess a recorded WAV file into a 16 kHz mono float buffer with VAD trimming.
-    static func preprocess(wavURL: URL) async throws -> PreprocessedTrack {
+    public static func preprocess(wavURL: URL) async throws -> PreprocessedTrack {
         // Step 1: Load and resample to 16kHz mono using FluidAudio's AudioConverter
         let converter = AudioConverter()
         let samples = try converter.resampleAudioFile(wavURL)
@@ -118,6 +135,15 @@ enum AudioPreprocessor {
         }
 
         return segments
+    }
+
+    /// Test-accessible wrapper for buildTrimmedAudio.
+    public static func buildTrimmedAudioPublic(
+        samples: [Float],
+        speechSegments: [(start: Int, end: Int)],
+        sampleRate: Double
+    ) -> ([Float], VadSegmentMap) {
+        buildTrimmedAudio(samples: samples, speechSegments: speechSegments, sampleRate: sampleRate)
     }
 
     /// Build trimmed samples and VAD segment map from detected speech segments.

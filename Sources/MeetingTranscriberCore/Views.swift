@@ -2,11 +2,13 @@ import SwiftUI
 
 // MARK: - Menu Bar Dropdown
 
-struct MenuBarView: View {
-    @ObservedObject var model: AppModel
-    @Environment(\.openSettings) private var openSettings
+public struct MenuBarView: View {
+    @ObservedObject public var model: AppModel
+    @Environment(\.openWindow) private var openWindow
 
-    var body: some View {
+    public init(model: AppModel) { self.model = model }
+
+    public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             // Status + core actions
             statusSection
@@ -153,7 +155,9 @@ struct MenuBarView: View {
 
             if !model.namingCandidates.isEmpty {
                 Button("Name Speakers...") {
-                    model.openSettings(tab: .speakers)
+                    model.selectedSettingsTab = .speakers
+                    openWindow(id: "settings")
+                    NSApp.activate(ignoringOtherApps: true)
                 }
             }
 
@@ -162,7 +166,8 @@ struct MenuBarView: View {
             }
 
             Button("Settings...") {
-                openSettings()
+                openWindow(id: "settings")
+                NSApp.activate(ignoringOtherApps: true)
             }
 
             Button("Quit") {
@@ -174,12 +179,14 @@ struct MenuBarView: View {
 
 // MARK: - Recording Timer
 
-struct RecordingTimerView: View {
-    let startTime: Date
+public struct RecordingTimerView: View {
+    public let startTime: Date
     @State private var elapsed: TimeInterval = 0
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
-    var body: some View {
+    public init(startTime: Date) { self.startTime = startTime }
+
+    public var body: some View {
         Text(formatDuration(elapsed))
             .onReceive(timer) { _ in
                 elapsed = Date().timeIntervalSince(startTime)
@@ -203,10 +210,12 @@ struct RecordingTimerView: View {
 
 // MARK: - Pulsing Recording Dot
 
-struct PulsingDot: View {
+public struct PulsingDot: View {
     @State private var isPulsing = false
 
-    var body: some View {
+    public init() {}
+
+    public var body: some View {
         Circle()
             .fill(.red)
             .frame(width: 8, height: 8)
@@ -221,10 +230,12 @@ struct PulsingDot: View {
 
 // MARK: - Settings Window
 
-struct SettingsView: View {
-    @ObservedObject var model: AppModel
+public struct SettingsView: View {
+    @ObservedObject public var model: AppModel
 
-    var body: some View {
+    public init(model: AppModel) { self.model = model }
+
+    public var body: some View {
         TabView(selection: $model.selectedSettingsTab) {
             generalTab
                 .tabItem { Label("General", systemImage: "gearshape") }
@@ -404,7 +415,7 @@ struct SettingsView: View {
                 TextField("Search speakers", text: $model.speakerFilter)
                 Picker("Sort", selection: $model.speakerSortMode) {
                     ForEach(SpeakerSortMode.allCases) { sortMode in
-                        Text(sortMode.rawValue.capitalized).tag(sortMode)
+                        Text(sortMode.displayName).tag(sortMode)
                     }
                 }
                 .pickerStyle(.segmented)

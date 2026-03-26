@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 
-extension FileManager {
+public extension FileManager {
     var meetingTranscriberAppSupportDirectory: URL {
         let base = urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent("MeetingTranscriber", isDirectory: true)
@@ -21,37 +21,37 @@ extension FileManager {
     }
 }
 
-enum AppPaths {
-    static var queueFile: URL {
+public enum AppPaths {
+    public static var queueFile: URL {
         FileManager.default.meetingTranscriberAppSupportDirectory.appendingPathComponent("pipeline_queue.json")
     }
 
-    static var speakersFile: URL {
+    public static var speakersFile: URL {
         FileManager.default.meetingTranscriberAppSupportDirectory.appendingPathComponent("speakers.json")
     }
 }
 
-enum Formatting {
-    static let recordingFileFormatter: DateFormatter = {
+public enum Formatting {
+    public static let recordingFileFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         return formatter
     }()
 
-    static let transcriptDatePrefixFormatter: DateFormatter = {
+    public static let transcriptDatePrefixFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyMMdd"
         return formatter
     }()
 
-    static let transcriptDateFormatter: DateFormatter = {
+    public static let transcriptDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
         return formatter
     }()
 }
 
-extension String {
+public extension String {
     func sanitizedFileName(maxLength: Int = 80) -> String {
         let illegal = CharacterSet(charactersIn: "/\\:*?\"<>|")
         let replaced = components(separatedBy: illegal).joined(separator: "_")
@@ -62,7 +62,7 @@ extension String {
     }
 }
 
-extension TimeInterval {
+public extension TimeInterval {
     var timestampString: String {
         let total = Int(self.rounded(.down))
         let hours = total / 3600
@@ -105,14 +105,14 @@ final class JSONStore {
 }
 
 @MainActor
-final class SettingsStore: ObservableObject {
-    @Published var settings: AppSettings {
+public final class SettingsStore: ObservableObject {
+    @Published public var settings: AppSettings {
         didSet { persist() }
     }
 
     private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard) {
+    public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let base = AppSettings.default
         settings = AppSettings(
@@ -134,18 +134,18 @@ final class SettingsStore: ObservableObject {
 }
 
 @MainActor
-final class SpeakerStore: ObservableObject {
-    @Published private(set) var speakers: [SpeakerProfile]
+public final class SpeakerStore: ObservableObject {
+    @Published public private(set) var speakers: [SpeakerProfile]
 
     private let store = JSONStore()
     private let url: URL
 
-    init(url: URL = AppPaths.speakersFile) {
+    public init(url: URL = AppPaths.speakersFile) {
         self.url = url
         speakers = store.load([SpeakerProfile].self, from: url, defaultValue: [])
     }
 
-    func upsert(_ speaker: SpeakerProfile) {
+    public func upsert(_ speaker: SpeakerProfile) {
         if let index = speakers.firstIndex(where: { $0.id == speaker.id }) {
             speakers[index] = speaker
         } else {
@@ -154,18 +154,18 @@ final class SpeakerStore: ObservableObject {
         persist()
     }
 
-    func rename(id: UUID, to name: String) {
+    public func rename(id: UUID, to name: String) {
         guard let index = speakers.firstIndex(where: { $0.id == id }) else { return }
         speakers[index].name = name
         persist()
     }
 
-    func delete(id: UUID) {
+    public func delete(id: UUID) {
         speakers.removeAll { $0.id == id }
         persist()
     }
 
-    func merge(primaryID: UUID, secondaryID: UUID) {
+    public func merge(primaryID: UUID, secondaryID: UUID) {
         guard
             let primaryIndex = speakers.firstIndex(where: { $0.id == primaryID }),
             let secondaryIndex = speakers.firstIndex(where: { $0.id == secondaryID }),
@@ -189,38 +189,38 @@ final class SpeakerStore: ObservableObject {
 }
 
 @MainActor
-final class PipelineQueueStore: ObservableObject {
-    @Published private(set) var jobs: [PipelineJob]
+public final class PipelineQueueStore: ObservableObject {
+    @Published public private(set) var jobs: [PipelineJob]
 
     private let store = JSONStore()
     private let url: URL
 
-    init(url: URL = AppPaths.queueFile) {
+    public init(url: URL = AppPaths.queueFile) {
         self.url = url
         jobs = store.load([PipelineJob].self, from: url, defaultValue: [])
     }
 
-    func enqueue(_ job: PipelineJob) {
+    public func enqueue(_ job: PipelineJob) {
         jobs.append(job)
         persist()
     }
 
-    func update(_ job: PipelineJob) {
+    public func update(_ job: PipelineJob) {
         guard let index = jobs.firstIndex(where: { $0.id == job.id }) else { return }
         jobs[index] = job
         persist()
     }
 
-    func remove(_ job: PipelineJob) {
+    public func remove(_ job: PipelineJob) {
         jobs.removeAll { $0.id == job.id }
         persist()
     }
 
-    var activeJob: PipelineJob? {
+    public var activeJob: PipelineJob? {
         jobs.first { $0.stage != .complete }
     }
 
-    var recentJobs: [PipelineJob] {
+    public var recentJobs: [PipelineJob] {
         Array(jobs.sorted(by: { $0.endTime > $1.endTime }).prefix(3))
     }
 

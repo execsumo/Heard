@@ -12,25 +12,39 @@ import ServiceManagement
 
 // MARK: - Data Types
 
-struct MeetingSnapshot {
-    var title: String
-    var startedAt: Date
-    var teamsPID: pid_t?
+public struct MeetingSnapshot {
+    public var title: String
+    public var startedAt: Date
+    public var teamsPID: pid_t?
+
+    public init(title: String, startedAt: Date, teamsPID: pid_t?) {
+        self.title = title
+        self.startedAt = startedAt
+        self.teamsPID = teamsPID
+    }
 }
 
-struct RecordingSession {
-    let title: String
-    let startTime: Date
-    let appAudioPath: URL
-    let micAudioPath: URL
-    var micDelaySeconds: TimeInterval
+public struct RecordingSession {
+    public let title: String
+    public let startTime: Date
+    public let appAudioPath: URL
+    public let micAudioPath: URL
+    public var micDelaySeconds: TimeInterval
+
+    public init(title: String, startTime: Date, appAudioPath: URL, micAudioPath: URL, micDelaySeconds: TimeInterval) {
+        self.title = title
+        self.startTime = startTime
+        self.appAudioPath = appAudioPath
+        self.micAudioPath = micAudioPath
+        self.micDelaySeconds = micDelaySeconds
+    }
 }
 
 // MARK: - Meeting Detection
 
 @MainActor
-final class MeetingDetector {
-    private(set) var isWatching = false
+public final class MeetingDetector {
+    public private(set) var isWatching = false
     private let onMeetingStarted: @MainActor (MeetingSnapshot) -> Void
     private let onMeetingEnded: @MainActor (MeetingSnapshot) -> Void
     private var activeSnapshot: MeetingSnapshot?
@@ -45,7 +59,7 @@ final class MeetingDetector {
         "Microsoft Teams classic",
     ]
 
-    init(
+    public init(
         onMeetingStarted: @escaping @MainActor (MeetingSnapshot) -> Void,
         onMeetingEnded: @escaping @MainActor (MeetingSnapshot) -> Void
     ) {
@@ -53,12 +67,12 @@ final class MeetingDetector {
         self.onMeetingEnded = onMeetingEnded
     }
 
-    func startWatching() {
+    public func startWatching() {
         isWatching = true
         startPolling()
     }
 
-    func stopWatching() {
+    public func stopWatching() {
         isWatching = false
         pollingTask?.cancel()
         pollingTask = nil
@@ -160,14 +174,14 @@ final class MeetingDetector {
 
     // MARK: - Simulation (development only)
 
-    func simulateMeetingStart(title: String) {
+    public func simulateMeetingStart(title: String) {
         isSimulated = true
         let snapshot = MeetingSnapshot(title: title, startedAt: Date(), teamsPID: nil)
         activeSnapshot = snapshot
         onMeetingStarted(snapshot)
     }
 
-    func simulateMeetingEnd() {
+    public func simulateMeetingEnd() {
         guard let snapshot = activeSnapshot else { return }
         isSimulated = false
         activeSnapshot = nil
@@ -178,8 +192,10 @@ final class MeetingDetector {
 // MARK: - Audio Recording
 
 @MainActor
-final class RecordingManager: ObservableObject {
-    @Published private(set) var activeSession: RecordingSession?
+public final class RecordingManager: ObservableObject {
+    @Published public private(set) var activeSession: RecordingSession?
+
+    public init() {}
 
     private var micEngine: AVAudioEngine?
     private var appEngine: AVAudioEngine?
@@ -195,13 +211,13 @@ final class RecordingManager: ObservableObject {
     private(set) var micBufferStream: AsyncStream<AVAudioPCMBuffer>?
 
     /// Callback for max-duration split: enqueue current session, optionally restart.
-    var onMaxDurationReached: (@MainActor (RecordingSession) -> Void)?
+    public var onMaxDurationReached: (@MainActor (RecordingSession) -> Void)?
 
     /// The Teams PID and title for the current recording (needed for re-start on split).
     private var currentTeamsPID: pid_t?
     private var currentTitle: String = ""
 
-    func startRecording(title: String, teamsPID: pid_t?) throws {
+    public func startRecording(title: String, teamsPID: pid_t?) throws {
         guard activeSession == nil else { return }
 
         let stamp = Formatting.recordingFileFormatter.string(from: Date())
@@ -251,7 +267,7 @@ final class RecordingManager: ObservableObject {
         }
     }
 
-    func stopRecording() -> RecordingSession? {
+    public func stopRecording() -> RecordingSession? {
         maxDurationTask?.cancel()
         maxDurationTask = nil
 
@@ -422,17 +438,19 @@ enum RecordingError: LocalizedError {
 // MARK: - Model Catalog
 
 @MainActor
-final class ModelCatalog: ObservableObject {
-    @Published private(set) var statuses: [ModelStatusItem] = ModelKind.allCases.map {
+public final class ModelCatalog: ObservableObject {
+    @Published public private(set) var statuses: [ModelStatusItem] = ModelKind.allCases.map {
         let detail = $0 == .streamingPlaceholder ? "Reserved for v2 dictation" : "Download required"
         return ModelStatusItem(modelKind: $0, availability: .notDownloaded, detail: detail)
     }
 
-    func markDownloading(_ kind: ModelKind) {
+    public init() {}
+
+    public func markDownloading(_ kind: ModelKind) {
         update(kind, availability: .downloading, detail: "Downloading")
     }
 
-    func markReady(_ kind: ModelKind) {
+    public func markReady(_ kind: ModelKind) {
         update(kind, availability: .ready, detail: "Ready")
     }
 
@@ -445,14 +463,14 @@ final class ModelCatalog: ObservableObject {
 // MARK: - Permission Center
 
 @MainActor
-final class PermissionCenter: ObservableObject {
-    @Published private(set) var statuses: [PermissionStatus] = []
+public final class PermissionCenter: ObservableObject {
+    @Published public private(set) var statuses: [PermissionStatus] = []
 
-    init() {
+    public init() {
         refresh()
     }
 
-    func refresh() {
+    public func refresh() {
         statuses = [
             PermissionStatus(
                 id: "microphone",
@@ -475,18 +493,18 @@ final class PermissionCenter: ObservableObject {
         ]
     }
 
-    func requestMicrophone() {
+    public func requestMicrophone() {
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
     }
 
-    func openScreenRecordingSettings() {
+    public func openScreenRecordingSettings() {
         CGRequestScreenCaptureAccess()
         openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
     }
 
-    func openAccessibilitySettings() {
+    public func openAccessibilitySettings() {
         openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
     }
 
@@ -514,9 +532,9 @@ final class PermissionCenter: ObservableObject {
 
 // MARK: - Temp File Cleanup
 
-enum TempFileCleanup {
+public enum TempFileCleanup {
     /// Delete recording WAVs older than 48 hours. Called on app launch.
-    static func cleanStaleRecordings(activeJobPaths: Set<URL> = []) {
+    public static func cleanStaleRecordings(activeJobPaths: Set<URL> = []) {
         let recordingsDir = FileManager.default.meetingTranscriberAppSupportDirectory
             .appendingPathComponent("recordings", isDirectory: true)
         let fm = FileManager.default
@@ -545,12 +563,12 @@ enum TempFileCleanup {
 
 // MARK: - Launch at Login
 
-enum LaunchAtLogin {
-    static var isEnabled: Bool {
+public enum LaunchAtLogin {
+    public static var isEnabled: Bool {
         SMAppService.mainApp.status == .enabled
     }
 
-    static func setEnabled(_ enabled: Bool) {
+    public static func setEnabled(_ enabled: Bool) {
         do {
             if enabled {
                 try SMAppService.mainApp.register()
@@ -565,8 +583,8 @@ enum LaunchAtLogin {
 
 // MARK: - Transcript Writer
 
-enum TranscriptWriter {
-    static func write(document: TranscriptDocument, outputDirectory: URL) throws -> URL {
+public enum TranscriptWriter {
+    public static func write(document: TranscriptDocument, outputDirectory: URL) throws -> URL {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         let prefix = Formatting.transcriptDatePrefixFormatter.string(from: document.startTime)
         let title = document.title.sanitizedFileName()
@@ -605,8 +623,8 @@ enum TranscriptWriter {
 /// Jobs are processed sequentially (one at a time) to avoid ANE contention.
 /// Failed stages retry up to 3 times with exponential backoff (5s, 30s, 5min).
 @MainActor
-final class PipelineProcessor: ObservableObject {
-    @Published private(set) var isProcessing = false
+public final class PipelineProcessor: ObservableObject {
+    @Published public private(set) var isProcessing = false
 
     private let queueStore: PipelineQueueStore
     private let speakerStore: SpeakerStore
@@ -625,7 +643,7 @@ final class PipelineProcessor: ObservableObject {
     private static let retryDelays: [TimeInterval] = [5, 30, 300]
     private static let maxRetries = 3
 
-    init(
+    public init(
         queueStore: PipelineQueueStore,
         speakerStore: SpeakerStore,
         settingsStore: SettingsStore,
@@ -639,7 +657,7 @@ final class PipelineProcessor: ObservableObject {
         self.onNamingRequired = onNamingRequired
     }
 
-    func enqueueFinishedRecording(_ session: RecordingSession, endedAt: Date) {
+    public func enqueueFinishedRecording(_ session: RecordingSession, endedAt: Date) {
         let job = PipelineJob(
             id: UUID(),
             meetingTitle: session.title,
@@ -657,7 +675,7 @@ final class PipelineProcessor: ObservableObject {
         runNextIfNeeded()
     }
 
-    func retryFailedJob(_ job: PipelineJob) {
+    public func retryFailedJob(_ job: PipelineJob) {
         var retry = job
         retry.stage = .queued
         retry.error = nil
@@ -665,7 +683,7 @@ final class PipelineProcessor: ObservableObject {
         runNextIfNeeded()
     }
 
-    func runNextIfNeeded() {
+    public func runNextIfNeeded() {
         guard !isProcessing else { return }
         guard let next = queueStore.jobs.first(where: { $0.stage == .queued }) else { return }
         isProcessing = true

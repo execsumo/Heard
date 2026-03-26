@@ -5,21 +5,21 @@ import Foundation
 /// FluidAudio auto-downloads models on first use, but pre-downloading avoids delays
 /// after the first meeting.
 @MainActor
-final class ModelDownloadManager: ObservableObject {
+public final class ModelDownloadManager: ObservableObject {
 
-    @Published private(set) var downloadProgress: [ModelKind: Double] = [:]
-    @Published private(set) var errors: [ModelKind: String] = [:]
+    @Published public private(set) var downloadProgress: [ModelKind: Double] = [:]
+    @Published public private(set) var errors: [ModelKind: String] = [:]
 
     private var activeTasks: [ModelKind: Task<Void, Never>] = [:]
     private let catalog: ModelCatalog
 
-    init(catalog: ModelCatalog) {
+    public init(catalog: ModelCatalog) {
         self.catalog = catalog
         refreshStatuses()
     }
 
     /// Check which models are already cached by looking at FluidAudio's actual cache locations.
-    func refreshStatuses() {
+    public func refreshStatuses() {
         let fm = FileManager.default
 
         // VAD: FluidAudio stores in ~/Library/Application Support/FluidAudio/Models/silero-vad-coreml/
@@ -48,20 +48,20 @@ final class ModelDownloadManager: ObservableObject {
         }
     }
 
-    var allModelsReady: Bool {
+    public var allModelsReady: Bool {
         let statuses = catalog.statuses
         return statuses.filter { $0.modelKind != .streamingPlaceholder }
             .allSatisfy { $0.availability == .ready }
     }
 
     /// Pre-download all models via FluidAudio's built-in download system.
-    func downloadAllModels() {
+    public func downloadAllModels() {
         download(.batchVad)
         download(.batchParakeet)
         download(.diarization)
     }
 
-    func download(_ kind: ModelKind) {
+    public func download(_ kind: ModelKind) {
         guard activeTasks[kind] == nil else { return }
         errors[kind] = nil
         catalog.markDownloading(kind)
@@ -107,7 +107,7 @@ final class ModelDownloadManager: ObservableObject {
         }
     }
 
-    func cancel(_ kind: ModelKind) {
+    public func cancel(_ kind: ModelKind) {
         activeTasks[kind]?.cancel()
         activeTasks[kind] = nil
         downloadProgress[kind] = nil

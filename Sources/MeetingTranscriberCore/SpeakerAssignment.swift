@@ -4,53 +4,69 @@ import Foundation
 // MARK: - Diarization Types
 
 /// A speaker segment from LS-EEND diarization.
-struct DiarizationSegment {
-    let speakerID: String
-    let startTime: TimeInterval
-    let endTime: TimeInterval
+public struct DiarizationSegment {
+    public let speakerID: String
+    public let startTime: TimeInterval
+    public let endTime: TimeInterval
+
+    public init(speakerID: String, startTime: TimeInterval, endTime: TimeInterval) {
+        self.speakerID = speakerID
+        self.startTime = startTime
+        self.endTime = endTime
+    }
 }
 
 /// A speaker embedding from WeSpeaker (256-dimensional float vector).
-struct SpeakerEmbedding {
-    let speakerID: String
-    let vector: [Float]
+public struct SpeakerEmbedding {
+    public let speakerID: String
+    public let vector: [Float]
+
+    public init(speakerID: String, vector: [Float]) {
+        self.speakerID = speakerID
+        self.vector = vector
+    }
 }
 
 /// Combined diarization output for a single track.
-struct TrackDiarizationResult {
-    let segments: [DiarizationSegment]
-    let embeddings: [SpeakerEmbedding]
+public struct TrackDiarizationResult {
+    public let segments: [DiarizationSegment]
+    public let embeddings: [SpeakerEmbedding]
+
+    public init(segments: [DiarizationSegment], embeddings: [SpeakerEmbedding]) {
+        self.segments = segments
+        self.embeddings = embeddings
+    }
 }
 
 // MARK: - Speaker Matcher
 
 /// Matches detected speaker embeddings against the persistent speaker database.
 /// Uses cosine distance with configurable thresholds.
-enum SpeakerMatcher {
+public enum SpeakerMatcher {
 
     /// Cosine distance threshold for matching (lower = more similar).
-    static let matchThreshold: Float = 0.40
+    public static let matchThreshold: Float = 0.40
 
     /// Minimum gap between best and second-best match to accept a match.
-    static let confidenceMargin: Float = 0.10
+    public static let confidenceMargin: Float = 0.10
 
     /// Strong confidence margin for auto-updating embeddings.
-    static let autoUpdateMargin: Float = 0.15
+    public static let autoUpdateMargin: Float = 0.15
 
     /// Maximum stored embeddings per speaker.
-    static let maxEmbeddingsPerSpeaker = 5
+    public static let maxEmbeddingsPerSpeaker = 5
 
-    struct MatchResult {
-        let detectedSpeakerID: String
-        let assignedName: String
-        let matchedProfileID: UUID?
-        let isNewSpeaker: Bool
-        let embedding: [Float]
+    public struct MatchResult {
+        public let detectedSpeakerID: String
+        public let assignedName: String
+        public let matchedProfileID: UUID?
+        public let isNewSpeaker: Bool
+        public let embedding: [Float]
     }
 
     /// Match detected speaker embeddings against the speaker database.
     /// Returns a mapping from detected speaker IDs to display names.
-    static func matchSpeakers(
+    public static func matchSpeakers(
         embeddings: [SpeakerEmbedding],
         database: [SpeakerProfile],
         localUserName: String
@@ -153,7 +169,7 @@ enum SpeakerMatcher {
     }
 
     /// Update speaker database with new embeddings from a processed meeting.
-    @MainActor static func updateDatabase(
+    @MainActor public static func updateDatabase(
         matches: [MatchResult],
         speakerStore: SpeakerStore
     ) {
@@ -210,11 +226,11 @@ enum SpeakerMatcher {
 // MARK: - Segment Merger
 
 /// Merges transcription segments with diarization results into a final transcript.
-enum SegmentMerger {
+public enum SegmentMerger {
 
     /// Merge transcription segments with diarization segments.
     /// Assigns speaker labels via temporal overlap matching.
-    static func merge(
+    public static func merge(
         transcriptionSegments: [TranscriptSegment],
         diarizationSegments: [DiarizationSegment],
         speakerNameMap: [String: String], // diarization speakerID → display name
@@ -243,7 +259,7 @@ enum SegmentMerger {
     }
 
     /// Public entry point for overlap matching from pipeline processor.
-    static func findBestOverlapPublic(
+    public static func findBestOverlapPublic(
         start: TimeInterval,
         end: TimeInterval,
         diarizationSegments: [DiarizationSegment]
@@ -287,7 +303,7 @@ enum SegmentMerger {
     }
 
     /// Merge consecutive segments from the same speaker into single blocks.
-    static func mergeConsecutive(_ segments: [TranscriptSegment]) -> [TranscriptSegment] {
+    public static func mergeConsecutive(_ segments: [TranscriptSegment]) -> [TranscriptSegment] {
         guard !segments.isEmpty else { return [] }
 
         var merged: [TranscriptSegment] = []
@@ -313,7 +329,7 @@ enum SegmentMerger {
 
 /// Cosine distance between two vectors: 1 - cosine_similarity.
 /// Returns 0 for identical vectors, 2 for opposite vectors.
-func cosineDistance(_ a: [Float], _ b: [Float]) -> Float {
+public func cosineDistance(_ a: [Float], _ b: [Float]) -> Float {
     guard a.count == b.count, !a.isEmpty else { return Float.infinity }
 
     let n = vDSP_Length(a.count)
