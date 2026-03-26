@@ -92,7 +92,10 @@ struct SettingsView: View {
         TabView(selection: $model.selectedSettingsTab) {
             Form {
                 TextField("Your Name", text: settingsBinding(\.userName))
-                Toggle("Launch at Login", isOn: settingsBinding(\.launchAtLogin))
+                Toggle("Launch at Login", isOn: Binding(
+                    get: { model.settingsStore.settings.launchAtLogin },
+                    set: { model.setLaunchAtLogin($0) }
+                ))
                 Toggle("Auto-Watch", isOn: settingsBinding(\.autoWatch))
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -219,9 +222,16 @@ struct SettingsView: View {
                         }
                         Spacer()
                         Text(permission.state.badge)
+                            .foregroundStyle(permission.state == .granted ? .green : .orange)
                         Button("Grant") {
-                            model.permissionCenter.markGranted(permission.id)
+                            switch permission.id {
+                            case "microphone": model.permissionCenter.requestMicrophone()
+                            case "screen": model.permissionCenter.openScreenRecordingSettings()
+                            case "accessibility": model.permissionCenter.openAccessibilitySettings()
+                            default: break
+                            }
                         }
+                        .disabled(permission.state == .granted)
                     }
                 }
             }

@@ -41,6 +41,20 @@ final class AppModel: ObservableObject {
             recordingManager: recordingManager
         )
 
+        // Clean stale recordings (>48h), preserving files referenced by active jobs
+        let activeJobPaths = Set(
+            queueStore.jobs
+                .filter { $0.stage != .complete }
+                .flatMap { [$0.appAudioPath, $0.micAudioPath] }
+        )
+        TempFileCleanup.cleanStaleRecordings(activeJobPaths: activeJobPaths)
+
+        // Sync launch-at-login state with settings
+        let currentlyEnabled = LaunchAtLogin.isEnabled
+        if settingsStore.settings.launchAtLogin != currentlyEnabled {
+            LaunchAtLogin.setEnabled(settingsStore.settings.launchAtLogin)
+        }
+
         if settingsStore.settings.autoWatch {
             model.startWatching()
         }
@@ -78,7 +92,10 @@ final class AppModel: ObservableObject {
             onMeetingStarted: { [weak self] snapshot in
                 guard let self else { return }
                 do {
-                    try self.recordingManager.startRecording(title: snapshot.title)
+                    try self.recordingManager.startRecording(
+                        title: snapshot.title,
+                        teamsPID: snapshot.teamsPID
+                    )
                     self.phase = .recording
                     self.errorMessage = nil
                 } catch {
@@ -159,6 +176,11 @@ final class AppModel: ObservableObject {
 
     func removeVocabularyTerm(_ term: String) {
         settingsStore.settings.customVocabulary.removeAll { $0 == term }
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        settingsStore.settings.launchAtLogin = enabled
+        LaunchAtLogin.setEnabled(enabled)
     }
 
     func chooseDefaultOutputDirectory() {
