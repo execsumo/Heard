@@ -143,13 +143,15 @@ public struct MenuBarView: View {
                 model.toggleWatching()
             }
 
-            if model.recordingManager.activeSession == nil {
-                Button("Simulate Meeting Start") {
-                    model.simulateMeeting()
-                }
-            } else {
-                Button("Simulate Meeting End") {
-                    model.endSimulatedMeeting()
+            if model.settingsStore.settings.developerMode {
+                if model.recordingManager.activeSession == nil {
+                    Button("Simulate Meeting Start") {
+                        model.simulateMeeting()
+                    }
+                } else {
+                    Button("Simulate Meeting End") {
+                        model.endSimulatedMeeting()
+                    }
                 }
             }
 
@@ -277,6 +279,9 @@ public struct SettingsView: View {
             ))
 
             Toggle("Auto-Watch on Launch", isOn: settingsBinding(\.autoWatch))
+
+            Toggle("Developer Mode", isOn: settingsBinding(\.developerMode))
+                .help("Shows simulate meeting buttons in the menu bar for testing")
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Output Folder")

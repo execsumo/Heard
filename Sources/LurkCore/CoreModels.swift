@@ -163,13 +163,15 @@ public struct AppSettings: Codable, Equatable {
     public var autoWatch: Bool
     public var outputDirectory: String
     public var customVocabulary: [String]
+    public var developerMode: Bool
 
     public static let `default` = AppSettings(
         userName: "",
         launchAtLogin: false,
         autoWatch: true,
         outputDirectory: FileManager.default.lurkOutputDirectory.path,
-        customVocabulary: []
+        customVocabulary: [],
+        developerMode: false
     )
 
     public init(
@@ -177,13 +179,15 @@ public struct AppSettings: Codable, Equatable {
         launchAtLogin: Bool,
         autoWatch: Bool,
         outputDirectory: String,
-        customVocabulary: [String]
+        customVocabulary: [String],
+        developerMode: Bool = false
     ) {
         self.userName = userName
         self.launchAtLogin = launchAtLogin
         self.autoWatch = autoWatch
         self.outputDirectory = outputDirectory
         self.customVocabulary = customVocabulary
+        self.developerMode = developerMode
     }
 }
 

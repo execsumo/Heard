@@ -120,7 +120,8 @@ public final class SettingsStore: ObservableObject {
             launchAtLogin: defaults.object(forKey: "launchAtLogin") as? Bool ?? base.launchAtLogin,
             autoWatch: defaults.object(forKey: "autoWatch") as? Bool ?? base.autoWatch,
             outputDirectory: defaults.string(forKey: "outputDirectory") ?? base.outputDirectory,
-            customVocabulary: defaults.stringArray(forKey: "customVocabulary") ?? base.customVocabulary
+            customVocabulary: defaults.stringArray(forKey: "customVocabulary") ?? base.customVocabulary,
+            developerMode: defaults.object(forKey: "developerMode") as? Bool ?? base.developerMode
         )
     }
 
@@ -130,6 +131,7 @@ public final class SettingsStore: ObservableObject {
         defaults.set(settings.autoWatch, forKey: "autoWatch")
         defaults.set(settings.outputDirectory, forKey: "outputDirectory")
         defaults.set(settings.customVocabulary, forKey: "customVocabulary")
+        defaults.set(settings.developerMode, forKey: "developerMode")
     }
 }
 
