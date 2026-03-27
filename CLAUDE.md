@@ -2,14 +2,16 @@
 
 ## Project Overview
 
-MeetX is a macOS menu bar app that auto-detects Microsoft Teams meetings, records dual-track audio, and produces on-device transcripts with speaker diarization. See `spec.md` for the full product specification.
+Lurk is a macOS menu bar app that auto-detects Microsoft Teams meetings, records dual-track audio, and produces on-device transcripts with speaker diarization. See `spec.md` for the full product specification.
 
 ## Build & Run
 
 ```bash
-swift build          # compile
-swift run            # compile and launch
-swift package clean  # clean build artifacts
+swift build                # compile
+swift run Lurk             # compile and launch (terminal — mic permission goes to terminal app)
+./scripts/bundle.sh        # build Lurk.app bundle (ad-hoc signed)
+open build/Lurk.app        # launch as proper app (mic permission goes to Lurk)
+swift package clean        # clean build artifacts
 ```
 
 No Xcode project — this is a Swift Package Manager executable. macOS 14.2+ required.
@@ -18,11 +20,15 @@ No Xcode project — this is a Swift Package Manager executable. macOS 14.2+ req
 
 - `spec.md` — Product spec (source of truth for features and architecture)
 - `handoff.md` — Current implementation status and next steps
-- `Sources/Lurk/AppModel.swift` — Central state orchestration
-- `Sources/Lurk/Services.swift` — Detection, recording, pipeline, permissions
-- `Sources/Lurk/Views.swift` — All UI (menu bar dropdown + settings window)
-- `Sources/Lurk/CoreModels.swift` — Data types
-- `Sources/Lurk/Stores.swift` — Persistence layer
+- `Sources/Lurk/MTApp.swift` — App entry point
+- `Sources/LurkCore/AppModel.swift` — Central state orchestration
+- `Sources/LurkCore/Services.swift` — Detection, recording, pipeline, permissions
+- `Sources/LurkCore/Views.swift` — All UI (menu bar dropdown + settings window)
+- `Sources/LurkCore/CoreModels.swift` — Data types
+- `Sources/LurkCore/Stores.swift` — Persistence layer
+- `Info.plist` — App bundle metadata
+- `Lurk.entitlements` — Entitlements (audio input only, no sandbox)
+- `scripts/bundle.sh` — Build script for .app bundle
 
 ## Working Rules
 
@@ -39,7 +45,8 @@ No Xcode project — this is a Swift Package Manager executable. macOS 14.2+ req
 ## Architecture Notes
 
 - `MenuBarExtra` with `.window` style — renders SwiftUI views in a floating panel
-- `Settings` scene for the preferences window — use `@Environment(\.openSettings)` to open it
+- `Window` scene with id "settings" — opened via `@Environment(\.openWindow)`
+- Library target `LurkCore` + executable `Lurk` + test executable `LurkTests`
 - All persistence is JSON files in `~/Library/Application Support/Lurk/`
 - Pipeline stages run sequentially on a background task, one job at a time
 - Meeting detection polls every 3 seconds via `IOPMCopyAssertionsByProcess()`
@@ -47,14 +54,18 @@ No Xcode project — this is a Swift Package Manager executable. macOS 14.2+ req
 
 ## Testing
 
-No test target yet. To test manually:
-1. `swift run` from the repo root
+```bash
+swift run LurkTests        # run the test suite
+```
+
+Manual testing:
+1. `./scripts/bundle.sh && open build/Lurk.app`
 2. Click menu bar icon → "Simulate Meeting Start" to exercise the full flow
-3. Use ⌘, or the Settings button to open preferences
+3. Use the Settings button to open preferences
 
 ## Gotchas
 
-- Running via terminal attributes mic permission to the terminal app, not MeetX
+- Running via `swift run` attributes mic permission to the terminal app, not Lurk. Use the .app bundle for proper permissions.
 - The `.window` MenuBarExtra panel has a max height — keep the dropdown content compact
 - FluidAudio dependency is declared but models aren't available as CoreML yet
-- The worktree is at `.claude/worktrees/` — run `swift run` from the worktree dir, not the main repo
+- The worktree is at `.claude/worktrees/` — run commands from the worktree dir, not the main repo
