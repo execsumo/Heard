@@ -101,6 +101,12 @@ public final class AppModel: ObservableObject {
                 self?.namingCandidates = candidates
                 self?.phase = .userAction
                 self?.startNamingAutoDismiss()
+            },
+            onPipelineIdle: { [weak self] in
+                guard let self else { return }
+                if self.phase == .processing {
+                    self.phase = .dormant
+                }
             }
         )
 

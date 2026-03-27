@@ -631,6 +631,7 @@ public final class PipelineProcessor: ObservableObject {
     private let settingsStore: SettingsStore
     private let modelCatalog: ModelCatalog
     private let onNamingRequired: @MainActor ([NamingCandidate]) -> Void
+    private let onPipelineIdle: @MainActor () -> Void
 
     /// In-memory state for the current pipeline job.
     private var appTrack: PreprocessedTrack?
@@ -648,13 +649,15 @@ public final class PipelineProcessor: ObservableObject {
         speakerStore: SpeakerStore,
         settingsStore: SettingsStore,
         modelCatalog: ModelCatalog,
-        onNamingRequired: @escaping @MainActor ([NamingCandidate]) -> Void
+        onNamingRequired: @escaping @MainActor ([NamingCandidate]) -> Void,
+        onPipelineIdle: @escaping @MainActor () -> Void = {}
     ) {
         self.queueStore = queueStore
         self.speakerStore = speakerStore
         self.settingsStore = settingsStore
         self.modelCatalog = modelCatalog
         self.onNamingRequired = onNamingRequired
+        self.onPipelineIdle = onPipelineIdle
     }
 
     public func enqueueFinishedRecording(_ session: RecordingSession, endedAt: Date) {
@@ -685,7 +688,10 @@ public final class PipelineProcessor: ObservableObject {
 
     public func runNextIfNeeded() {
         guard !isProcessing else { return }
-        guard let next = queueStore.jobs.first(where: { $0.stage == .queued }) else { return }
+        guard let next = queueStore.jobs.first(where: { $0.stage == .queued }) else {
+            onPipelineIdle()
+            return
+        }
         isProcessing = true
         Task {
             await processWithRetry(next)
@@ -719,6 +725,15 @@ public final class PipelineProcessor: ObservableObject {
             } catch {
                 working.error = error.localizedDescription
                 working.retryCount = attempt + 1
+
+                // Fail immediately for errors that will never succeed on retry
+                if let pipelineError = error as? PipelineError, pipelineError.isNonRetryable {
+                    NSLog("Lurk: Non-retryable error for job \(working.id): \(error)")
+                    working.stage = .failed
+                    queueStore.update(working)
+                    return
+                }
+
                 queueStore.update(working)
 
                 if attempt < Self.maxRetries - 1 {
@@ -1041,10 +1056,19 @@ public final class PipelineProcessor: ObservableObject {
 
 enum PipelineError: LocalizedError {
     case noAudioFiles
+    case recordingTooShort
 
     var errorDescription: String? {
         switch self {
         case .noAudioFiles: return "No audio files found for this recording"
+        case .recordingTooShort: return "Recording too short to transcribe"
+        }
+    }
+
+    /// Errors that should not be retried (will never succeed on retry).
+    var isNonRetryable: Bool {
+        switch self {
+        case .noAudioFiles, .recordingTooShort: return true
         }
     }
 }
