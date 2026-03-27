@@ -129,7 +129,9 @@ public final class MeetingDetector {
         }
     }
 
-    /// Poll IOPMCopyAssertionsByProcess for Teams holding a PreventUserIdleDisplaySleep assertion.
+    /// Poll IOPMCopyAssertionsByProcess for Teams holding a meeting-related power assertion.
+    /// New Teams (com.microsoft.teams2) uses AssertionTrueType = PreventUserIdleDisplaySleep
+    /// and/or AssertName = "Microsoft Teams Call in progress".
     private static func detectTeamsMeeting() -> (detected: Bool, pid: pid_t?) {
         let runningApps = NSWorkspace.shared.runningApplications
         let teamsApps = runningApps.filter { app in
@@ -149,9 +151,21 @@ public final class MeetingDetector {
             let pid = app.processIdentifier
             guard let assertions = dict[NSNumber(value: pid)] as? [[String: Any]] else { continue }
             for assertion in assertions {
-                if let type = assertion["AssertionType"] as? String,
-                   type == "PreventUserIdleDisplaySleep"
-                {
+                // Check multiple keys — Teams versions use different assertion formats:
+                // - Classic Teams: AssertionType = "PreventUserIdleDisplaySleep"
+                // - New Teams (com.microsoft.teams2): AssertionTrueType = "PreventUserIdleDisplaySleep"
+                //   with AssertionType = "NoDisplaySleepAssertion"
+                // - Also match by assertion name as a reliable fallback
+                let assertionType = assertion["AssertionType"] as? String ?? ""
+                let assertionTrueType = assertion["AssertionTrueType"] as? String ?? ""
+                let assertName = assertion["AssertName"] as? String ?? ""
+
+                let isDisplaySleep = assertionType == "PreventUserIdleDisplaySleep"
+                    || assertionTrueType == "PreventUserIdleDisplaySleep"
+                    || assertionType == "NoDisplaySleepAssertion"
+                let isTeamsCall = assertName.lowercased().contains("call in progress")
+
+                if isDisplaySleep || isTeamsCall {
                     return (true, pid)
                 }
             }
