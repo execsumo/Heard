@@ -180,6 +180,14 @@ A patch was applied to `.build/checkouts/FluidAudio/Sources/FluidAudio/Shared/Au
 - **DMG packaging** — Create distributable disk image for direct download
 - **Homebrew Cask formula** — For `brew install heard`
 
+### 6. Menu Bar Icons (Pending User Input)
+
+- We need designated custom icons/animations from the user for the following states:
+  - `error` (currently falling back to `menu-bar-idle.gif`)
+  - `userAction` (currently falling back to `menu-bar-idle.gif`)
+  - `isDictating` (currently defaulting to `menu-bar-recording.gif`)
+- **Note on GIF Animations**: SwiftUI's native `MenuBarExtra(image:)` will only render the first frame of the provided `.gif` files. If true animations (e.g. 60fps) are required in the menu bar, we need to replace `MenuBarExtra` with a custom AppKit `NSStatusItem` wrapper that manually loops via a `Timer` and updates the `button.image` frame-by-frame. This should be addressed later based on user preference.
+
 ## Attempted Approaches for Dictation (Historical)
 
 These approaches were tried and failed, documented here to prevent re-attempting:
