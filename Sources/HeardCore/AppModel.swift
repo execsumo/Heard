@@ -14,6 +14,11 @@ public final class AppModel: ObservableObject {
     @Published public var vocabularyDraft = ""
     @Published public var mergeSelection = Set<UUID>()
 
+    // Dictation state (separate from phase — can coexist with meeting recording)
+    @Published public var isDictating = false
+    @Published public var partialTranscript = ""
+    @Published public var dictationError: String?
+
     public let settingsStore: SettingsStore
     public let speakerStore: SpeakerStore
     public let queueStore: PipelineQueueStore
@@ -23,6 +28,8 @@ public final class AppModel: ObservableObject {
     public let downloadManager: ModelDownloadManager
     public var pipelineProcessor: PipelineProcessor! = nil
     public var meetingDetector: MeetingDetector! = nil
+    public let dictationManager: DictationManager
+    public var hotkeyManager: HotkeyManager! = nil
 
     public static func bootstrap() -> AppModel {
         try? FileManager.default.ensureHeardDirectories()
@@ -35,6 +42,7 @@ public final class AppModel: ObservableObject {
         let recordingManager = RecordingManager()
 
         let downloadManager = ModelDownloadManager(catalog: modelCatalog)
+        let dictationManager = DictationManager()
 
         let model = AppModel(
             settingsStore: settingsStore,
@@ -43,7 +51,8 @@ public final class AppModel: ObservableObject {
             modelCatalog: modelCatalog,
             permissionCenter: permissionCenter,
             recordingManager: recordingManager,
-            downloadManager: downloadManager
+            downloadManager: downloadManager,
+            dictationManager: dictationManager
         )
 
         // Clean stale recordings (>48h), preserving files referenced by active jobs
@@ -72,6 +81,21 @@ public final class AppModel: ObservableObject {
         }
 
         model.pipelineProcessor.runNextIfNeeded()
+
+        // Wire dictation: text injection on finalized utterances
+        dictationManager.onUtterance = { text in
+            TextInjector.inject(text)
+        }
+
+        // Activate hotkey if dictation is enabled
+        if settingsStore.settings.dictationEnabled {
+            model.hotkeyManager = HotkeyManager(hotkey: settingsStore.settings.dictationHotkey) {
+                [weak model] in
+                model?.toggleDictation()
+            }
+            model.hotkeyManager.activate()
+        }
+
         return model
     }
 
@@ -82,7 +106,8 @@ public final class AppModel: ObservableObject {
         modelCatalog: ModelCatalog,
         permissionCenter: PermissionCenter,
         recordingManager: RecordingManager,
-        downloadManager: ModelDownloadManager
+        downloadManager: ModelDownloadManager,
+        dictationManager: DictationManager
     ) {
         self.settingsStore = settingsStore
         self.speakerStore = speakerStore
@@ -91,6 +116,7 @@ public final class AppModel: ObservableObject {
         self.permissionCenter = permissionCenter
         self.recordingManager = recordingManager
         self.downloadManager = downloadManager
+        self.dictationManager = dictationManager
 
         self.pipelineProcessor = PipelineProcessor(
             queueStore: queueStore,
@@ -143,6 +169,7 @@ public final class AppModel: ObservableObject {
     }
 
     public var menuBarIconName: String {
+        if isDictating { return "mic.fill" }
         switch phase {
         case .dormant: return "mic"
         case .recording: return "record.circle.fill"
@@ -179,6 +206,68 @@ public final class AppModel: ObservableObject {
 
     public func toggleWatching() {
         meetingDetector.isWatching ? stopWatching() : startWatching()
+    }
+
+    // MARK: - Dictation
+
+    public func toggleDictation() {
+        Task {
+            if isDictating {
+                await dictationManager.stop()
+                isDictating = false
+                partialTranscript = ""
+                dictationError = nil
+            } else {
+                do {
+                    try await dictationManager.start()
+                    isDictating = true
+                    dictationError = nil
+                    // Observe partial transcript updates
+                    observeDictationPartials()
+                } catch {
+                    dictationError = error.localizedDescription
+                    NSLog("Heard: Dictation start failed: \(error)")
+                }
+            }
+        }
+    }
+
+    public func setDictationEnabled(_ enabled: Bool) {
+        settingsStore.settings.dictationEnabled = enabled
+        objectWillChange.send()
+        if enabled {
+            // Prompt for Accessibility permission (needed for text injection)
+            TextInjector.ensureAccessibility()
+
+            if hotkeyManager == nil {
+                hotkeyManager = HotkeyManager(hotkey: settingsStore.settings.dictationHotkey) {
+                    [weak self] in
+                    self?.toggleDictation()
+                }
+            }
+            hotkeyManager.activate()
+        } else {
+            hotkeyManager?.deactivate()
+            if isDictating {
+                toggleDictation()
+            }
+        }
+    }
+
+    public func updateDictationHotkey(_ hotkey: HotkeyCombo) {
+        settingsStore.settings.dictationHotkey = hotkey
+        hotkeyManager?.updateHotkey(hotkey)
+    }
+
+    private func observeDictationPartials() {
+        Task { [weak self] in
+            guard let self else { return }
+            // Poll the dictation manager's partial transcript (lightweight since it's @Published)
+            while self.isDictating {
+                self.partialTranscript = self.dictationManager.partialTranscript
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
     }
 
     public func simulateMeeting() {

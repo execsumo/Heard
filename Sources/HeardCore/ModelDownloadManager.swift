@@ -46,12 +46,27 @@ public final class ModelDownloadManager: ObservableObject {
         if fm.fileExists(atPath: diarDir.path) {
             catalog.markReady(.diarization)
         }
+
+        // Streaming EOU: FluidAudio stores in ~/Library/Application Support/FluidAudio/Models/parakeet-eou-streaming/160ms/
+        let eouDir = fluidModelsDir
+            .appendingPathComponent("parakeet-eou-streaming", isDirectory: true)
+            .appendingPathComponent("160ms", isDirectory: true)
+        let requiredEouFiles = ["streaming_encoder.mlmodelc", "decoder.mlmodelc", "joint_decision.mlmodelc", "vocab.json"]
+        if requiredEouFiles.allSatisfy({ fm.fileExists(atPath: eouDir.appendingPathComponent($0).path) }) {
+            catalog.markReady(.streamingEou)
+        }
     }
 
-    public var allModelsReady: Bool {
+    /// All batch (meeting transcription) models are ready.
+    public var allBatchModelsReady: Bool {
         let statuses = catalog.statuses
-        return statuses.filter { $0.modelKind != .streamingPlaceholder }
+        return statuses.filter { $0.modelKind != .streamingEou }
             .allSatisfy { $0.availability == .ready }
+    }
+
+    /// The streaming EOU model is ready for dictation.
+    public var streamingModelReady: Bool {
+        catalog.statuses.first { $0.modelKind == .streamingEou }?.availability == .ready
     }
 
     /// Pre-download all models via FluidAudio's built-in download system.
@@ -94,8 +109,16 @@ public final class ModelDownloadManager: ObservableObject {
                     try await diarizer.prepareModels()
                     catalog.markReady(.diarization)
 
-                case .streamingPlaceholder:
-                    break
+                case .streamingEou:
+                    // Download to FluidAudio's shared Models dir; downloadRepo appends repo.folderName
+                    let fluidModelsDir = AsrModels.defaultCacheDirectory(for: .v2)
+                        .deletingLastPathComponent()  // FluidAudio/Models/
+                    try await DownloadUtils.downloadRepo(.parakeetEou160, to: fluidModelsDir) { [weak self] progress in
+                        Task { @MainActor [weak self] in
+                            self?.downloadProgress[.streamingEou] = progress.fractionCompleted
+                        }
+                    }
+                    catalog.markReady(.streamingEou)
                 }
                 downloadProgress[kind] = 1.0
             } catch {

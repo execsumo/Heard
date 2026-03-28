@@ -164,6 +164,8 @@ public struct AppSettings: Codable, Equatable {
     public var outputDirectory: String
     public var customVocabulary: [String]
     public var developerMode: Bool
+    public var dictationEnabled: Bool
+    public var dictationHotkey: HotkeyCombo
 
     public static let `default` = AppSettings(
         userName: "",
@@ -171,7 +173,9 @@ public struct AppSettings: Codable, Equatable {
         autoWatch: true,
         outputDirectory: FileManager.default.heardOutputDirectory.path,
         customVocabulary: [],
-        developerMode: false
+        developerMode: false,
+        dictationEnabled: false,
+        dictationHotkey: .default
     )
 
     public init(
@@ -180,7 +184,9 @@ public struct AppSettings: Codable, Equatable {
         autoWatch: Bool,
         outputDirectory: String,
         customVocabulary: [String],
-        developerMode: Bool = false
+        developerMode: Bool = false,
+        dictationEnabled: Bool = false,
+        dictationHotkey: HotkeyCombo = .default
     ) {
         self.userName = userName
         self.launchAtLogin = launchAtLogin
@@ -188,6 +194,8 @@ public struct AppSettings: Codable, Equatable {
         self.outputDirectory = outputDirectory
         self.customVocabulary = customVocabulary
         self.developerMode = developerMode
+        self.dictationEnabled = dictationEnabled
+        self.dictationHotkey = dictationHotkey
     }
 }
 
@@ -195,7 +203,7 @@ public enum ModelKind: String, CaseIterable, Identifiable {
     case batchParakeet
     case batchVad
     case diarization
-    case streamingPlaceholder
+    case streamingEou
 
     public var id: String { rawValue }
 
@@ -204,7 +212,7 @@ public enum ModelKind: String, CaseIterable, Identifiable {
         case .batchParakeet: return "Parakeet TDT V2"
         case .batchVad: return "Silero VAD v6"
         case .diarization: return "LS-EEND + WeSpeaker"
-        case .streamingPlaceholder: return "Streaming Dictation Models"
+        case .streamingEou: return "Parakeet EOU Streaming"
         }
     }
 }
@@ -261,6 +269,7 @@ public struct TranscriptDocument {
 
 public enum SettingsTab: String, CaseIterable, Identifiable {
     case general
+    case dictation
     case speakers
     case models
     case about
@@ -270,6 +279,7 @@ public enum SettingsTab: String, CaseIterable, Identifiable {
     public var label: String {
         switch self {
         case .general: return "General"
+        case .dictation: return "Dictation"
         case .models: return "Models"
         case .speakers: return "Speakers"
         case .about: return "About"
@@ -279,6 +289,7 @@ public enum SettingsTab: String, CaseIterable, Identifiable {
     public var icon: String {
         switch self {
         case .general: return "gearshape"
+        case .dictation: return "mic.badge.plus"
         case .models: return "cpu"
         case .speakers: return "person.3"
         case .about: return "info.circle"

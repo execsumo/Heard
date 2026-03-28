@@ -115,13 +115,22 @@ public final class SettingsStore: ObservableObject {
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let base = AppSettings.default
+
+        var hotkey = base.dictationHotkey
+        if let hotkeyData = defaults.data(forKey: "dictationHotkey"),
+           let decoded = try? JSONDecoder().decode(HotkeyCombo.self, from: hotkeyData) {
+            hotkey = decoded
+        }
+
         settings = AppSettings(
             userName: defaults.string(forKey: "userName") ?? base.userName,
             launchAtLogin: defaults.object(forKey: "launchAtLogin") as? Bool ?? base.launchAtLogin,
             autoWatch: defaults.object(forKey: "autoWatch") as? Bool ?? base.autoWatch,
             outputDirectory: defaults.string(forKey: "outputDirectory") ?? base.outputDirectory,
             customVocabulary: defaults.stringArray(forKey: "customVocabulary") ?? base.customVocabulary,
-            developerMode: defaults.object(forKey: "developerMode") as? Bool ?? base.developerMode
+            developerMode: defaults.object(forKey: "developerMode") as? Bool ?? base.developerMode,
+            dictationEnabled: defaults.object(forKey: "dictationEnabled") as? Bool ?? base.dictationEnabled,
+            dictationHotkey: hotkey
         )
     }
 
@@ -132,6 +141,10 @@ public final class SettingsStore: ObservableObject {
         defaults.set(settings.outputDirectory, forKey: "outputDirectory")
         defaults.set(settings.customVocabulary, forKey: "customVocabulary")
         defaults.set(settings.developerMode, forKey: "developerMode")
+        defaults.set(settings.dictationEnabled, forKey: "dictationEnabled")
+        if let hotkeyData = try? JSONEncoder().encode(settings.dictationHotkey) {
+            defaults.set(hotkeyData, forKey: "dictationHotkey")
+        }
     }
 }
 

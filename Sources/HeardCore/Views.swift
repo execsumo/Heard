@@ -46,6 +46,31 @@ public struct MenuBarView: View {
                 // Watching toggle — indicator + button in one
                 watchingButton
 
+                // Dictation status / toggle
+                if model.settingsStore.settings.dictationEnabled {
+                    if model.isDictating {
+                        MenuBarStatusRow(icon: "mic.fill", tint: .red) {
+                            Text("Dictating")
+                                .foregroundStyle(.red)
+                            if !model.partialTranscript.isEmpty {
+                                Text("·")
+                                    .foregroundStyle(.tertiary)
+                                Text(String(model.partialTranscript.suffix(40)))
+                                    .lineLimit(1)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    } else {
+                        MenuBarButton(
+                            title: "Dictation",
+                            icon: "mic.badge.plus",
+                            tint: .secondary
+                        ) {
+                            model.toggleDictation()
+                        }
+                    }
+                }
+
                 if model.settingsStore.settings.developerMode {
                     if model.recordingManager.activeSession == nil {
                         MenuBarButton(title: "Simulate Meeting", icon: "bolt.circle", tint: .purple) {
@@ -296,8 +321,12 @@ public struct PulsingDot: View {
 
 public struct SettingsView: View {
     @ObservedObject public var model: AppModel
+    @ObservedObject private var permissionCenter: PermissionCenter
 
-    public init(model: AppModel) { self.model = model }
+    public init(model: AppModel) {
+        self.model = model
+        self.permissionCenter = model.permissionCenter
+    }
 
     public var body: some View {
         HStack(spacing: 0) {
@@ -324,6 +353,7 @@ public struct SettingsView: View {
             Group {
                 switch model.selectedSettingsTab {
                 case .general: generalSection
+                case .dictation: dictationSection
                 case .models: modelsSection
                 case .speakers: speakersSection
                 case .about: aboutSection
@@ -435,7 +465,130 @@ public struct SettingsView: View {
         }
     }
 
-    // MARK: Models Section (absorbs Transcription + Dictation)
+    // MARK: Dictation Section
+
+    private var dictationSection: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                // Enable / Disable
+                SectionCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        SettingsSectionHeader(title: "Dictation", icon: "mic.badge.plus")
+
+                        Toggle(isOn: Binding(
+                            get: { model.settingsStore.settings.dictationEnabled },
+                            set: { model.setDictationEnabled($0) }
+                        )) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Enable Dictation")
+                                    .font(.callout.weight(.medium))
+                                Text("Press the hotkey to start/stop dictating into any text field.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
+                // Hotkey
+                SectionCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        SettingsSectionHeader(title: "Hotkey", icon: "command")
+
+                        HStack {
+                            Text("Toggle dictation:")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+
+                            Text(model.settingsStore.settings.dictationHotkey.displayString)
+                                .font(.system(.callout, design: .monospaced).weight(.medium))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+
+                            Spacer()
+
+                            Button("Record Shortcut") {
+                                isRecordingHotkey = true
+                            }
+                            .disabled(!model.settingsStore.settings.dictationEnabled)
+                        }
+
+                        if !permissionCenter.isAccessibilityGranted {
+                            HStack(spacing: 6) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Accessibility permission is required for text injection into other apps.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Button("Grant Accessibility Access...") {
+                                        TextInjector.ensureAccessibility()
+                                    }
+                                    .font(.caption)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Streaming Model
+                SectionCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        SettingsSectionHeader(title: "Streaming Model", icon: "cpu")
+
+                        if let status = model.modelCatalog.statuses.first(where: { $0.modelKind == .streamingEou }) {
+                            ModelStatusCard(item: status, downloadManager: model.downloadManager)
+                        }
+
+                        Text("The streaming model enables real-time transcription for dictation. Download it before first use to avoid delays.")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+
+                // Status
+                if model.isDictating {
+                    SectionCard {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                Circle()
+                                    .fill(.red)
+                                    .frame(width: 8, height: 8)
+                                Text("Dictating...")
+                                    .font(.callout.weight(.medium))
+                            }
+
+                            if !model.partialTranscript.isEmpty {
+                                Text(model.partialTranscript)
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                }
+
+                if let error = model.dictationError {
+                    SectionCard {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.circle.fill")
+                                .foregroundStyle(.red)
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .padding(20)
+        }
+    }
+
+    @State private var isRecordingHotkey = false
+
+    // MARK: Models Section
 
     private var modelsSection: some View {
         ScrollView {
@@ -449,7 +602,7 @@ public struct SettingsView: View {
                             ModelStatusCard(item: item, downloadManager: model.downloadManager)
                         }
 
-                        if !model.downloadManager.allModelsReady {
+                        if !model.downloadManager.allBatchModelsReady {
                             Button {
                                 model.downloadManager.downloadAllModels()
                             } label: {
@@ -468,31 +621,6 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Dictation placeholder
-                SectionCard {
-                    HStack(spacing: 14) {
-                        Image(systemName: "mic.badge.plus")
-                            .font(.system(size: 24))
-                            .foregroundStyle(HeardTheme.accent.opacity(0.4))
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Live Dictation")
-                                .font(.callout.weight(.medium))
-                            Text("Coming in v2 — streaming transcription with mic publisher.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Spacer()
-
-                        Text("v2")
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(HeardTheme.accent.opacity(0.1), in: Capsule())
-                            .foregroundStyle(HeardTheme.accent)
-                    }
-                }
             }
             .padding(20)
         }
@@ -766,6 +894,15 @@ private struct ModelStatusCard: View {
             }
 
             Spacer()
+
+            if item.availability == .notDownloaded && downloadManager.downloadProgress[item.modelKind] == nil {
+                Button("Download") {
+                    downloadManager.download(item.modelKind)
+                }
+                .font(.caption)
+                .buttonStyle(.borderedProminent)
+                .tint(HeardTheme.accent)
+            }
         }
         .padding(10)
         .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))

@@ -501,8 +501,7 @@ enum RecordingError: LocalizedError {
 @MainActor
 public final class ModelCatalog: ObservableObject {
     @Published public private(set) var statuses: [ModelStatusItem] = ModelKind.allCases.map {
-        let detail = $0 == .streamingPlaceholder ? "Reserved for v2 dictation" : "Download required"
-        return ModelStatusItem(modelKind: $0, availability: .notDownloaded, detail: detail)
+        ModelStatusItem(modelKind: $0, availability: .notDownloaded, detail: "Download required")
     }
 
     public init() {}
@@ -527,8 +526,18 @@ public final class ModelCatalog: ObservableObject {
 public final class PermissionCenter: ObservableObject {
     @Published public private(set) var statuses: [PermissionStatus] = []
 
+    private var refreshTask: Task<Void, Never>?
+
     public init() {
         refresh()
+        // Periodically re-check permissions (catches grants made in System Settings)
+        refreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, !Task.isCancelled else { return }
+                self.refresh()
+            }
+        }
     }
 
     public func refresh() {
@@ -552,6 +561,10 @@ public final class PermissionCenter: ObservableObject {
                 state: accessibilityState()
             ),
         ]
+    }
+
+    public var isAccessibilityGranted: Bool {
+        AXIsProcessTrusted()
     }
 
     public func requestMicrophone() {
