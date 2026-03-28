@@ -169,13 +169,13 @@ public final class AppModel: ObservableObject {
     }
 
     public var menuBarIconName: String {
-        if isDictating { return "mic.fill" }
+        if isDictating { return "menu-bar-recording.gif" } // Defaulting dictating to recording
         switch phase {
-        case .dormant: return "mic"
-        case .recording: return "record.circle.fill"
-        case .processing: return "waveform.and.magnifyingglass"
-        case .error: return "exclamationmark.circle.fill"
-        case .userAction: return "person.crop.circle.badge.exclamationmark"
+        case .dormant: return "menu-bar-idle.gif"
+        case .recording: return "menu-bar-recording.gif"
+        case .processing: return "menu-bar-processing.gif"
+        case .error: return "menu-bar-idle.gif" // Missing error icon
+        case .userAction: return "menu-bar-idle.gif" // Missing user action icon
         }
     }
 

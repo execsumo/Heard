@@ -7,7 +7,7 @@ struct HeardApp: App {
     @StateObject private var appModel = AppModel.bootstrap()
 
     var body: some Scene {
-        MenuBarExtra("Heard", systemImage: appModel.menuBarIconName) {
+        MenuBarExtra("Heard", image: appModel.menuBarIconName) {
             MenuBarView(model: appModel)
         }
         .menuBarExtraStyle(.window)
