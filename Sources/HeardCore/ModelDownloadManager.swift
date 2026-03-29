@@ -47,11 +47,25 @@ public final class ModelDownloadManager: ObservableObject {
             catalog.markReady(.diarization)
         }
 
+        // CTC 110M: Used for custom vocabulary boosting
+        let ctcDir = CtcModels.defaultCacheDirectory(for: .ctc110m)
+        if CtcModels.modelsExist(at: ctcDir) {
+            catalog.markReady(.ctcVocabulary)
+        }
+
     }
 
-    /// All batch (meeting transcription) models are ready.
+    /// All batch (meeting transcription) models are ready (excludes optional CTC).
     public var allBatchModelsReady: Bool {
-        catalog.statuses.allSatisfy { $0.availability == .ready }
+        let requiredKinds: [ModelKind] = [.batchVad, .batchParakeet, .diarization]
+        return requiredKinds.allSatisfy { kind in
+            catalog.statuses.first(where: { $0.modelKind == kind })?.availability == .ready
+        }
+    }
+
+    /// CTC vocabulary model is ready.
+    public var ctcModelsReady: Bool {
+        catalog.statuses.first(where: { $0.modelKind == .ctcVocabulary })?.availability == .ready
     }
 
     /// Pre-download all models via FluidAudio's built-in download system.
@@ -59,6 +73,7 @@ public final class ModelDownloadManager: ObservableObject {
         download(.batchVad)
         download(.batchParakeet)
         download(.diarization)
+        download(.ctcVocabulary)
     }
 
     public func download(_ kind: ModelKind) {
@@ -93,6 +108,10 @@ public final class ModelDownloadManager: ObservableObject {
                     let diarizer = OfflineDiarizerManager()
                     try await diarizer.prepareModels()
                     catalog.markReady(.diarization)
+
+                case .ctcVocabulary:
+                    let _ = try await CtcModels.downloadAndLoad(variant: .ctc110m)
+                    catalog.markReady(.ctcVocabulary)
 
                 }
                 downloadProgress[kind] = 1.0

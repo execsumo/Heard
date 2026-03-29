@@ -106,7 +106,7 @@ public final class MeetingDetector {
         if result.detected {
             consecutiveDetections += 1
             if consecutiveDetections >= 2, activeSnapshot == nil {
-                let title = Self.extractTeamsWindowTitle() ?? ""
+                let title = Self.extractTeamsWindowTitle(pid: result.pid) ?? ""
                 let rosterNames = RosterReader.readRoster(teamsPID: result.pid)
                 let snapshot = MeetingSnapshot(
                     title: title,
@@ -173,20 +173,21 @@ public final class MeetingDetector {
         return (false, nil)
     }
 
-    /// Extract the meeting title from the Teams window via CGWindowListCopyWindowInfo.
-    /// Requires Screen Recording permission; returns nil if unavailable.
-    private static func extractTeamsWindowTitle() -> String? {
-        guard let windowList = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID
-        ) as? [[String: Any]] else {
-            return nil
-        }
+    /// Extract the meeting title from the Teams window via Accessibility API.
+    /// Requires Accessibility permission; returns nil if unavailable.
+    private static func extractTeamsWindowTitle(pid: pid_t?) -> String? {
+        guard AXIsProcessTrusted(), let pid else { return nil }
 
-        for window in windowList {
-            guard let ownerName = window[kCGWindowOwnerName as String] as? String,
-                  teamsProcessNames.contains(ownerName),
-                  let title = window[kCGWindowName as String] as? String,
+        let app = AXUIElementCreateApplication(pid)
+        var windowsRef: AnyObject?
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement]
+        else { return nil }
+
+        for window in windows {
+            var titleRef: AnyObject?
+            guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
+                  let title = titleRef as? String,
                   title.contains(" | Microsoft Teams")
             else { continue }
             let cleaned = title.replacingOccurrences(of: #"\s*\|\s*Microsoft Teams.*$"#, with: "", options: .regularExpression)
@@ -549,15 +550,9 @@ public final class PermissionCenter: ObservableObject {
                 state: microphoneState()
             ),
             PermissionStatus(
-                id: "screen",
-                title: "Screen Recording",
-                purpose: "Read Teams window title for meeting names.",
-                state: screenRecordingState()
-            ),
-            PermissionStatus(
                 id: "accessibility",
                 title: "Accessibility",
-                purpose: "Read Teams roster for automatic speaker naming.",
+                purpose: "Read Teams window titles and roster for meeting names and speaker naming. Required for dictation text injection.",
                 state: accessibilityState()
             ),
         ]
@@ -573,11 +568,6 @@ public final class PermissionCenter: ObservableObject {
         }
     }
 
-    public func openScreenRecordingSettings() {
-        CGRequestScreenCaptureAccess()
-        openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
-    }
-
     public func openAccessibilitySettings() {
         openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
     }
@@ -588,10 +578,6 @@ public final class PermissionCenter: ObservableObject {
         case .notDetermined: return .recommended
         default: return .unknown
         }
-    }
-
-    private func screenRecordingState() -> PermissionState {
-        CGPreflightScreenCaptureAccess() ? .granted : .recommended
     }
 
     private func accessibilityState() -> PermissionState {
@@ -925,11 +911,27 @@ public final class PipelineProcessor: ObservableObject {
         let asrManager = AsrManager()
         try await asrManager.initialize(models: models)
 
-        // Configure custom vocabulary if set
+        // Configure custom vocabulary boosting if terms are set and CTC models available
         let vocab = settingsStore.settings.customVocabulary
         if !vocab.isEmpty {
-            // Custom vocabulary requires CTC models — skip if not available
-            // Min 3 chars, max 50 terms (enforced in UI)
+            do {
+                let ctcModels = try await CtcModels.downloadAndLoad(variant: .ctc110m)
+                let ctcTokenizer = try await CtcTokenizer.load(
+                    from: CtcModels.defaultCacheDirectory(for: .ctc110m)
+                )
+                let terms = vocab.map { term in
+                    let tokenIds = ctcTokenizer.encode(term)
+                    return CustomVocabularyTerm(text: term, weight: 10.0, ctcTokenIds: tokenIds.isEmpty ? nil : tokenIds)
+                }
+                let context = CustomVocabularyContext(terms: terms)
+                try await asrManager.configureVocabularyBoosting(
+                    vocabulary: context,
+                    ctcModels: ctcModels
+                )
+                NSLog("Heard: Vocabulary boosting configured with \(vocab.count) terms")
+            } catch {
+                NSLog("Heard: Vocabulary boosting unavailable, continuing without: \(error)")
+            }
         }
 
         // Minimum 16,000 samples (1 second at 16kHz) required by Parakeet

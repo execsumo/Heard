@@ -583,9 +583,20 @@ public struct SettingsView: View {
             }
             .padding(20)
         }
+        .sheet(isPresented: $isRecordingHotkey) {
+            HotkeyRecorderView(
+                onCommit: { saveHotkey($0) },
+                onCancel: { isRecordingHotkey = false }
+            )
+        }
     }
 
     @State private var isRecordingHotkey = false
+
+    private func saveHotkey(_ combo: HotkeyCombo) {
+        model.updateDictationHotkey(combo)
+        isRecordingHotkey = false
+    }
 
     // MARK: Models Section
 
@@ -974,7 +985,6 @@ private struct PermissionCard: View {
                     Button("Grant…") {
                         switch permission.id {
                         case "microphone": model.permissionCenter.requestMicrophone()
-                        case "screen": model.permissionCenter.openScreenRecordingSettings()
                         case "accessibility": model.permissionCenter.openAccessibilitySettings()
                         default: break
                         }
@@ -993,7 +1003,6 @@ private struct PermissionCard: View {
     private var iconName: String {
         switch permission.id {
         case "microphone": return "mic.fill"
-        case "screen": return "rectangle.inset.filled.and.person.filled"
         case "accessibility": return "figure.stand"
         default: return "lock.fill"
         }
@@ -1021,6 +1030,102 @@ private struct AboutBadge: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .background(Color.primary.opacity(0.04), in: Capsule())
+    }
+}
+
+// MARK: - Hotkey Recorder
+
+/// Modal sheet that listens for a single keypress and saves it as the new hotkey.
+private struct HotkeyRecorderView: View {
+    let onCommit: (HotkeyCombo) -> Void
+    let onCancel: () -> Void
+
+    @State private var captured: HotkeyCombo? = nil
+    @State private var monitorToken: Any? = nil
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "keyboard")
+                .font(.system(size: 36))
+                .foregroundStyle(HeardTheme.accent)
+
+            Text("Record Shortcut")
+                .font(.title2.weight(.semibold))
+
+            Text("Press the key combination you want to use for dictation.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 280)
+
+            // Preview of captured key
+            Group {
+                if let combo = captured {
+                    Text(combo.displayString)
+                        .font(.system(.title3, design: .monospaced).weight(.semibold))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(HeardTheme.accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+                        .foregroundStyle(HeardTheme.accent)
+                } else {
+                    Text("Waiting for input…")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                        .padding(.vertical, 8)
+                }
+            }
+            .frame(height: 44)
+
+            HStack(spacing: 12) {
+                Button("Cancel") {
+                    stopMonitoring()
+                    onCancel()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button("Save") {
+                    stopMonitoring()
+                    if let combo = captured { onCommit(combo) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(captured == nil)
+                .buttonStyle(.borderedProminent)
+                .tint(HeardTheme.accent)
+            }
+        }
+        .padding(28)
+        .frame(width: 360)
+        .onAppear { startMonitoring() }
+        .onDisappear { stopMonitoring() }
+    }
+
+    private func startMonitoring() {
+        monitorToken = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Ignore lone modifier keypresses (keyCode 54–63 range, etc.)
+            guard !isModifierOnlyKeyCode(event.keyCode) else { return event }
+
+            let combo = HotkeyCombo(
+                keyCode: event.keyCode,
+                modifiers: event.modifierFlags.intersection([.command, .option, .control, .shift])
+            )
+            captured = combo
+            // Swallow the event so it doesn't type into anything
+            return nil
+        }
+    }
+
+    private func stopMonitoring() {
+        if let token = monitorToken {
+            NSEvent.removeMonitor(token)
+            monitorToken = nil
+        }
+    }
+
+    /// Returns true for key codes that represent modifier keys by themselves.
+    private func isModifierOnlyKeyCode(_ code: UInt16) -> Bool {
+        // Shift, Control, Option, Command, Fn, Caps Lock virtual key codes
+        let modifierCodes: Set<UInt16> = [54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
+        return modifierCodes.contains(code)
     }
 }
 

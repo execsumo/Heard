@@ -29,6 +29,12 @@ public final class DictationManager: ObservableObject {
     /// Called when new transcribed text is ready for injection.
     public var onUtterance: ((String) -> Void)?
 
+    /// Custom vocabulary terms to boost during transcription. Set before calling start().
+    public var customVocabulary: [String] = []
+
+    /// Vocabulary that was last configured on the ASR manager, to detect changes.
+    private var configuredVocabulary: [String] = []
+
     /// How long to keep the model loaded after dictation stops (seconds).
     private let modelKeepAliveSeconds: TimeInterval = 120
 
@@ -68,6 +74,35 @@ public final class DictationManager: ObservableObject {
             let manager = AsrManager(config: ASRConfig.default)
             try await manager.initialize(models: asrModels!)
             asrManager = manager
+            configuredVocabulary = []
+        }
+
+        // (Re)configure vocabulary boosting if terms changed since last start
+        if customVocabulary != configuredVocabulary, let manager = asrManager {
+            if customVocabulary.isEmpty {
+                await manager.disableVocabularyBoosting()
+                configuredVocabulary = []
+            } else {
+                do {
+                    let ctcModels = try await CtcModels.downloadAndLoad(variant: .ctc110m)
+                    let ctcTokenizer = try await CtcTokenizer.load(
+                        from: CtcModels.defaultCacheDirectory(for: .ctc110m)
+                    )
+                    let terms = customVocabulary.map { term in
+                        let tokenIds = ctcTokenizer.encode(term)
+                        return CustomVocabularyTerm(text: term, weight: 10.0, ctcTokenIds: tokenIds.isEmpty ? nil : tokenIds)
+                    }
+                    let context = CustomVocabularyContext(terms: terms)
+                    try await manager.configureVocabularyBoosting(
+                        vocabulary: context,
+                        ctcModels: ctcModels
+                    )
+                    configuredVocabulary = customVocabulary
+                    NSLog("Heard: Vocab boosting configured with \(terms.count) terms")
+                } catch {
+                    NSLog("Heard: Vocab boosting failed: \(error)")
+                }
+            }
         }
 
         // Reset state
@@ -139,6 +174,7 @@ public final class DictationManager: ObservableObject {
         do {
             let result = try await manager.transcribe(samples)
             let trimmed = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+
             guard !trimmed.isEmpty else { return }
 
             let words = trimmed.split(separator: " ").map(String.init)
@@ -174,7 +210,8 @@ public final class DictationManager: ObservableObject {
         if stableCount > committedWords.count {
             let newWords = Array(words[committedWords.count..<stableCount])
             let space = committedWords.isEmpty ? "" : " "
-            onUtterance?(space + newWords.joined(separator: " "))
+            let text = space + newWords.joined(separator: " ")
+            onUtterance?(text)
             committedWords.append(contentsOf: newWords)
         }
     }
@@ -186,7 +223,8 @@ public final class DictationManager: ObservableObject {
         if words.count > committedWords.count {
             let newWords = Array(words[committedWords.count...])
             let space = committedWords.isEmpty ? "" : " "
-            onUtterance?(space + newWords.joined(separator: " "))
+            let text = space + newWords.joined(separator: " ")
+            onUtterance?(text)
             committedWords.append(contentsOf: newWords)
         }
     }

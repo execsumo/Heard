@@ -215,6 +215,7 @@ public final class AppModel: ObservableObject {
                 dictationError = nil
             } else {
                 do {
+                    dictationManager.customVocabulary = settingsStore.settings.customVocabulary
                     try await dictationManager.start()
                     isDictating = true
                     dictationError = nil

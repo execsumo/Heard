@@ -10,7 +10,7 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 14
 
 ### Meeting Detection
 - Polls `IOPMCopyAssertionsByProcess()` every 3 seconds for Teams power assertions
-- Extracts meeting title from Teams window via `CGWindowListCopyWindowInfo`
+- Extracts meeting title from Teams window via Accessibility API (`AXUIElement`)
 - Debounce: requires 2 consecutive detections before triggering
 - Cooldown: 5-second delay after meeting end before re-detection
 - Simulation mode available for testing without a real Teams call (with `isSimulated` flag to prevent polling interference)
@@ -34,8 +34,17 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 14
 - Pipeline fires `onPipelineIdle` callback so app phase returns to dormant
 - Markdown transcript output with timestamped speaker-labeled segments
 
+### Custom Vocabulary Boosting (Fully Working)
+- Uses FluidAudio's CTC-based vocabulary boosting (Parakeet TDT V2 + Parakeet CTC 110M dual-encoder)
+- Applied to both **pipeline transcription** (`Services.swift` `runTranscription()`) and **dictation** (`DictationManager.swift`)
+- User-defined terms from Settings → Transcription are converted to `CustomVocabularyTerm` and passed via `AsrManager.configureVocabularyBoosting()`
+- CTC models auto-download on first use via `CtcModels.downloadAndLoad(variant: .ctc110m)`
+- Graceful fallback: if CTC models fail to load, transcription proceeds without boosting
+- Dictation tracks vocabulary changes across sessions — reconfigures boosting if terms changed since last start
+- Memory: ~130 MB with boosting (vs ~66 MB TDT-only); Performance: ~63x RTFx (still well above real-time)
+
 ### Model Management
-- `ModelDownloadManager` pre-downloads all 3 batch model sets (VAD, Parakeet, Diarizer) via FluidAudio
+- `ModelDownloadManager` pre-downloads all 4 model sets (VAD, Parakeet, Diarizer, CTC 110M) via FluidAudio
 - Streaming EOU model (160ms) also downloadable from Dictation settings tab
 - Status detection checks FluidAudio's actual cache paths (`~/Library/Application Support/FluidAudio/Models/`)
 - Progress tracking per model during download
@@ -57,19 +66,19 @@ The dictation feature captures mic audio, transcribes in real-time, and injects 
 
 ### UI
 - Menu bar dropdown with status dot (pulsing red during recording), recording timer, job list with dismiss buttons
-- Settings window (opened via `@Environment(\.openWindow)`) with 6 tabs: General, Transcription, Dictation, Speakers, Permissions, About
+- Settings window (opened via `@Environment(\.openWindow)`) with 6 tabs: General, Transcription, Dictation, Speakers, Permissions (Microphone + Accessibility), About
 - Keyboard input works in Settings (activation policy switching)
 - Output folder picker via `NSOpenPanel`
-- Custom vocabulary management (add/remove terms, 3-char min, 50-term cap, immediate UI update on delete)
+- Custom vocabulary management (add/remove terms, 3-char min, 50-term cap, immediate UI update on delete) — terms applied to both transcription and dictation via CTC boosting
 - Speaker table with inline rename, merge, delete (context menu), search, and sort (Name / Last Seen / Meeting Count)
 - Model download status with progress bars and per-card download buttons
-- Permission status with grant buttons and System Settings deep-links
+- Permission status with grant buttons and System Settings deep-links (Microphone + Accessibility only — no Screen Recording required)
 - Launch at login via `SMAppService`
 - Quit button in menu bar dropdown
 
 ### Accessibility Roster Scraping
 - `RosterReader.swift` reads Teams participant names via macOS Accessibility APIs (`AXUIElement`)
-- Three fallback strategies: identifier-based search → container search → window title parsing
+- Three fallback strategies: identifier-based search → container search → window title parsing (all via AX API)
 - Filters out UI control strings (mute, unmute, raise hand, etc.)
 - Polled every 15 seconds during active meetings to accumulate participant names
 - Used for automatic speaker name assignment when diarization detects unmatched speakers
@@ -119,37 +128,7 @@ The dictation feature captures mic audio, transcribes in real-time, and injects 
 
 ## Next Steps
 
-### 1. Wire Up Custom Vocabulary Boosting
-
-Custom vocabulary is stored in `AppSettings.customVocabulary` and surfaced in Settings → Transcription, but is currently a no-op — neither the pipeline nor dictation passes it to the ASR model.
-
-FluidAudio supports CTC-based vocabulary boosting for batch `AsrManager` via a dual-encoder approach (TDT for transcription + Parakeet 110M CTC for keyword spotting). It is **batch-mode only** — works for both meeting transcription and dictation (both already use batch `AsrManager`). Not available for streaming ASR.
-
-**API** (from https://docs.fluidinference.com/asr/custom-vocabulary):
-
-```swift
-let ctcModels = try await CtcModels.downloadAndLoad()
-let ctcSpotter = CtcKeywordSpotter(models: ctcModels)
-
-let vocabulary = CustomVocabularyContext(terms: [
-    CustomVocabularyTerm(text: "NVIDIA"),
-    CustomVocabularyTerm(text: "Hagen-Dazs", aliases: ["Haagen-Dazs", "Hagen-Das"]),
-])
-
-let result = try await asrManager.transcribe(audioSamples, customVocabulary: vocabulary)
-```
-
-**Where to wire it:**
-- `Services.swift` `runTranscription()` — already has a stub comment for this
-- `DictationManager.swift` `transcribeAccumulated()` — same `asrManager.transcribe()` call
-
-**Notes:**
-- Memory increases from ~66 MB (TDT only) to ~130 MB (TDT + CTC)
-- `CtcModels` needs to be downloaded separately — add a download card or auto-download alongside Parakeet models
-- Aliases allow spelling variations without polluting the vocabulary list
-- Performance: 63x RTFx (vs 156x TDT-only) — still well above real-time
-
-### 2. Improve Dictation UX
+### 1. Improve Dictation UX
 
 - Consider adding a "Record Shortcut" UI for custom hotkey binding (the button exists but the recording sheet may not be implemented)
 - Tune the polling interval (currently 0.6s) and minimum sample threshold (currently 1s) based on real-world usage
@@ -190,7 +169,7 @@ These approaches were tried and failed, documented here to prevent re-attempting
 
 ## Known Issues
 
-- **Custom vocabulary is a no-op**: `AppSettings.customVocabulary` is stored and displayed in Settings → Transcription but never passed to `AsrManager`. See Next Steps → Wire Up Custom Vocabulary Boosting.
+- ~~**Custom vocabulary is a no-op**~~: Resolved — custom vocabulary now uses CTC-based vocabulary boosting for both pipeline transcription and dictation.
 - **Accessibility permission for dictation**: Must build with `./scripts/bundle.sh --sign "Heard Dev"` (stable self-signed cert) so Accessibility grant persists across rebuilds. If permission stops working after a rebuild, reset with `tccutil reset Accessibility com.execsumo.heard` and re-grant.
 - Running via `swift run` in a terminal causes macOS to attribute microphone permission to the terminal app (e.g., Ghostty) rather than Heard. Use `./scripts/bundle.sh && open build/Heard.app` instead.
 - The `.window` style MenuBarExtra panel has a fixed max height; if many jobs accumulate, the bottom of the panel may clip.

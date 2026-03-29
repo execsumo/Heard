@@ -22,7 +22,10 @@ public enum TextInjector {
 
     /// Inject text into the currently focused app.
     public static func inject(_ text: String) {
-        guard AXIsProcessTrusted() else { return }
+        guard AXIsProcessTrusted() else {
+            NSLog("Heard: TextInjector cannot inject text — Accessibility not granted")
+            return
+        }
 
         // Get the frontmost app's PID
         guard let frontApp = NSWorkspace.shared.frontmostApplication else { return }

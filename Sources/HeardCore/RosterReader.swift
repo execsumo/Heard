@@ -126,13 +126,10 @@ public enum RosterReader {
         return nil
     }
 
-    // MARK: - Strategy 3: Parse Window Title
+    // MARK: - Strategy 3: Parse Window Title (via Accessibility API)
 
     private static func parseWindowTitle() -> [String] {
-        guard let windowList = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID
-        ) as? [[String: Any]] else { return [] }
+        guard AXIsProcessTrusted() else { return [] }
 
         let teamsNames: Set<String> = [
             "Microsoft Teams",
@@ -140,22 +137,38 @@ public enum RosterReader {
             "Microsoft Teams classic",
         ]
 
-        for window in windowList {
-            guard let ownerName = window[kCGWindowOwnerName as String] as? String,
-                  teamsNames.contains(ownerName),
-                  let title = window[kCGWindowName as String] as? String,
-                  title.contains(" | Microsoft Teams")
+        // Find Teams PIDs from running applications
+        let teamsPIDs = NSWorkspace.shared.runningApplications
+            .filter { app in
+                guard let name = app.localizedName else { return false }
+                return teamsNames.contains(name)
+            }
+            .map { $0.processIdentifier }
+
+        for pid in teamsPIDs {
+            let app = AXUIElementCreateApplication(pid)
+            var windowsRef: AnyObject?
+            guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+                  let windows = windowsRef as? [AXUIElement]
             else { continue }
 
-            // Pattern: "Name1, Name2, Name3 | Microsoft Teams"
-            let prefix = title.replacingOccurrences(of: #"\s*\|\s*Microsoft Teams.*$"#, with: "", options: .regularExpression)
-            guard prefix.contains(",") else { continue }
+            for window in windows {
+                var titleRef: AnyObject?
+                guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
+                      let title = titleRef as? String,
+                      title.contains(" | Microsoft Teams")
+                else { continue }
 
-            let names = prefix.components(separatedBy: ",")
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty && $0.count >= 2 }
+                // Pattern: "Name1, Name2, Name3 | Microsoft Teams"
+                let prefix = title.replacingOccurrences(of: #"\s*\|\s*Microsoft Teams.*$"#, with: "", options: .regularExpression)
+                guard prefix.contains(",") else { continue }
 
-            if names.count >= 2 { return names }
+                let names = prefix.components(separatedBy: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty && $0.count >= 2 }
+
+                if names.count >= 2 { return names }
+            }
         }
         return []
     }
