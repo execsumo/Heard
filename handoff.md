@@ -83,6 +83,20 @@ The dictation feature captures mic audio, transcribes in real-time, and injects 
 - Polled every 15 seconds during active meetings to accumulate participant names
 - Used for automatic speaker name assignment when diarization detects unmatched speakers
 
+### Speaker Naming Prompt (Fully Working)
+- Dedicated "Name Speakers" window opens automatically after a meeting when unmatched speakers are detected
+- Each unmatched speaker shows a **playable audio clip** (~10s of their clearest speech from diarization)
+- Audio playback via `AVAudioPlayer` with play/stop toggle per speaker
+- Suggested names from Teams roster when available (shown as orange hint text)
+- Text fields pre-populated with roster suggestions for quick confirmation
+- "Save All" commits all entered names, "Skip All" saves with generic labels
+- 120-second auto-dismiss countdown — saves unnamed speakers with "Speaker N" labels
+- Speaker profiles created with voice embeddings from diarization, enabling future recognition
+- Clip files saved to `recordings/` dir and cleaned up after naming
+- `AudioClipExtractor.swift` handles WAV segment extraction from original 48kHz recordings
+- Menu bar shows "Name Speakers..." button and orange badge icon during `.userAction` phase
+- Window also accessible from menu bar dropdown if dismissed
+
 ### App Bundle
 - `Info.plist` with `LSUIElement` (menu bar app), `NSMicrophoneUsageDescription`, bundle ID `com.execsumo.heard`
 - `Heard.entitlements` with audio-input only (no sandbox per spec)
@@ -118,6 +132,7 @@ The dictation feature captures mic audio, transcribes in real-time, and injects 
 | `Sources/HeardCore/Views.swift` | MenuBarView, SettingsView, all tabs and components |
 | `Sources/HeardCore/AudioProcessing.swift` | AudioPreprocessor, VadSegmentMap, PreprocessedTrack |
 | `Sources/HeardCore/SpeakerAssignment.swift` | SpeakerMatcher, SegmentMerger, cosineDistance |
+| `Sources/HeardCore/AudioClipExtractor.swift` | Extract speaker audio clips from WAV for naming prompt |
 | `Sources/HeardCore/ModelDownloadManager.swift` | Pre-download manager for FluidAudio models |
 | `Sources/HeardCore/DictationManager.swift` | Real-time dictation engine (batch ASR + polling loop) |
 | `Sources/HeardCore/TextInjector.swift` | Text injection via CGEvent unicode insertion |

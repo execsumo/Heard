@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 // MARK: - Theme
@@ -85,8 +86,7 @@ public struct MenuBarView: View {
 
                 if !model.namingCandidates.isEmpty {
                     MenuBarButton(title: "Name Speakers…", icon: "person.badge.plus", tint: .yellow) {
-                        model.selectedSettingsTab = .speakers
-                        openWindow(id: "settings")
+                        openWindow(id: "speaker-naming")
                         NSApp.activate(ignoringOtherApps: true)
                     }
                 }
@@ -108,6 +108,12 @@ public struct MenuBarView: View {
             .padding(.bottom, 4)
         }
         .frame(width: 220)
+        .onChange(of: model.showNamingPrompt) { _, show in
+            if show {
+                openWindow(id: "speaker-naming")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
     }
 
     // MARK: Watching Button (indicator + toggle in one)
@@ -1183,6 +1189,234 @@ struct NamingCandidateRow: View {
     private func save() {
         guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         onSave(draft)
+    }
+}
+
+// MARK: - Speaker Naming Prompt Window
+
+/// Dedicated window for naming unmatched speakers after a meeting.
+/// Shows audio clips for each speaker so the user can identify who's who.
+public struct SpeakerNamingView: View {
+    @ObservedObject var model: AppModel
+    @State private var drafts: [UUID: String] = [:]
+    @State private var playingID: UUID?
+    @State private var audioPlayer: AVAudioPlayer?
+    @State private var countdownSeconds = 120
+    @State private var countdownTask: Task<Void, Never>?
+
+    public init(model: AppModel) {
+        self.model = model
+    }
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            VStack(spacing: 8) {
+                Image(systemName: "person.badge.plus")
+                    .font(.system(size: 32))
+                    .foregroundStyle(HeardTheme.accent)
+
+                Text("New Speakers Detected")
+                    .font(.title2.weight(.semibold))
+
+                Text("Listen to each voice clip and enter their name. Unnamed speakers will be saved with generic labels.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 400)
+
+                Text("Auto-saving in \(countdownSeconds)s")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
+            .padding(.top, 24)
+            .padding(.bottom, 16)
+
+            Divider()
+
+            // Speaker list
+            ScrollView {
+                VStack(spacing: 12) {
+                    ForEach(model.namingCandidates) { candidate in
+                        speakerRow(candidate)
+                    }
+                }
+                .padding(20)
+            }
+
+            Divider()
+
+            // Footer buttons
+            HStack {
+                Button("Skip All") {
+                    stopAudio()
+                    model.skipNaming()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button("Save All") {
+                    stopAudio()
+                    saveAll()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .tint(HeardTheme.accent)
+            }
+            .padding(20)
+        }
+        .frame(width: 520)
+        .onAppear { startCountdown() }
+        .onDisappear {
+            stopAudio()
+            countdownTask?.cancel()
+        }
+        .onChange(of: model.namingCandidates) { _, candidates in
+            if candidates.isEmpty {
+                stopAudio()
+                countdownTask?.cancel()
+            }
+        }
+    }
+
+    private func speakerRow(_ candidate: NamingCandidate) -> some View {
+        HStack(spacing: 12) {
+            // Play button
+            Button(action: { togglePlayback(candidate) }) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(playButtonColor(candidate).opacity(0.12))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: playingID == candidate.id ? "stop.fill" : "play.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(playButtonColor(candidate))
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(candidate.audioClipURL == nil)
+            .help(candidate.audioClipURL == nil ? "No audio clip available" : "Play voice sample")
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(candidate.temporaryName)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.secondary)
+
+                    if let suggested = candidate.suggestedName {
+                        Text("(maybe \(suggested)?)")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                TextField(
+                    candidate.suggestedName ?? "Enter speaker name",
+                    text: binding(for: candidate)
+                )
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { saveSingle(candidate) }
+            }
+
+            Button("Save") { saveSingle(candidate) }
+                .buttonStyle(.borderedProminent)
+                .tint(HeardTheme.accent)
+                .controlSize(.small)
+                .disabled(draftText(for: candidate).isEmpty)
+        }
+        .padding(12)
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: HeardTheme.cornerRadius))
+    }
+
+    // MARK: - Audio Playback
+
+    private func togglePlayback(_ candidate: NamingCandidate) {
+        if playingID == candidate.id {
+            stopAudio()
+            return
+        }
+
+        stopAudio()
+
+        guard let url = candidate.audioClipURL else { return }
+        do {
+            let player = try AVAudioPlayer(contentsOf: url)
+            player.play()
+            audioPlayer = player
+            playingID = candidate.id
+
+            // Auto-stop when done
+            Task {
+                try? await Task.sleep(for: .seconds(player.duration + 0.1))
+                if playingID == candidate.id {
+                    playingID = nil
+                }
+            }
+        } catch {
+            NSLog("Heard: Failed to play audio clip: \(error)")
+        }
+    }
+
+    private func stopAudio() {
+        audioPlayer?.stop()
+        audioPlayer = nil
+        playingID = nil
+    }
+
+    private func playButtonColor(_ candidate: NamingCandidate) -> Color {
+        if candidate.audioClipURL == nil { return .secondary }
+        return playingID == candidate.id ? .red : HeardTheme.accent
+    }
+
+    // MARK: - Draft Management
+
+    private func binding(for candidate: NamingCandidate) -> Binding<String> {
+        Binding(
+            get: {
+                drafts[candidate.id] ?? candidate.suggestedName ?? ""
+            },
+            set: { drafts[candidate.id] = $0 }
+        )
+    }
+
+    private func draftText(for candidate: NamingCandidate) -> String {
+        let text = drafts[candidate.id] ?? candidate.suggestedName ?? ""
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func saveSingle(_ candidate: NamingCandidate) {
+        let name = draftText(for: candidate)
+        guard !name.isEmpty else { return }
+        model.saveSpeakerName(candidate: candidate, name: name)
+        drafts.removeValue(forKey: candidate.id)
+    }
+
+    private func saveAll() {
+        for candidate in model.namingCandidates {
+            let name = draftText(for: candidate)
+            if !name.isEmpty {
+                model.saveSpeakerName(candidate: candidate, name: name)
+            }
+        }
+        // Skip any remaining without names
+        if !model.namingCandidates.isEmpty {
+            model.skipNaming()
+        }
+    }
+
+    // MARK: - Countdown
+
+    private func startCountdown() {
+        countdownSeconds = 120
+        countdownTask?.cancel()
+        countdownTask = Task {
+            while !Task.isCancelled && countdownSeconds > 0 {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                countdownSeconds -= 1
+            }
+        }
     }
 }
 

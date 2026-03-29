@@ -103,11 +103,21 @@ public struct NamingCandidate: Identifiable, Equatable {
     public let id: UUID
     public var temporaryName: String
     public var suggestedName: String?
+    public var audioClipURL: URL?
+    public var embedding: [Float]
 
-    public init(id: UUID, temporaryName: String, suggestedName: String? = nil) {
+    public init(
+        id: UUID,
+        temporaryName: String,
+        suggestedName: String? = nil,
+        audioClipURL: URL? = nil,
+        embedding: [Float] = []
+    ) {
         self.id = id
         self.temporaryName = temporaryName
         self.suggestedName = suggestedName
+        self.audioClipURL = audioClipURL
+        self.embedding = embedding
     }
 }
 
@@ -261,13 +271,31 @@ public struct TranscriptDocument {
     public var endTime: Date
     public var participants: [String]
     public var segments: [TranscriptSegment]
+    /// Unmatched speakers from diarization (speakerID, temporary name, embedding).
+    public var unmatchedSpeakers: [(speakerID: String, temporaryName: String, embedding: [Float])]
+    /// Diarization segments with original-time timestamps for clip extraction.
+    public var diarizationSegments: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)]
+    /// Roster names not matched to known speakers (potential suggested names).
+    public var unmatchedRosterNames: [String]
 
-    public init(title: String, startTime: Date, endTime: Date, participants: [String], segments: [TranscriptSegment]) {
+    public init(
+        title: String,
+        startTime: Date,
+        endTime: Date,
+        participants: [String],
+        segments: [TranscriptSegment],
+        unmatchedSpeakers: [(speakerID: String, temporaryName: String, embedding: [Float])] = [],
+        diarizationSegments: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)] = [],
+        unmatchedRosterNames: [String] = []
+    ) {
         self.title = title
         self.startTime = startTime
         self.endTime = endTime
         self.participants = participants
         self.segments = segments
+        self.unmatchedSpeakers = unmatchedSpeakers
+        self.diarizationSegments = diarizationSegments
+        self.unmatchedRosterNames = unmatchedRosterNames
     }
 }
 

@@ -7,6 +7,8 @@ public final class AppModel: ObservableObject {
     @Published public var phase: AppPhase = .dormant
     @Published public var errorMessage: String?
     @Published public var namingCandidates: [NamingCandidate] = []
+    /// Set to true when naming prompt should be shown. Observed by the naming window scene.
+    @Published public var showNamingPrompt = false
     private var namingDismissTask: Task<Void, Never>?
     @Published public var selectedSettingsTab: SettingsTab = .general
     @Published public var speakerFilter = ""
@@ -122,6 +124,7 @@ public final class AppModel: ObservableObject {
             onNamingRequired: { [weak self] candidates in
                 self?.namingCandidates = candidates
                 self?.phase = .userAction
+                self?.showNamingPrompt = true
                 self?.startNamingAutoDismiss()
             },
             onPipelineIdle: { [weak self] in
@@ -388,18 +391,47 @@ public final class AppModel: ObservableObject {
             SpeakerProfile(
                 id: UUID(),
                 name: trimmed,
-                embeddings: [],
+                embeddings: candidate.embedding.isEmpty ? [] : [candidate.embedding],
                 firstSeen: Date(),
                 lastSeen: Date(),
                 meetingCount: 1
             )
         )
+        // Clean up the audio clip file
+        if let clipURL = candidate.audioClipURL {
+            try? FileManager.default.removeItem(at: clipURL)
+        }
         namingCandidates.removeAll { $0.id == candidate.id }
         if namingCandidates.isEmpty {
             namingDismissTask?.cancel()
             namingDismissTask = nil
+            showNamingPrompt = false
             phase = queueStore.activeJob == nil ? .dormant : .processing
         }
+    }
+
+    public func skipNaming() {
+        // Store remaining unnamed candidates with generic names (preserving embeddings)
+        for candidate in namingCandidates {
+            speakerStore.upsert(
+                SpeakerProfile(
+                    id: UUID(),
+                    name: candidate.temporaryName,
+                    embeddings: candidate.embedding.isEmpty ? [] : [candidate.embedding],
+                    firstSeen: Date(),
+                    lastSeen: Date(),
+                    meetingCount: 1
+                )
+            )
+            if let clipURL = candidate.audioClipURL {
+                try? FileManager.default.removeItem(at: clipURL)
+            }
+        }
+        namingCandidates.removeAll()
+        namingDismissTask?.cancel()
+        namingDismissTask = nil
+        showNamingPrompt = false
+        phase = queueStore.activeJob == nil ? .dormant : .processing
     }
 
     public func mergeSelectedSpeakers() {
@@ -417,21 +449,7 @@ public final class AppModel: ObservableObject {
             try? await Task.sleep(for: .seconds(120))
             guard let self, !Task.isCancelled else { return }
             guard !self.namingCandidates.isEmpty else { return }
-            // Store remaining unnamed candidates with generic names
-            for candidate in self.namingCandidates {
-                self.speakerStore.upsert(
-                    SpeakerProfile(
-                        id: UUID(),
-                        name: candidate.temporaryName,
-                        embeddings: [],
-                        firstSeen: Date(),
-                        lastSeen: Date(),
-                        meetingCount: 1
-                    )
-                )
-            }
-            self.namingCandidates.removeAll()
-            self.phase = self.queueStore.activeJob == nil ? .dormant : .processing
+            self.skipNaming()
         }
     }
 }

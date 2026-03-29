@@ -851,11 +851,29 @@ public final class PipelineProcessor: ObservableObject {
             job.error = nil
             queueStore.update(job)
 
-            let unmatched = transcript.participants.filter { $0.hasPrefix("Speaker ") }
-            if !unmatched.isEmpty {
-                onNamingRequired(unmatched.map {
-                    NamingCandidate(id: UUID(), temporaryName: $0, suggestedName: nil)
-                })
+            if !transcript.unmatchedSpeakers.isEmpty {
+                // Extract audio clips for each unmatched speaker
+                let recordingsDir = FileManager.default.heardAppSupportDirectory
+                    .appendingPathComponent("recordings", isDirectory: true)
+                let clips = AudioClipExtractor.extractSpeakerClips(
+                    unmatchedSpeakers: transcript.unmatchedSpeakers,
+                    diarizationSegments: transcript.diarizationSegments,
+                    sourceAudioURL: job.appAudioPath,
+                    outputDirectory: recordingsDir
+                )
+
+                // Build candidates with audio clips, embeddings, and suggested roster names
+                let rosterSuggestions = transcript.unmatchedRosterNames
+                let candidates = clips.enumerated().map { (index, clip) in
+                    NamingCandidate(
+                        id: UUID(),
+                        temporaryName: clip.temporaryName,
+                        suggestedName: index < rosterSuggestions.count ? rosterSuggestions[index] : nil,
+                        audioClipURL: clip.clipURL,
+                        embedding: clip.embedding
+                    )
+                }
+                onNamingRequired(candidates)
             }
         }
     }
@@ -1015,6 +1033,10 @@ public final class PipelineProcessor: ObservableObject {
         }
 
         // Apply diarization speaker labels
+        var unmatchedSpeakerInfo: [(speakerID: String, temporaryName: String, embedding: [Float])] = []
+        var diarSegTuples: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)] = []
+        var unmatchedRosterNamesForPrompt: [String] = []
+
         if let appDiar = appDiarization {
             let diarSegments = appDiar.segments.map { seg in
                 DiarizationSegment(
@@ -1061,13 +1083,26 @@ public final class PipelineProcessor: ObservableObject {
                     NSLog("Heard: Auto-assigned roster name '\(rosterName)' to \(speakerID)")
                 } else if unmatchedSpeakers.count == unmatchedRosterNames.count && unmatchedSpeakers.count > 0 {
                     // Same number of unmatched speakers and roster names — assign in order
-                    // (Best effort; without additional signal we can't do better)
                     let sortedRoster = unmatchedRosterNames.sorted()
                     for (i, speaker) in unmatchedSpeakers.enumerated() where i < sortedRoster.count {
                         nameMap[speaker.detectedSpeakerID] = sortedRoster[i]
                         NSLog("Heard: Auto-assigned roster name '\(sortedRoster[i])' to \(speaker.detectedSpeakerID)")
                     }
+                } else {
+                    // Roster names available but count mismatch — pass as suggestions for naming prompt
+                    unmatchedRosterNamesForPrompt = unmatchedRosterNames.sorted()
                 }
+            }
+
+            // Collect unmatched speaker info for naming prompt
+            let stillUnmatched = matches.filter { $0.isNewSpeaker && nameMap[$0.detectedSpeakerID]?.hasPrefix("Speaker ") ?? true }
+            unmatchedSpeakerInfo = stillUnmatched.map {
+                (speakerID: $0.detectedSpeakerID, temporaryName: nameMap[$0.detectedSpeakerID] ?? $0.assignedName, embedding: $0.embedding)
+            }
+
+            // Collect diarization segments with original-time timestamps for clip extraction
+            diarSegTuples = diarSegments.map {
+                (speakerID: $0.speakerID, startTime: $0.startTime, endTime: $0.endTime)
             }
 
             // Apply diarization labels to app track segments
@@ -1099,7 +1134,10 @@ public final class PipelineProcessor: ObservableObject {
             startTime: job.startTime,
             endTime: job.endTime,
             participants: Array(Set(finalSegments.map(\.speaker))).sorted(),
-            segments: finalSegments
+            segments: finalSegments,
+            unmatchedSpeakers: unmatchedSpeakerInfo,
+            diarizationSegments: diarSegTuples,
+            unmatchedRosterNames: unmatchedRosterNamesForPrompt
         )
     }
 

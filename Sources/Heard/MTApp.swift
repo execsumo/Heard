@@ -23,10 +23,28 @@ struct HeardApp: App {
                 }
                 .onDisappear {
                     // Revert to accessory (no dock icon) when settings closes.
+                    if !appModel.namingCandidates.isEmpty { return }
                     NSApp.setActivationPolicy(.accessory)
                 }
         }
         .defaultSize(width: 760, height: 520)
+        .windowResizability(.contentSize)
+
+        Window("Name Speakers", id: "speaker-naming") {
+            SpeakerNamingView(model: appModel)
+                .onAppear {
+                    NSApp.setActivationPolicy(.regular)
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+                .onDisappear {
+                    NSApp.setActivationPolicy(.accessory)
+                    // If user closes window without naming, skip naming
+                    if !appModel.namingCandidates.isEmpty {
+                        appModel.skipNaming()
+                    }
+                }
+        }
+        .defaultSize(width: 520, height: 420)
         .windowResizability(.contentSize)
     }
 }
