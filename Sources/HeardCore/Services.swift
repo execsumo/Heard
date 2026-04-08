@@ -1277,11 +1277,14 @@ public final class PipelineProcessor: ObservableObject {
             ? [TranscriptSegment(speaker: me, startTime: 0, endTime: 0, text: "[No speech detected]")]
             : merged
 
+        let segmentSpeakers = Set(finalSegments.map(\.speaker))
+        let allParticipants = segmentSpeakers.union(Set(job.rosterNames)).sorted()
+
         return TranscriptDocument(
             title: job.meetingTitle.isEmpty ? "Meeting" : job.meetingTitle,
             startTime: job.startTime,
             endTime: job.endTime,
-            participants: Array(Set(finalSegments.map(\.speaker))).sorted(),
+            participants: allParticipants,
             segments: finalSegments,
             unmatchedSpeakers: unmatchedSpeakerInfo,
             diarizationSegments: diarSegTuples,
