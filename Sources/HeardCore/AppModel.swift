@@ -167,18 +167,7 @@ public final class AppModel: ObservableObject {
         )
     }
 
-    public var menuBarIconName: String {
-        if isDictating { return "menu-bar-recording.gif" } // Defaulting dictating to recording
-        switch phase {
-        case .dormant: return "menu-bar-idle.gif"
-        case .recording: return "menu-bar-recording.gif"
-        case .processing: return "menu-bar-processing.gif"
-        case .error: return "menu-bar-idle.gif" // Missing error icon
-        case .userAction: return "menu-bar-idle.gif" // Missing user action icon
-        }
-    }
-
-    public var filteredSpeakers: [SpeakerProfile] {
+public var filteredSpeakers: [SpeakerProfile] {
         let filtered = speakerStore.speakers.filter {
             speakerFilter.isEmpty || $0.name.localizedCaseInsensitiveContains(speakerFilter)
         }

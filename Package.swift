@@ -24,8 +24,7 @@ let package = Package(
         .executableTarget(
             name: "Heard",
             dependencies: ["HeardCore"],
-            path: "Sources/Heard",
-            resources: [.process("Resources")]
+            path: "Sources/Heard"
         ),
         .executableTarget(
             name: "HeardTests",

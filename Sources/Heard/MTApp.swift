@@ -2,13 +2,45 @@ import AppKit
 import HeardCore
 import SwiftUI
 
+private struct MenuBarIcon: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        Group {
+            if model.isDictating {
+                Image(systemName: "record")
+                    .symbolVariant(.circle)
+                    .symbolEffect(.breathe, isActive: true)
+            } else {
+                switch model.phase {
+                case .dormant:
+                    Image(systemName: "recordingtape")
+                case .recording:
+                    Image(systemName: "record")
+                        .symbolVariant(.circle)
+                        .symbolEffect(.breathe, isActive: true)
+                case .processing:
+                    Image(systemName: "waveform")
+                        .symbolEffect(.variableColor.iterative.reversing)
+                case .error:
+                    Image(systemName: "exclamationmark.circle.fill")
+                case .userAction:
+                    Image(systemName: "person.crop.circle.badge.exclamationmark")
+                }
+            }
+        }
+    }
+}
+
 @main
 struct HeardApp: App {
     @StateObject private var appModel = AppModel.bootstrap()
 
     var body: some Scene {
-        MenuBarExtra("Heard", image: appModel.menuBarIconName) {
+        MenuBarExtra {
             MenuBarView(model: appModel)
+        } label: {
+            MenuBarIcon(model: appModel)
         }
         .menuBarExtraStyle(.window)
 
