@@ -248,8 +248,20 @@ public final class RecordingManager: ObservableObject {
 
     public init() {}
 
+    // Context object shared between the main actor and the AUHAL render callback thread.
+    private final class AppAudioInputContext: @unchecked Sendable {
+        let hal: AudioUnit
+        let file: AVAudioFile
+        let format: AVAudioFormat
+        var isStopped = false
+        init(hal: AudioUnit, file: AVAudioFile, format: AVAudioFormat) {
+            self.hal = hal; self.file = file; self.format = format
+        }
+    }
+
     private var micEngine: AVAudioEngine?
-    private var appEngine: AVAudioEngine?
+    private var appHALUnit: AudioUnit?
+    private var appHALContext: AppAudioInputContext?
     private var micAudioFile: AVAudioFile?
     private var appAudioFile: AVAudioFile?
     private var tapObjectID: AudioObjectID = 0
@@ -397,89 +409,74 @@ public final class RecordingManager: ObservableObject {
         micAudioFile = nil
     }
 
-    // MARK: - App Audio Recording (CATapDescription + Process Tap)
+    // MARK: - App Audio Recording (CATapDescription + Process Tap + Raw AUHAL)
 
     private func setupAppAudioRecording(pid: pid_t, to url: URL) throws {
-        // Translate the Teams BSD pid into a CoreAudio AudioObjectID.
-        var translatedPID = pid
-        var processObjectID: AudioObjectID = 0
-        var size = UInt32(MemoryLayout<AudioObjectID>.size)
-        var addr = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let translateErr = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &addr,
-            UInt32(MemoryLayout<pid_t>.size),
-            &translatedPID,
-            &size,
-            &processObjectID
-        )
-        guard translateErr == noErr, processObjectID != 0 else {
-            throw RecordingError.processTapFailed(translateErr)
+        // ── Step 1: Collect ALL Teams-related process object IDs ──────────────
+        // Teams (Electron/Chromium) renders audio in renderer / GPU sub-processes,
+        // not necessarily the main process that holds the power assertion. Tapping
+        // only the reported PID misses audio from those child processes.
+        let processObjectIDs = collectTeamsProcessObjectIDs(requiredPID: pid)
+        guard !processObjectIDs.isEmpty else {
+            NSLog("Heard: No CoreAudio process objects found for Teams (pid=%d)", pid)
+            throw RecordingError.processTapFailed(kAudioHardwareBadObjectError)
         }
+        NSLog("Heard: Creating process tap for %d Teams process(es)", processObjectIDs.count)
 
-        let tapDesc = CATapDescription(stereoMixdownOfProcesses: [processObjectID])
+        // ── Step 2: Create the process tap ────────────────────────────────────
+        let tapDesc = CATapDescription(stereoMixdownOfProcesses: processObjectIDs)
         tapDesc.name = "Heard Tap"
         tapDesc.isPrivate = true
         tapDesc.muteBehavior = .unmuted
 
-        var tapID: AudioObjectID = 0
-        let status = AudioHardwareCreateProcessTap(tapDesc, &tapID)
-        guard status == noErr else {
-            throw RecordingError.processTapFailed(status)
+        let tapErr = AudioHardwareCreateProcessTap(tapDesc, &tapObjectID)
+        guard tapErr == noErr else {
+            NSLog("Heard: AudioHardwareCreateProcessTap failed (%d)", tapErr)
+            throw RecordingError.processTapFailed(tapErr)
         }
-        tapObjectID = tapID
+        NSLog("Heard: Process tap created (id=%u)", tapObjectID)
 
-        // Fetch the tap's UID — needed to reference it from the aggregate device.
-        var tapUIDCF: CFString = "" as CFString
-        var uidSize = UInt32(MemoryLayout<CFString>.size)
-        var tapUIDAddr = AudioObjectPropertyAddress(
+        // ── Step 3: Get tap UID ───────────────────────────────────────────────
+        var tapUIDRef: CFString = "" as CFString
+        var tapUIDSize = UInt32(MemoryLayout<CFString>.size)
+        var tapUIDProp = AudioObjectPropertyAddress(
             mSelector: kAudioTapPropertyUID,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        let uidErr = withUnsafeMutablePointer(to: &tapUIDCF) { ptr -> OSStatus in
-            AudioObjectGetPropertyData(tapID, &tapUIDAddr, 0, nil, &uidSize, ptr)
+        let tapUIDErr = withUnsafeMutablePointer(to: &tapUIDRef) { ptr in
+            AudioObjectGetPropertyData(tapObjectID, &tapUIDProp, 0, nil, &tapUIDSize, ptr)
         }
-        guard uidErr == noErr else {
-            AudioHardwareDestroyProcessTap(tapID)
-            tapObjectID = 0
-            throw RecordingError.deviceSetupFailed(uidErr)
+        guard tapUIDErr == noErr else {
+            AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
+            throw RecordingError.deviceSetupFailed(tapUIDErr)
         }
-        let tapUID = tapUIDCF as String
+        let tapUID = tapUIDRef as String
 
-        // Find the default system output device to drive the aggregate clock.
+        // ── Step 4: Locate default output device (provides the aggregate clock) ─
         var outputDeviceID: AudioObjectID = 0
-        var outSize = UInt32(MemoryLayout<AudioObjectID>.size)
-        var outAddr = AudioObjectPropertyAddress(
+        var outputDevSize = UInt32(MemoryLayout<AudioObjectID>.size)
+        var outputDevProp = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
         _ = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &outAddr,
-            0,
-            nil,
-            &outSize,
-            &outputDeviceID
+            AudioObjectID(kAudioObjectSystemObject), &outputDevProp, 0, nil, &outputDevSize, &outputDeviceID
         )
-        var outputUIDCF: CFString = "" as CFString
-        var outUIDSize = UInt32(MemoryLayout<CFString>.size)
-        var outUIDAddr = AudioObjectPropertyAddress(
+        var outputUIDRef: CFString = "" as CFString
+        var outputUIDSize = UInt32(MemoryLayout<CFString>.size)
+        var outputUIDProp = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyDeviceUID,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        _ = withUnsafeMutablePointer(to: &outputUIDCF) { ptr -> OSStatus in
-            AudioObjectGetPropertyData(outputDeviceID, &outUIDAddr, 0, nil, &outUIDSize, ptr)
+        _ = withUnsafeMutablePointer(to: &outputUIDRef) { ptr in
+            AudioObjectGetPropertyData(outputDeviceID, &outputUIDProp, 0, nil, &outputUIDSize, ptr)
         }
-        let outputUID = outputUIDCF as String
+        let outputUID = outputUIDRef as String
 
-        // Build a private aggregate device containing the tap.
+        // ── Step 5: Create private aggregate device containing the tap ────────
         let aggregateUID = "com.execsumo.heard.tap.\(UUID().uuidString)"
         let aggregateDict: [String: Any] = [
             kAudioAggregateDeviceNameKey as String: "Heard Aggregate",
@@ -492,76 +489,210 @@ public final class RecordingManager: ObservableObject {
                 [kAudioSubDeviceUIDKey as String: outputUID]
             ],
             kAudioAggregateDeviceTapListKey as String: [
-                [
-                    kAudioSubTapDriftCompensationKey as String: true,
-                    kAudioSubTapUIDKey as String: tapUID,
-                ]
+                [kAudioSubTapDriftCompensationKey as String: true,
+                 kAudioSubTapUIDKey as String: tapUID]
             ],
         ]
-
-        var aggregateID: AudioObjectID = 0
-        let aggErr = AudioHardwareCreateAggregateDevice(aggregateDict as CFDictionary, &aggregateID)
+        let aggErr = AudioHardwareCreateAggregateDevice(aggregateDict as CFDictionary, &aggregateDeviceID)
         guard aggErr == noErr else {
-            AudioHardwareDestroyProcessTap(tapID)
-            tapObjectID = 0
+            AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
+            NSLog("Heard: AudioHardwareCreateAggregateDevice failed (%d)", aggErr)
             throw RecordingError.deviceSetupFailed(aggErr)
         }
-        aggregateDeviceID = aggregateID
+        NSLog("Heard: Aggregate device created (id=%u)", aggregateDeviceID)
 
-        let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
-
-        // Point the engine's input at the aggregate device.
-        var deviceID = aggregateID
-        let audioUnit = inputNode.audioUnit!
-        let setErr = AudioUnitSetProperty(
-            audioUnit,
-            kAudioOutputUnitProperty_CurrentDevice,
-            kAudioUnitScope_Global,
-            0,
-            &deviceID,
-            UInt32(MemoryLayout<AudioObjectID>.size)
+        // ── Step 6: Build a raw HAL Output Audio Unit ─────────────────────────
+        // AVAudioEngine.inputNode is NOT used here: calling engine.prepare() after
+        // changing kAudioOutputUnitProperty_CurrentDevice on the engine's underlying
+        // unit causes the engine to re-bind to the system default input (mic), silently
+        // discarding the device change. A standalone AUHAL configured before
+        // AudioUnitInitialize is the only reliable way to select a custom input device.
+        var halDesc = AudioComponentDescription(
+            componentType: kAudioUnitType_Output,
+            componentSubType: kAudioUnitSubType_HALOutput,
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0, componentFlagsMask: 0
         )
-        guard setErr == noErr else {
-            AudioHardwareDestroyAggregateDevice(aggregateID)
-            aggregateDeviceID = 0
-            AudioHardwareDestroyProcessTap(tapID)
-            tapObjectID = 0
-            throw RecordingError.deviceSetupFailed(setErr)
+        guard let halComponent = AudioComponentFindNext(nil, &halDesc) else {
+            AudioHardwareDestroyAggregateDevice(aggregateDeviceID); aggregateDeviceID = 0
+            AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
+            throw RecordingError.deviceSetupFailed(kAudioHardwareUnspecifiedError)
+        }
+        var halRef: AudioUnit?
+        let newErr = AudioComponentInstanceNew(halComponent, &halRef)
+        guard newErr == noErr, let hal = halRef else {
+            AudioHardwareDestroyAggregateDevice(aggregateDeviceID); aggregateDeviceID = 0
+            AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
+            throw RecordingError.deviceSetupFailed(newErr)
         }
 
-        // Prepare the engine NOW so that the AUHAL renegotiates its format against
-        // the aggregate device. Querying outputFormat(forBus:) before prepare() would
-        // return the default mic format, not the tap's format, causing a mismatch.
-        engine.prepare()
+        // Wrap remaining setup so we can dispose the AUHAL on any error.
+        do {
+            // Enable input on bus 1; disable output on bus 0.
+            var one: UInt32 = 1, zero: UInt32 = 0
+            AudioUnitSetProperty(hal, kAudioOutputUnitProperty_EnableIO,
+                                 kAudioUnitScope_Input, 1, &one, 4)
+            AudioUnitSetProperty(hal, kAudioOutputUnitProperty_EnableIO,
+                                 kAudioUnitScope_Output, 0, &zero, 4)
 
-        let hwFormat = inputNode.outputFormat(forBus: 0)
-        NSLog("Heard: Tap format after prepare — sr=%.0f ch=%u", hwFormat.sampleRate, hwFormat.channelCount)
+            // Point the AUHAL at the aggregate device BEFORE AudioUnitInitialize.
+            var devID = aggregateDeviceID
+            let setErr = AudioUnitSetProperty(
+                hal, kAudioOutputUnitProperty_CurrentDevice,
+                kAudioUnitScope_Global, 0,
+                &devID, UInt32(MemoryLayout<AudioObjectID>.size)
+            )
+            guard setErr == noErr else {
+                NSLog("Heard: AUHAL CurrentDevice failed (%d)", setErr)
+                throw RecordingError.deviceSetupFailed(setErr)
+            }
 
-        let fileSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: hwFormat.sampleRate,
-            AVNumberOfChannelsKey: max(hwFormat.channelCount, 1),
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-        ]
-        let file = try AVAudioFile(forWriting: url, settings: fileSettings)
-        appAudioFile = file
+            // Query the hardware input format (output scope of bus 1 = what arrives from hw).
+            var hwFmt = AudioStreamBasicDescription()
+            var hwFmtSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+            AudioUnitGetProperty(hal, kAudioUnitProperty_StreamFormat,
+                                 kAudioUnitScope_Output, 1, &hwFmt, &hwFmtSize)
+            let sampleRate = hwFmt.mSampleRate > 0 ? hwFmt.mSampleRate : 48000.0
+            let channels   = hwFmt.mChannelsPerFrame > 0 ? hwFmt.mChannelsPerFrame : 2
+            NSLog("Heard: AUHAL hw format sr=%.0f ch=%u flags=0x%x", sampleRate, channels, hwFmt.mFormatFlags)
 
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { buffer, _ in
-            try? file.write(from: buffer)
+            // Request standard non-interleaved float32 from the AUHAL.
+            guard let avFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate,
+                                              channels: channels) else {
+                throw RecordingError.deviceSetupFailed(kAudioHardwareUnspecifiedError)
+            }
+            var clientFmt = avFormat.streamDescription.pointee
+            AudioUnitSetProperty(hal, kAudioUnitProperty_StreamFormat,
+                                 kAudioUnitScope_Output, 1,
+                                 &clientFmt, UInt32(MemoryLayout<AudioStreamBasicDescription>.size))
+
+            // Create the output WAV file.
+            let fileSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: sampleRate,
+                AVNumberOfChannelsKey: Int(channels),
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+            ]
+            let file = try AVAudioFile(forWriting: url, settings: fileSettings)
+            appAudioFile = file
+
+            // Build context and install the AUHAL render callback.
+            // kAudioOutputUnitProperty_SetInputCallback fires on each I/O cycle; we call
+            // AudioUnitRender inside it to pull the data from the tap via the AUHAL.
+            let ctx = AppAudioInputContext(hal: hal, file: file, format: avFormat)
+            appHALContext = ctx
+
+            var cb = AURenderCallbackStruct(
+                inputProc: { inRefCon, ioActionFlags, inTimeStamp, inBusNumber, inNumberFrames, _ -> OSStatus in
+                    guard let ptr = inRefCon,
+                          let ts = inTimeStamp,
+                          inNumberFrames > 0 else { return noErr }
+                    let context = Unmanaged<AppAudioInputContext>.fromOpaque(ptr).takeUnretainedValue()
+                    guard !context.isStopped else { return noErr }
+
+                    guard let buf = AVAudioPCMBuffer(pcmFormat: context.format,
+                                                    frameCapacity: inNumberFrames) else { return noErr }
+                    buf.frameLength = inNumberFrames
+
+                    let renderErr = AudioUnitRender(context.hal, ioActionFlags, ts,
+                                                   inBusNumber, inNumberFrames,
+                                                   buf.mutableAudioBufferList)
+                    if renderErr == noErr {
+                        try? context.file.write(from: buf)
+                    } else {
+                        NSLog("Heard: AudioUnitRender error %d", renderErr)
+                    }
+                    return noErr
+                },
+                inputProcRefCon: Unmanaged.passUnretained(ctx).toOpaque()
+            )
+            let cbErr = AudioUnitSetProperty(
+                hal, kAudioOutputUnitProperty_SetInputCallback,
+                kAudioUnitScope_Global, 0,
+                &cb, UInt32(MemoryLayout<AURenderCallbackStruct>.size)
+            )
+            guard cbErr == noErr else {
+                NSLog("Heard: SetInputCallback failed (%d)", cbErr)
+                throw RecordingError.deviceSetupFailed(cbErr)
+            }
+
+            // Initialize (locks in the device/format) then start.
+            let initErr = AudioUnitInitialize(hal)
+            guard initErr == noErr else {
+                NSLog("Heard: AudioUnitInitialize failed (%d)", initErr)
+                throw RecordingError.deviceSetupFailed(initErr)
+            }
+            let startErr = AudioOutputUnitStart(hal)
+            guard startErr == noErr else {
+                AudioUnitUninitialize(hal)
+                NSLog("Heard: AudioOutputUnitStart failed (%d)", startErr)
+                throw RecordingError.deviceSetupFailed(startErr)
+            }
+
+            appHALUnit = hal
+            appStartTime = Date()
+            NSLog("Heard: App audio capture started (raw AUHAL, aggregate=%u)", aggregateDeviceID)
+
+        } catch {
+            AudioComponentInstanceDispose(hal)
+            appHALContext = nil
+            appAudioFile = nil
+            AudioHardwareDestroyAggregateDevice(aggregateDeviceID); aggregateDeviceID = 0
+            AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
+            throw error
+        }
+    }
+
+    /// Find CoreAudio process object IDs for all running Microsoft Teams processes.
+    /// Teams (Electron/Chromium) can render audio from the main process OR helper
+    /// processes (Teams Helper, Teams Helper (GPU), etc.). We tap all of them so that
+    /// audio from any subprocess is captured regardless of which one is active.
+    private func collectTeamsProcessObjectIDs(requiredPID: pid_t) -> [AudioObjectID] {
+        let teamsApps = NSWorkspace.shared.runningApplications.filter { app in
+            let bundle = app.bundleIdentifier?.lowercased() ?? ""
+            let name   = app.localizedName?.lowercased() ?? ""
+            return bundle.hasPrefix("com.microsoft.teams") ||
+                   (name.hasPrefix("microsoft teams") && !bundle.isEmpty)
         }
 
-        try engine.start()
-        appEngine = engine
-        appStartTime = Date()
+        var pids = teamsApps.map(\.processIdentifier)
+        if !pids.contains(requiredPID) { pids.insert(requiredPID, at: 0) }
+
+        var seen = Set<pid_t>()
+        var result: [AudioObjectID] = []
+        var prop = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        for pid in pids where seen.insert(pid).inserted {
+            var p = pid
+            var objID: AudioObjectID = 0
+            var sz = UInt32(MemoryLayout<AudioObjectID>.size)
+            let err = AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &prop, UInt32(MemoryLayout<pid_t>.size), &p, &sz, &objID
+            )
+            if err == noErr && objID != 0 {
+                result.append(objID)
+                NSLog("Heard: Tapping Teams process pid=%d objectID=%u (%@)",
+                      pid, objID, teamsApps.first(where: { $0.processIdentifier == pid })?.localizedName ?? "?")
+            }
+        }
+        return result
     }
 
     private func teardownAppAudioRecording() {
-        appEngine?.inputNode.removeTap(onBus: 0)
-        appEngine?.stop()
-        appEngine = nil
+        appHALContext?.isStopped = true
+        if let hal = appHALUnit {
+            AudioOutputUnitStop(hal)
+            AudioUnitUninitialize(hal)
+            AudioComponentInstanceDispose(hal)
+            appHALUnit = nil
+        }
+        appHALContext = nil
         appAudioFile = nil
 
         if aggregateDeviceID != 0 {
