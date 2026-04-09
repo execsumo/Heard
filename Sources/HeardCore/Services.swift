@@ -245,6 +245,8 @@ public final class MeetingDetector {
 @MainActor
 public final class RecordingManager: ObservableObject {
     @Published public private(set) var activeSession: RecordingSession?
+    /// True when the app-audio process tap failed — recording is mic-only.
+    @Published public private(set) var appAudioTapFailed: Bool = false
 
     public init() {}
 
@@ -297,12 +299,14 @@ public final class RecordingManager: ObservableObject {
         try setupMicRecording(to: micPath)
 
         // Set up app audio recording if we have a Teams PID
+        appAudioTapFailed = false
         if let pid = teamsPID {
             do {
                 try setupAppAudioRecording(pid: pid, to: appPath)
             } catch {
                 // App audio is best-effort — continue with mic-only if tap fails
-                NSLog("Heard: App audio tap failed: \(error.localizedDescription)")
+                appAudioTapFailed = true
+                NSLog("Heard: App audio tap failed (recording mic-only): \(error.localizedDescription)")
             }
         }
 
@@ -354,6 +358,7 @@ public final class RecordingManager: ObservableObject {
         micStartTime = nil
         appStartTime = nil
 
+        appAudioTapFailed = false
         defer { activeSession = nil }
         return activeSession
     }
@@ -424,9 +429,16 @@ public final class RecordingManager: ObservableObject {
         NSLog("Heard: Creating process tap for %d Teams process(es)", processObjectIDs.count)
 
         // ── Step 2: Create the process tap ────────────────────────────────────
+        // Screen Recording permission is required for AudioHardwareCreateProcessTap.
+        if !CGPreflightScreenCaptureAccess() {
+            NSLog("Heard: Screen Recording permission not granted — process tap will likely fail")
+        }
         let tapDesc = CATapDescription(stereoMixdownOfProcesses: processObjectIDs)
         tapDesc.name = "Heard Tap"
-        tapDesc.isPrivate = true
+        // Use non-exclusive (isPrivate = false) so our tap works alongside Teams' own internal
+        // audio taps (noise cancellation, echo processing, etc.). An exclusive tap would be
+        // rejected if any other client already holds a tap on the same processes.
+        tapDesc.isPrivate = false
         tapDesc.muteBehavior = .unmuted
 
         let tapErr = AudioHardwareCreateProcessTap(tapDesc, &tapObjectID)

@@ -60,12 +60,23 @@ cp "$REPO_ROOT/Heard.entitlements" "$APP_BUNDLE/Contents/Resources/Heard.entitle
 # Code sign if identity provided
 if [[ -n "$SIGN_IDENTITY" ]]; then
     echo "==> Signing with identity: $SIGN_IDENTITY"
-    codesign --force --options runtime \
+    # NOTE: --options runtime (Hardened Runtime) is intentionally omitted for self-signed
+    # certificates. When Hardened Runtime is enabled with a non-Apple-Developer cert, macOS
+    # performs a stricter CT/chain validation that fails for self-signed certs, causing TCC
+    # (Accessibility, Screen Recording) to not persist across app restarts. Without the flag
+    # the entitlements are still embedded and TCC correctly tracks the cert identity.
+    codesign --force \
         --entitlements "$REPO_ROOT/Heard.entitlements" \
         --sign "$SIGN_IDENTITY" \
         "$APP_BUNDLE"
     echo "==> Verifying signature..."
     codesign --verify --verbose "$APP_BUNDLE"
+    echo ""
+    echo "    NOTE: After each rebuild, you may need to re-grant TCC permissions."
+    echo "    If Accessibility or Screen Recording shows 'Grant' after restart, run:"
+    echo "      tccutil reset Accessibility com.execsumo.heard"
+    echo "      tccutil reset ScreenCapture com.execsumo.heard"
+    echo "    Then re-grant both in System Settings → Privacy & Security."
 else
     # Ad-hoc sign so macOS will run it locally
     echo "==> Ad-hoc signing..."

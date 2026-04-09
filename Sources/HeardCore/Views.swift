@@ -104,12 +104,15 @@ public struct MenuBarView: View {
     @ViewBuilder
     private var statusHeader: some View {
         if let session = model.recordingManager.activeSession {
+            let tapFailed = model.recordingManager.appAudioTapFailed
             StatusHeaderCard(
                 dotColor: .red,
                 pulsing: true,
-                title: "Recording",
+                title: tapFailed ? "Recording (mic only)" : "Recording",
                 titleColor: .red,
-                subtitle: session.title.isEmpty ? "Meeting" : session.title,
+                subtitle: tapFailed
+                    ? "No system audio — grant Screen Recording"
+                    : (session.title.isEmpty ? "Meeting" : session.title),
                 trailing: AnyView(
                     RecordingTimerView(startTime: session.startTime)
                         .monospacedDigit()
