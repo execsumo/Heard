@@ -66,7 +66,7 @@ open build/Heard.app
 
 ## Architecture
 
-Single-process SwiftUI menu bar app. Three scenes: a `MenuBarExtra(.window)` dropdown, a Settings `Window`, and a Speaker Naming `Window`. All persistence is JSON files under `~/Library/Application Support/Heard/`.
+Single-process SwiftUI menu bar app. Three scenes: a `MenuBarExtra(.window)` dropdown, a Settings `Window`, and a Speaker Naming `Window`. `WindowActivationCoordinator` reference-counts `.regular` activation policy across the two windows so keyboard focus survives closing one while the other stays open. All persistence is JSON files under `~/Library/Application Support/Heard/`.
 
 ```
 Heard/
@@ -79,7 +79,9 @@ Heard/
 │       │                             # AppSettings, HotkeyCombo, ModelKind, …
 │       ├── Services.swift            # MeetingDetector, RecordingManager (AUHAL + tap),
 │       │                             # PipelineProcessor, PermissionCenter,
-│       │                             # TranscriptWriter, TempFileCleanup, LaunchAtLogin
+│       │                             # TranscriptWriter, TempFileCleanup,
+│       │                             # AudioDeviceCleanup, LaunchAtLogin,
+│       │                             # WindowActivationCoordinator
 │       ├── Stores.swift              # SettingsStore, SpeakerStore, PipelineQueueStore
 │       ├── Views.swift               # MenuBarView, SettingsView, SpeakerNamingView
 │       ├── AudioProcessing.swift     # AudioPreprocessor, VadSegmentMap
@@ -164,7 +166,7 @@ Only Microphone is strictly required; everything else degrades gracefully. Permi
 └── 260324_Sprint_Planning.md
 ```
 
-Orphan WAVs from previous crashes are cleaned on launch. Files referenced by an in-flight pipeline job are always preserved.
+Orphan WAVs from previous crashes are cleaned on launch, and any private aggregate devices left behind by a crashed recording (`com.execsumo.heard.tap.*`) are destroyed at the same time. Files referenced by an in-flight pipeline job are always preserved.
 
 ## Testing
 

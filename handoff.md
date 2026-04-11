@@ -22,6 +22,7 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 14
 - Mic delay calibration stored per session for alignment
 - 4-hour max recording duration with automatic split and re-start
 - Temp file cleanup on app launch (removes stale `.wav` files older than 48 hours)
+- Orphan aggregate-device cleanup on app launch (destroys any `com.execsumo.heard.tap.*` private aggregate devices left behind by a crashed recording)
 
 ### Pipeline (Fully Implemented)
 - Sequential job queue with stages: queued → preprocessing → transcribing → diarizing → assigning → complete
@@ -69,7 +70,7 @@ The dictation feature captures mic audio, transcribes in real-time, and injects 
 - Menu bar icons are SF Symbols with symbol effects (`recordingtape`, `record.circle` + `.breathe`, `waveform` + `.variableColor`, `exclamationmark.circle.fill`, `person.crop.circle.badge.exclamationmark`)
 - Settings window (opened via `@Environment(\.openWindow)`) with 5 tabs: **General** (launch at login, auto-watch, developer mode, custom vocabulary, output folder, permissions), **Dictation** (enable, push-to-talk, hotkey recorder, model keep-alive, live status), **Models** (download status, pipeline keep-alive, force-unload), **Speakers** (your name, inline rename, merge, delete, search/sort), **About**
 - Standalone "Name Speakers" window scene (id `speaker-naming`) with per-candidate audio playback, roster suggestions, and 120 s auto-dismiss
-- Keyboard input works in Settings (activation policy switches between `.accessory` and `.regular`)
+- Keyboard input works in Settings — `WindowActivationCoordinator` reference-counts `.accessory`/`.regular` transitions across the Settings and Name Speakers windows so closing one while the other is still open never steals keyboard focus
 - Output folder picker via `NSOpenPanel`
 - Custom vocabulary management lives in the General tab (add/remove terms, 3-char min, 50-term cap) — terms applied to both transcription and dictation via CTC boosting
 - Speaker table with inline rename, merge, delete (context menu), search, and sort (Name / Last Seen / Meeting Count)
@@ -129,7 +130,7 @@ The dictation feature captures mic audio, transcribes in real-time, and injects 
 | `Sources/Heard/MTApp.swift` | `@main` entry, MenuBarExtra + Window scenes |
 | `Sources/HeardCore/AppModel.swift` | Central state, action handlers, lifecycle, dictation wiring |
 | `Sources/HeardCore/CoreModels.swift` | AppPhase, PipelineJob, SpeakerProfile, AppSettings, HotkeyCombo, etc. |
-| `Sources/HeardCore/Services.swift` | MeetingDetector, RecordingManager, PipelineProcessor, PermissionCenter, TranscriptWriter |
+| `Sources/HeardCore/Services.swift` | MeetingDetector, RecordingManager, PipelineProcessor, PermissionCenter, TranscriptWriter, TempFileCleanup, AudioDeviceCleanup, LaunchAtLogin, WindowActivationCoordinator |
 | `Sources/HeardCore/Stores.swift` | SettingsStore, SpeakerStore, PipelineQueueStore, FileManager extensions |
 | `Sources/HeardCore/Views.swift` | MenuBarView, SettingsView, all tabs and components |
 | `Sources/HeardCore/AudioProcessing.swift` | AudioPreprocessor, VadSegmentMap, PreprocessedTrack |
