@@ -153,10 +153,7 @@ See [`ROADMAP.md`](./ROADMAP.md) for the full list of planned improvements, orga
 - DMG packaging for GitHub Releases
 - Homebrew Cask formula
 
-### 2. FluidAudio Mel Spectrogram Bug
-A patch was applied to `.build/checkouts/FluidAudio/Sources/FluidAudio/Shared/AudioMelSpectrogram.swift` line 193: changed `let numFrames = audioCount / hopLength` to `let numFrames = 1 + audioCount / hopLength`. This fixes a frame count off-by-one for center-padded mode. This patch will be lost on `swift package clean` or `swift package resolve`. If the `StreamingEouAsrManager` path is ever revisited, this needs to be reported/fixed upstream in FluidAudio.
-
-### 3. Known rough edges
+### 2. Known rough edges
 - Menu bar dropdown uses `.window` style and has a fixed max height — jobs list can clip when many jobs accumulate
 - Dictation hotkey recorder accepts any combo, including ones that clash with system shortcuts
 - Teams detection only matches localized app names — non-English macOS locales may miss Teams
@@ -165,14 +162,6 @@ A patch was applied to `.build/checkouts/FluidAudio/Sources/FluidAudio/Shared/Au
 ## Attempted Approaches for Dictation (Historical)
 
 These approaches were tried and failed, documented here to prevent re-attempting:
-
-### StreamingEouAsrManager (abandoned)
-- FluidAudio's `StreamingEouAsrManager` was the original plan for low-latency streaming ASR
-- **320ms mode**: CoreML shape mismatch `(1, 128, 63) vs (1, 128, 64)` — bug in `computeFlat` mel spectrogram
-- **160ms mode**: Same class of bug `(1, 128, 16) vs (1, 128, 17)`
-- Root cause: `computeFlat` calculates `numFrames = audioCount / hopLength` but center-padded STFT should be `1 + audioCount / hopLength`
-- Even after patching the mel bug (0 CoreML errors), the RNNT decoder produced no tokens — no partial or EOU callbacks ever fired despite correctly-shaped audio flowing through
-- **Solution adopted**: Use batch `AsrManager` with 0.6s polling loop (same approach as FluidVoice app). Works perfectly.
 
 ### Hotkey implementations (settled on Carbon)
 1. **NSEvent global/local monitors**: Can observe but not suppress key events — causes macOS error sound on every hotkey press. Abandoned.
@@ -192,4 +181,3 @@ These approaches were tried and failed, documented here to prevent re-attempting
 - Running via `swift run` in a terminal causes macOS to attribute microphone permission to the terminal app (e.g., Ghostty) rather than Heard. Use `./scripts/bundle.sh && open build/Heard.app` instead.
 - The `.window` style MenuBarExtra panel has a fixed max height; if many jobs accumulate, the bottom of the panel may clip.
 - Simulated meetings produce very short recordings that fail in the pipeline (expected — they exist for UI testing, not audio testing).
-- The FluidAudio `computeFlat` mel spectrogram has an off-by-one bug affecting streaming ASR. A local patch exists in `.build/checkouts/` but will be lost on package resolution.

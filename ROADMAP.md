@@ -90,8 +90,6 @@ These stretch the architecture and deserve a spec update before landing.
 
 ## Technical debt
 
-- **Patched FluidAudio mel spectrogram.** A local patch on `AudioMelSpectrogram.swift` (line 193: `numFrames = 1 + audioCount / hopLength` for center-padded mode) lives in `.build/checkouts/` and will be lost on `swift package clean` / `swift package resolve`. If streaming ASR is ever revisited, report upstream or fork.
-- **Abandoned StreamingEouAsrManager path.** Dead code and documentation around the 160 ms / 320 ms streaming ASR experiments should be removed once the batch-ASR path is declared final.
 - **`hotkeyManagerInstance` global.** The Carbon callback bridge uses a singleton. Acceptable for a one-hotkey app, but brittle if we ever add a second global shortcut. Replace with a `UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())` context.
 - **Settings window activation policy gymnastics.** `MTApp.swift` flips `NSApp.setActivationPolicy` between `.accessory` and `.regular` to make the Settings window accept keyboard input. This is fragile around the Name Speakers window and deserves a cleaner wrapper.
 - **`Views.swift` size.** ~1.3 kLOC for all UI. Split by tab once we're past the early iteration phase.
