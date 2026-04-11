@@ -477,7 +477,7 @@ public final class RecordingManager: ObservableObject {
         let outputUID = outputUIDRef as String
 
         // ── Step 5: Create private aggregate device containing the tap ────────
-        let aggregateUID = "com.execsumo.heard.tap.\(UUID().uuidString)"
+        let aggregateUID = "\(AudioDeviceCleanup.heardAggregateUIDPrefix)\(UUID().uuidString)"
         let aggregateDict: [String: Any] = [
             kAudioAggregateDeviceNameKey as String: "Heard Aggregate",
             kAudioAggregateDeviceUIDKey as String: aggregateUID,
@@ -884,6 +884,69 @@ public enum TempFileCleanup {
 
             try? fm.removeItem(at: fileURL)
         }
+    }
+}
+
+// MARK: - Audio Device Cleanup
+
+public enum AudioDeviceCleanup {
+    /// UID prefix used by every aggregate device Heard creates for its process tap.
+    /// Must match the value used in `RecordingManager.setupAppAudioRecording`.
+    static let heardAggregateUIDPrefix = "com.execsumo.heard.tap."
+
+    /// Destroy any orphaned private aggregate devices left over from a previous
+    /// Heard session that crashed mid-recording. macOS normally reclaims these
+    /// when the creating process exits cleanly, but `kill -9` / segfaults can
+    /// leak them into the CoreAudio device tree. Called on app launch.
+    public static func cleanOrphanAggregateDevices() {
+        var propSize: UInt32 = 0
+        var devicesProp = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let sizeStatus = AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject), &devicesProp, 0, nil, &propSize
+        )
+        guard sizeStatus == noErr, propSize > 0 else { return }
+
+        let deviceCount = Int(propSize) / MemoryLayout<AudioObjectID>.size
+        var deviceIDs = [AudioObjectID](repeating: 0, count: deviceCount)
+        let readStatus = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &devicesProp, 0, nil, &propSize, &deviceIDs
+        )
+        guard readStatus == noErr else { return }
+
+        var destroyed = 0
+        for deviceID in deviceIDs {
+            guard let uid = deviceUID(deviceID),
+                  uid.hasPrefix(heardAggregateUIDPrefix) else { continue }
+            let status = AudioHardwareDestroyAggregateDevice(deviceID)
+            if status == noErr {
+                destroyed += 1
+                NSLog("Heard: Destroyed orphan aggregate device id=%u uid=%@", deviceID, uid)
+            } else {
+                NSLog("Heard: Failed to destroy orphan aggregate device id=%u (%d)", deviceID, status)
+            }
+        }
+        if destroyed > 0 {
+            NSLog("Heard: Orphan aggregate cleanup destroyed %d device(s)", destroyed)
+        }
+    }
+
+    private static func deviceUID(_ deviceID: AudioObjectID) -> String? {
+        var uidRef: CFString = "" as CFString
+        var uidSize = UInt32(MemoryLayout<CFString>.size)
+        var uidProp = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = withUnsafeMutablePointer(to: &uidRef) { ptr in
+            AudioObjectGetPropertyData(deviceID, &uidProp, 0, nil, &uidSize, ptr)
+        }
+        guard status == noErr else { return nil }
+        return uidRef as String
     }
 }
 

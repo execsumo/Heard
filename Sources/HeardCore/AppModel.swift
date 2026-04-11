@@ -65,6 +65,9 @@ public final class AppModel: ObservableObject {
         )
         TempFileCleanup.cleanStaleRecordings(activeJobPaths: activeJobPaths)
 
+        // Destroy orphaned private aggregate devices left behind by previous crashes
+        AudioDeviceCleanup.cleanOrphanAggregateDevices()
+
         // Sync launch-at-login state with settings
         let currentlyEnabled = LaunchAtLogin.isEnabled
         if settingsStore.settings.launchAtLogin != currentlyEnabled {

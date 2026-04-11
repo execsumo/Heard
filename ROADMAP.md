@@ -30,7 +30,6 @@ These land inside the existing v1 scope and mostly tighten things the user alrea
 - **Audible meeting-start chime (opt-in).** A short non-intrusive sound confirms recording started. Off by default.
 - **Recording self-test.** After starting, verify that non-zero samples are flowing from both the mic and the tap within 2 s. If not, surface an error and try to recover (re-create the aggregate device once).
 - **Graceful fallback on tap failure.** Already mic-only-on-tap-error; surface a warning banner in the menu bar dropdown so the user knows the meeting will only have their own voice.
-- **Orphan aggregate-device cleanup.** If the app crashes during recording, the private aggregate device can linger. Enumerate and destroy `com.execsumo.heard.tap.*` devices on launch.
 
 ### Pipeline
 - **Preprocessing concurrency guard.** Both tracks are currently preprocessed concurrently in a `TaskGroup`. On machines with tight memory, this doubles the peak RAM during VAD. Expose a setting to serialize preprocessing.

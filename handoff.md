@@ -157,7 +157,6 @@ See [`ROADMAP.md`](./ROADMAP.md) for the full list of planned improvements, orga
 - Menu bar dropdown uses `.window` style and has a fixed max height — jobs list can clip when many jobs accumulate
 - Dictation hotkey recorder accepts any combo, including ones that clash with system shortcuts
 - Teams detection only matches localized app names — non-English macOS locales may miss Teams
-- Orphan private aggregate devices (`com.execsumo.heard.tap.*`) from crashed recordings are not cleaned up on launch
 
 ## Attempted Approaches for Dictation (Historical)
 
