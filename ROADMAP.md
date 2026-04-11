@@ -90,7 +90,6 @@ These stretch the architecture and deserve a spec update before landing.
 ## Technical debt
 
 - **`hotkeyManagerInstance` global.** The Carbon callback bridge uses a singleton. Acceptable for a one-hotkey app, but brittle if we ever add a second global shortcut. Replace with a `UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())` context.
-- **Settings window activation policy gymnastics.** `MTApp.swift` flips `NSApp.setActivationPolicy` between `.accessory` and `.regular` to make the Settings window accept keyboard input. This is fragile around the Name Speakers window and deserves a cleaner wrapper.
 - **`Views.swift` size.** ~1.3 kLOC for all UI. Split by tab once we're past the early iteration phase.
 - **Mic resampling in the dictation tap.** Linear interpolation is fine for 16 kHz ASR but audibly worse than `AVAudioConverter`. Unify with the pipeline resampler.
 - **`pipelineKeepAlive = 0` default.** Meeting models unload immediately today, so back-to-back meetings reload the 800 MB pipeline twice. Consider a 60 s default once we're confident the unload-after path is tested on low-RAM machines.

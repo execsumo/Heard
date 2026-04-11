@@ -970,6 +970,43 @@ public enum LaunchAtLogin {
     }
 }
 
+// MARK: - Window Activation Coordinator
+
+/// Reference-counts windows that need `NSApplication.ActivationPolicy.regular`
+/// so the policy flips to `.regular` while any of them are visible and reverts
+/// to `.accessory` once the last one closes.
+///
+/// Menu bar apps run as `.accessory` so they don't show a Dock icon, but
+/// windows rendered under that policy can't receive keyboard focus. Each
+/// focus-needing scene (Settings, Name Speakers) calls `begin(_:)` in its
+/// `onAppear` and `end(_:)` in its `onDisappear`, keyed by a stable owner
+/// identifier. The coordinator guarantees that closing one of several open
+/// windows never yanks focus from the remaining ones.
+@MainActor
+public enum WindowActivationCoordinator {
+    private static var owners: Set<String> = []
+
+    /// Register that `owner` needs `.regular` activation policy. The first
+    /// registration promotes the app to `.regular` and activates it.
+    public static func begin(_ owner: String) {
+        let wasEmpty = owners.isEmpty
+        owners.insert(owner)
+        if wasEmpty {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    /// Unregister `owner`. When the last owner leaves, the app reverts to
+    /// `.accessory` (menu-bar only, no Dock icon).
+    public static func end(_ owner: String) {
+        owners.remove(owner)
+        if owners.isEmpty {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+}
+
 // MARK: - Transcript Writer
 
 public enum TranscriptWriter {
