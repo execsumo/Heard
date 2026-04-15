@@ -2,7 +2,7 @@
 
 ## Current Status
 
-The app builds cleanly with `swift build` and runs as a menu bar app on macOS 14.2+. Core infrastructure is complete — meeting detection, dual-track audio capture, on-device transcription (Parakeet TDT V2), VAD (Silero), speaker diarization (LS-EEND + WeSpeaker), and speaker assignment are all functional via the FluidAudio framework. An `.app` bundle is available via `./scripts/bundle.sh`.
+The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15.0+. Core infrastructure is complete — meeting detection, dual-track audio capture, on-device transcription (Parakeet TDT V2), VAD (Silero), speaker diarization (LS-EEND + WeSpeaker), and speaker assignment are all functional via the FluidAudio framework. An `.app` bundle is available via `./scripts/bundle.sh`.
 
 **Dictation feature is fully functional** — speech recognition, text injection via CGEvent unicode insertion, and global hotkey (Ctrl+Shift+D) all working. Requires building with a stable code signing identity (`./scripts/bundle.sh --sign "Heard Dev"`) so Accessibility permission persists across rebuilds.
 
@@ -126,7 +126,7 @@ The dictation feature captures mic audio, transcribes in real-time, and injects 
 
 | File | Purpose |
 |------|---------|
-| `Package.swift` | SPM config, macOS 14.2+, FluidAudio dependency |
+| `Package.swift` | SPM config, macOS 15.0+, FluidAudio dependency |
 | `Sources/Heard/MTApp.swift` | `@main` entry, MenuBarExtra + Window scenes |
 | `Sources/HeardCore/AppModel.swift` | Central state, action handlers, lifecycle, dictation wiring |
 | `Sources/HeardCore/CoreModels.swift` | AppPhase, PipelineJob, SpeakerProfile, AppSettings, HotkeyCombo, etc. |

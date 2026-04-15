@@ -14,7 +14,7 @@ open build/Heard.app       # launch as proper app (mic permission goes to Heard)
 swift package clean        # clean build artifacts
 ```
 
-No Xcode project — this is a Swift Package Manager executable. macOS 14.2+ required.
+No Xcode project — this is a Swift Package Manager executable. macOS 15.0+ required.
 
 ## Key Files
 

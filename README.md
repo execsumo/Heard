@@ -36,9 +36,9 @@ No cloud, no LLM, no external APIs — everything runs on-device on Apple Silico
 
 ## Requirements
 
-- macOS 14.2+ (required by `CATapDescription`)
+- macOS 15.0+
 - Apple Silicon (FluidAudio CoreML/ANE models are ARM-only)
-- [FluidAudio](https://github.com/FluidInference/FluidAudio) 0.12.4+ (resolved automatically via SPM)
+- [FluidAudio](https://github.com/FluidInference/FluidAudio) 0.13.6+ (resolved automatically via SPM)
 
 ## Build & Run
 

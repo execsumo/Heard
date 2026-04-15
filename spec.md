@@ -83,7 +83,7 @@ When a meeting is detected, read the Teams window title via `CGWindowListCopyWin
 
 Always record two independent audio streams:
 
-1. **App audio**: Use `CATapDescription` (macOS 14.2+) to tap the Teams process audio output. Record at 48 kHz stereo. This captures all meeting audio (remote participants, shared audio). Shows the purple dot in Control Center but requires no Screen Recording permission.
+1. **App audio**: Use `CATapDescription` (macOS 15.0+) to tap the Teams process audio output. Record at 48 kHz stereo. This captures all meeting audio (remote participants, shared audio). Shows the purple dot in Control Center but requires no Screen Recording permission.
 
 2. **Microphone audio**: Use `AVAudioEngine` to capture the system default microphone. Record at 48 kHz mono. This captures the local user's voice.
 
@@ -477,7 +477,7 @@ That's it — 6 settings. Everything else is either fixed (VAD threshold, speake
 | Language | Swift 5.9+ |
 | UI framework | SwiftUI + AppKit (NSPanel, NSStatusItem) |
 | Build system | Swift Package Manager |
-| Audio capture (app) | CATapDescription (AudioToolbox, macOS 14.2+) |
+| Audio capture (app) | CATapDescription (AudioToolbox, macOS 15.0+) |
 | Audio capture (mic) | AVAudioEngine |
 | Audio format | WAV (48 kHz native for recording, 16 kHz mono for processing) |
 | Transcription | FluidAudio Parakeet TDT V2 (CoreML/ANE) |
@@ -489,7 +489,7 @@ That's it — 6 settings. Everything else is either fixed (VAD threshold, speake
 | Text injection | Deferred to v2 |
 | Distribution | GitHub Releases + Homebrew Cask |
 | CI | GitHub Actions |
-| Minimum OS | macOS 14.2 |
+| Minimum OS | macOS 15.0 |
 
 ---
 

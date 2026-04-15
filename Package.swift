@@ -4,13 +4,13 @@ import PackageDescription
 let package = Package(
     name: "Heard",
     platforms: [
-        .macOS("14.2")
+        .macOS("15.0")
     ],
     products: [
         .executable(name: "Heard", targets: ["Heard"])
     ],
     dependencies: [
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.4"),
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.13.6"),
     ],
     targets: [
         .target(
