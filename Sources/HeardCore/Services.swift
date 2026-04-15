@@ -489,7 +489,7 @@ public final class RecordingManager: ObservableObject {
         let outputUID = outputUIDRef as String
 
         // ── Step 5: Create private aggregate device containing the tap ────────
-        let aggregateUID = "com.execsumo.heard.tap.\(UUID().uuidString)"
+        let aggregateUID = "\(AudioDeviceCleanup.heardAggregateUIDPrefix)\(UUID().uuidString)"
         let aggregateDict: [String: Any] = [
             kAudioAggregateDeviceNameKey as String: "Heard Aggregate",
             kAudioAggregateDeviceUIDKey as String: aggregateUID,
@@ -899,6 +899,69 @@ public enum TempFileCleanup {
     }
 }
 
+// MARK: - Audio Device Cleanup
+
+public enum AudioDeviceCleanup {
+    /// UID prefix used by every aggregate device Heard creates for its process tap.
+    /// Must match the value used in `RecordingManager.setupAppAudioRecording`.
+    static let heardAggregateUIDPrefix = "com.execsumo.heard.tap."
+
+    /// Destroy any orphaned private aggregate devices left over from a previous
+    /// Heard session that crashed mid-recording. macOS normally reclaims these
+    /// when the creating process exits cleanly, but `kill -9` / segfaults can
+    /// leak them into the CoreAudio device tree. Called on app launch.
+    public static func cleanOrphanAggregateDevices() {
+        var propSize: UInt32 = 0
+        var devicesProp = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let sizeStatus = AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject), &devicesProp, 0, nil, &propSize
+        )
+        guard sizeStatus == noErr, propSize > 0 else { return }
+
+        let deviceCount = Int(propSize) / MemoryLayout<AudioObjectID>.size
+        var deviceIDs = [AudioObjectID](repeating: 0, count: deviceCount)
+        let readStatus = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &devicesProp, 0, nil, &propSize, &deviceIDs
+        )
+        guard readStatus == noErr else { return }
+
+        var destroyed = 0
+        for deviceID in deviceIDs {
+            guard let uid = deviceUID(deviceID),
+                  uid.hasPrefix(heardAggregateUIDPrefix) else { continue }
+            let status = AudioHardwareDestroyAggregateDevice(deviceID)
+            if status == noErr {
+                destroyed += 1
+                NSLog("Heard: Destroyed orphan aggregate device id=%u uid=%@", deviceID, uid)
+            } else {
+                NSLog("Heard: Failed to destroy orphan aggregate device id=%u (%d)", deviceID, status)
+            }
+        }
+        if destroyed > 0 {
+            NSLog("Heard: Orphan aggregate cleanup destroyed %d device(s)", destroyed)
+        }
+    }
+
+    private static func deviceUID(_ deviceID: AudioObjectID) -> String? {
+        var uidRef: CFString = "" as CFString
+        var uidSize = UInt32(MemoryLayout<CFString>.size)
+        var uidProp = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = withUnsafeMutablePointer(to: &uidRef) { ptr in
+            AudioObjectGetPropertyData(deviceID, &uidProp, 0, nil, &uidSize, ptr)
+        }
+        guard status == noErr else { return nil }
+        return uidRef as String
+    }
+}
+
 // MARK: - Launch at Login
 
 public enum LaunchAtLogin {
@@ -915,6 +978,43 @@ public enum LaunchAtLogin {
             }
         } catch {
             NSLog("Heard: Launch at login toggle failed: \(error.localizedDescription)")
+        }
+    }
+}
+
+// MARK: - Window Activation Coordinator
+
+/// Reference-counts windows that need `NSApplication.ActivationPolicy.regular`
+/// so the policy flips to `.regular` while any of them are visible and reverts
+/// to `.accessory` once the last one closes.
+///
+/// Menu bar apps run as `.accessory` so they don't show a Dock icon, but
+/// windows rendered under that policy can't receive keyboard focus. Each
+/// focus-needing scene (Settings, Name Speakers) calls `begin(_:)` in its
+/// `onAppear` and `end(_:)` in its `onDisappear`, keyed by a stable owner
+/// identifier. The coordinator guarantees that closing one of several open
+/// windows never yanks focus from the remaining ones.
+@MainActor
+public enum WindowActivationCoordinator {
+    private static var owners: Set<String> = []
+
+    /// Register that `owner` needs `.regular` activation policy. The first
+    /// registration promotes the app to `.regular` and activates it.
+    public static func begin(_ owner: String) {
+        let wasEmpty = owners.isEmpty
+        owners.insert(owner)
+        if wasEmpty {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    /// Unregister `owner`. When the last owner leaves, the app reverts to
+    /// `.accessory` (menu-bar only, no Dock icon).
+    public static func end(_ owner: String) {
+        owners.remove(owner)
+        if owners.isEmpty {
+            NSApp.setActivationPolicy(.accessory)
         }
     }
 }
