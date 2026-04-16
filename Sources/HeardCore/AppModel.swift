@@ -46,6 +46,11 @@ public final class AppModel: ObservableObject {
         let downloadManager = ModelDownloadManager(catalog: modelCatalog)
         let dictationManager = DictationManager()
 
+        // Propagate persisted model version to managers before first use
+        let savedVersion = settingsStore.settings.transcriptionModel
+        downloadManager.transcriptionModel = savedVersion
+        dictationManager.modelVersion = savedVersion
+
         let model = AppModel(
             settingsStore: settingsStore,
             speakerStore: speakerStore,
@@ -212,6 +217,7 @@ public var filteredSpeakers: [SpeakerProfile] {
             } else {
                 do {
                     dictationManager.customVocabulary = settingsStore.settings.customVocabulary
+                    dictationManager.modelVersion = settingsStore.settings.transcriptionModel
                     dictationManager.modelKeepAliveSeconds = settingsStore.settings.dictationKeepAlive
                     try await dictationManager.start()
                     isDictating = true
@@ -258,6 +264,15 @@ public var filteredSpeakers: [SpeakerProfile] {
     public func updateDictationHotkey(_ hotkey: HotkeyCombo) {
         settingsStore.settings.dictationHotkey = hotkey
         hotkeyManager?.updateHotkey(hotkey)
+    }
+
+    public func setTranscriptionModel(_ version: TranscriptionModel) {
+        settingsStore.settings.transcriptionModel = version
+        // Propagate to managers so the next start/download uses the right version
+        dictationManager.modelVersion = version
+        downloadManager.transcriptionModel = version
+        downloadManager.refreshStatuses()
+        objectWillChange.send()
     }
 
     private func setupHotkeyManager() {

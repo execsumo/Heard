@@ -558,6 +558,21 @@ public struct SettingsView: View {
 
     private var modelsSection: some View {
         Form {
+            Section("Transcription Model") {
+                Picker("Parakeet Version", selection: Binding(
+                    get: { model.settingsStore.settings.transcriptionModel },
+                    set: { model.setTranscriptionModel($0) }
+                )) {
+                    ForEach(TranscriptionModel.allCases) { version in
+                        Text(version.displayName).tag(version)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                Text("V2 is recommended for English meetings. Changing versions will reload models on the next transcription.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
             Section("Model Status") {
                 ForEach(model.modelCatalog.statuses) { item in
                     ModelStatusRow(item: item, downloadManager: model.downloadManager)
@@ -794,7 +809,7 @@ private struct ModelStatusRow: View {
                 .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.modelKind.displayName)
+                Text(item.modelKind.displayName(for: downloadManager.transcriptionModel))
                     .font(.callout.weight(.medium))
 
                 if let progress = downloadManager.downloadProgress[item.modelKind] {

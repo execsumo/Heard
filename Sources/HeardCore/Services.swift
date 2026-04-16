@@ -1081,6 +1081,7 @@ public final class PipelineProcessor: ObservableObject {
     /// Cached models for keep-alive between jobs.
     private var cachedAsrModels: AsrModels?
     private var cachedAsrManager: AsrManager?
+    private var cachedAsrVersion: TranscriptionModel?
     private var modelUnloadTask: Task<Void, Never>?
 
     private static let retryDelays: [TimeInterval] = [5, 30, 300]
@@ -1177,6 +1178,7 @@ public final class PipelineProcessor: ObservableObject {
         modelUnloadTask = nil
         cachedAsrModels = nil
         cachedAsrManager = nil
+        cachedAsrVersion = nil
         NSLog("Heard: Pipeline models unloaded")
     }
 
@@ -1328,26 +1330,39 @@ public final class PipelineProcessor: ObservableObject {
         }
     }
 
-    // MARK: - Stage 2: Transcription (Parakeet TDT V2)
+    // MARK: - Stage 2: Transcription
 
     private func runTranscription(_ job: PipelineJob) async throws {
         // Cancel any pending unload — we're using the models now
         modelUnloadTask?.cancel()
         modelUnloadTask = nil
 
-        // Reuse cached models if available, otherwise load fresh
+        let selectedVersion = settingsStore.settings.transcriptionModel
+
+        // Reuse cached models if available and the same version; otherwise load fresh
         let asrManager: AsrManager
-        if let cached = cachedAsrManager {
+        if let cached = cachedAsrManager, cachedAsrVersion == selectedVersion {
             // Reset decoder state so stale context from the previous job doesn't bleed in
             await cached.resetDecoderState()
             asrManager = cached
         } else {
-            let models = try await AsrModels.loadFromCache(version: .v3)
-            let manager = AsrManager()
+            // Version changed or no cache — discard old models and load the selected version
+            cachedAsrModels = nil
+            cachedAsrManager = nil
+            cachedAsrVersion = nil
+
+            let fluidVersion: AsrModelVersion = selectedVersion == .v2 ? .v2 : .v3
+            let models = try await AsrModels.loadFromCache(version: fluidVersion)
+            let asrConfig = ASRConfig(
+                tdtConfig: TdtConfig(blankId: selectedVersion.blankId),
+                encoderHiddenSize: fluidVersion.encoderHiddenSize
+            )
+            let manager = AsrManager(config: asrConfig)
             try await manager.loadModels(models)
             asrManager = manager
             cachedAsrModels = models
             cachedAsrManager = manager
+            cachedAsrVersion = selectedVersion
         }
 
         // Minimum 16,000 samples (1 second at 16kHz) required by Parakeet

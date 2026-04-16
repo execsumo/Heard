@@ -19,6 +19,7 @@ public final class DictationManager: ObservableObject {
 
     private var asrManager: AsrManager?
     private var asrModels: AsrModels?
+    private var loadedModelVersion: TranscriptionModel?
     private var micEngine: AVAudioEngine?
     private var streamingTask: Task<Void, Never>?
     private var unloadTask: Task<Void, Never>?
@@ -31,6 +32,9 @@ public final class DictationManager: ObservableObject {
 
     /// Custom vocabulary terms (reserved for future post-processing rescoring). Set before calling start().
     public var customVocabulary: [String] = []
+
+    /// Which Parakeet model version to use. Set before calling start(); changing mid-session reloads models on the next start.
+    public var modelVersion: TranscriptionModel = .v2
 
     /// How long to keep the model loaded after dictation stops (seconds). Set from settings before calling stop().
     public var modelKeepAliveSeconds: TimeInterval = 120
@@ -61,16 +65,23 @@ public final class DictationManager: ObservableObject {
 
         state = .loading
 
-        // Load batch ASR models if needed
-        if asrModels == nil {
-            let models = try await AsrModels.loadFromCache(version: .v3)
-            asrModels = models
-        }
+        // Load ASR models if needed, or reload if version changed
+        if asrModels == nil || loadedModelVersion != modelVersion {
+            asrManager = nil
+            asrModels = nil
+            loadedModelVersion = nil
 
-        if asrManager == nil {
-            let manager = AsrManager(config: ASRConfig.default)
-            try await manager.loadModels(asrModels!)
+            let fluidVersion: AsrModelVersion = modelVersion == .v2 ? .v2 : .v3
+            let models = try await AsrModels.loadFromCache(version: fluidVersion)
+            let asrConfig = ASRConfig(
+                tdtConfig: TdtConfig(blankId: modelVersion.blankId),
+                encoderHiddenSize: fluidVersion.encoderHiddenSize
+            )
+            let manager = AsrManager(config: asrConfig)
+            try await manager.loadModels(models)
+            asrModels = models
             asrManager = manager
+            loadedModelVersion = modelVersion
         }
 
         // Reset state
@@ -276,6 +287,7 @@ public final class DictationManager: ObservableObject {
         unloadTask = nil
         asrManager = nil
         asrModels = nil
+        loadedModelVersion = nil
         NSLog("Heard: Dictation models unloaded")
     }
 }

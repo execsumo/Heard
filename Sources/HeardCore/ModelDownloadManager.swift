@@ -13,6 +13,9 @@ public final class ModelDownloadManager: ObservableObject {
     private var activeTasks: [ModelKind: Task<Void, Never>] = [:]
     private let catalog: ModelCatalog
 
+    /// The currently selected transcription model version; drives cache detection and download.
+    public var transcriptionModel: TranscriptionModel = .v2
+
     public init(catalog: ModelCatalog) {
         self.catalog = catalog
         refreshStatuses()
@@ -23,24 +26,23 @@ public final class ModelDownloadManager: ObservableObject {
         let fm = FileManager.default
 
         // VAD: FluidAudio stores in ~/Library/Application Support/FluidAudio/Models/silero-vad-coreml/
-        let vadDir = AsrModels.defaultCacheDirectory(for: .v3)
-            .deletingLastPathComponent()
-            .appendingPathComponent(Repo.vad.folderName, isDirectory: true)
+        let fluidModelsDir = AsrModels.defaultCacheDirectory(for: .v3).deletingLastPathComponent()
+        let vadDir = fluidModelsDir.appendingPathComponent(Repo.vad.folderName, isDirectory: true)
         if fm.fileExists(atPath: vadDir.path) {
             catalog.markReady(.batchVad)
         }
 
-        // Parakeet V3: FluidAudio stores in ~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3-coreml/
-        let asrDefaultDir = AsrModels.defaultCacheDirectory(for: .v3)
+        // Parakeet: check whichever version is currently selected
+        let selectedFluidVersion: AsrModelVersion = transcriptionModel == .v2 ? .v2 : .v3
+        let asrDefaultDir = AsrModels.defaultCacheDirectory(for: selectedFluidVersion)
+        let parakeetRepo: Repo = transcriptionModel == .v2 ? .parakeetV2 : .parakeet
         let asrCustomDir = FileManager.default.heardAppSupportDirectory
-            .appendingPathComponent(Repo.parakeet.folderName, isDirectory: true)
+            .appendingPathComponent(parakeetRepo.folderName, isDirectory: true)
         if fm.fileExists(atPath: asrDefaultDir.path) || fm.fileExists(atPath: asrCustomDir.path) {
             catalog.markReady(.batchParakeet)
         }
 
         // Diarizer: FluidAudio stores in ~/Library/Application Support/FluidAudio/Models/speaker-diarization-coreml/
-        let fluidModelsDir = AsrModels.defaultCacheDirectory(for: .v3)
-            .deletingLastPathComponent()  // FluidAudio/Models/
         let diarDir = fluidModelsDir.appendingPathComponent(Repo.diarizer.folderName, isDirectory: true)
         if fm.fileExists(atPath: diarDir.path) {
             catalog.markReady(.diarization)
@@ -51,7 +53,6 @@ public final class ModelDownloadManager: ObservableObject {
         if CtcModels.modelsExist(at: ctcDir) {
             catalog.markReady(.ctcVocabulary)
         }
-
     }
 
     /// All batch (meeting transcription) models are ready (excludes optional CTC).
@@ -81,6 +82,8 @@ public final class ModelDownloadManager: ObservableObject {
         catalog.markDownloading(kind)
         downloadProgress[kind] = 0
 
+        let selectedVersion = transcriptionModel
+
         activeTasks[kind] = Task { [weak self] in
             guard let self else { return }
             do {
@@ -95,8 +98,8 @@ public final class ModelDownloadManager: ObservableObject {
                     catalog.markReady(.batchVad)
 
                 case .batchParakeet:
-                    // Use FluidAudio's default cache so models are shared
-                    let _ = try await AsrModels.loadFromCache(version: .v3) { [weak self] progress in
+                    let fluidVersion: AsrModelVersion = selectedVersion == .v2 ? .v2 : .v3
+                    let _ = try await AsrModels.loadFromCache(version: fluidVersion) { [weak self] progress in
                         Task { @MainActor [weak self] in
                             self?.downloadProgress[.batchParakeet] = progress.fractionCompleted
                         }
@@ -111,7 +114,6 @@ public final class ModelDownloadManager: ObservableObject {
                 case .ctcVocabulary:
                     let _ = try await CtcModels.downloadAndLoad(variant: .ctc110m)
                     catalog.markReady(.ctcVocabulary)
-
                 }
                 downloadProgress[kind] = 1.0
             } catch {

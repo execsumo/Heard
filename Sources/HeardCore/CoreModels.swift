@@ -181,6 +181,8 @@ public struct AppSettings: Codable, Equatable {
     public var dictationKeepAlive: TimeInterval
     /// How long to keep transcription/diarization models loaded after pipeline processing (seconds). 0 = unload immediately.
     public var pipelineKeepAlive: TimeInterval
+    /// Which Parakeet model version to use for transcription (pipeline + dictation).
+    public var transcriptionModel: TranscriptionModel
 
     public static let `default` = AppSettings(
         userName: "",
@@ -193,7 +195,8 @@ public struct AppSettings: Codable, Equatable {
         dictationHotkey: .default,
         pushToTalk: false,
         dictationKeepAlive: 120,
-        pipelineKeepAlive: 0
+        pipelineKeepAlive: 0,
+        transcriptionModel: .v2
     )
 
     public init(
@@ -207,7 +210,8 @@ public struct AppSettings: Codable, Equatable {
         dictationHotkey: HotkeyCombo = .default,
         pushToTalk: Bool = false,
         dictationKeepAlive: TimeInterval = 120,
-        pipelineKeepAlive: TimeInterval = 0
+        pipelineKeepAlive: TimeInterval = 0,
+        transcriptionModel: TranscriptionModel = .v2
     ) {
         self.userName = userName
         self.launchAtLogin = launchAtLogin
@@ -220,6 +224,29 @@ public struct AppSettings: Codable, Equatable {
         self.pushToTalk = pushToTalk
         self.dictationKeepAlive = dictationKeepAlive
         self.pipelineKeepAlive = pipelineKeepAlive
+        self.transcriptionModel = transcriptionModel
+    }
+}
+
+public enum TranscriptionModel: String, Codable, CaseIterable, Identifiable, Sendable {
+    case v2
+    case v3
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .v2: return "Parakeet V2 — English-optimized"
+        case .v3: return "Parakeet V3 — Latest"
+        }
+    }
+
+    /// TDT decoder blank token ID for this model version.
+    public var blankId: Int {
+        switch self {
+        case .v2: return 1024
+        case .v3: return 8192
+        }
     }
 }
 
@@ -231,9 +258,9 @@ public enum ModelKind: String, CaseIterable, Identifiable {
 
     public var id: String { rawValue }
 
-    public var displayName: String {
+    public func displayName(for transcriptionModel: TranscriptionModel = .v2) -> String {
         switch self {
-        case .batchParakeet: return "Parakeet TDT V2"
+        case .batchParakeet: return transcriptionModel.displayName
         case .batchVad: return "Silero VAD v6"
         case .diarization: return "LS-EEND + WeSpeaker"
         case .ctcVocabulary: return "Parakeet CTC 110M"
