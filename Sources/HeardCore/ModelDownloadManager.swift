@@ -23,24 +23,23 @@ public final class ModelDownloadManager: ObservableObject {
         let fm = FileManager.default
 
         // VAD: FluidAudio stores in ~/Library/Application Support/FluidAudio/Models/silero-vad-coreml/
-        let vadDir = AsrModels.defaultCacheDirectory(for: .v2)
+        let vadDir = AsrModels.defaultCacheDirectory(for: .v3)
             .deletingLastPathComponent()
             .appendingPathComponent(Repo.vad.folderName, isDirectory: true)
         if fm.fileExists(atPath: vadDir.path) {
             catalog.markReady(.batchVad)
         }
 
-        // Parakeet V2: FluidAudio stores in ~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v2-coreml/
-        // Also check our custom Models dir (where load(from:) puts it)
-        let asrDefaultDir = AsrModels.defaultCacheDirectory(for: .v2)
+        // Parakeet V3: FluidAudio stores in ~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3-coreml/
+        let asrDefaultDir = AsrModels.defaultCacheDirectory(for: .v3)
         let asrCustomDir = FileManager.default.heardAppSupportDirectory
-            .appendingPathComponent(Repo.parakeetV2.folderName, isDirectory: true)
+            .appendingPathComponent(Repo.parakeet.folderName, isDirectory: true)
         if fm.fileExists(atPath: asrDefaultDir.path) || fm.fileExists(atPath: asrCustomDir.path) {
             catalog.markReady(.batchParakeet)
         }
 
         // Diarizer: FluidAudio stores in ~/Library/Application Support/FluidAudio/Models/speaker-diarization-coreml/
-        let fluidModelsDir = AsrModels.defaultCacheDirectory(for: .v2)
+        let fluidModelsDir = AsrModels.defaultCacheDirectory(for: .v3)
             .deletingLastPathComponent()  // FluidAudio/Models/
         let diarDir = fluidModelsDir.appendingPathComponent(Repo.diarizer.folderName, isDirectory: true)
         if fm.fileExists(atPath: diarDir.path) {
@@ -97,7 +96,7 @@ public final class ModelDownloadManager: ObservableObject {
 
                 case .batchParakeet:
                     // Use FluidAudio's default cache so models are shared
-                    let _ = try await AsrModels.loadFromCache(version: .v2) { [weak self] progress in
+                    let _ = try await AsrModels.loadFromCache(version: .v3) { [weak self] progress in
                         Task { @MainActor [weak self] in
                             self?.downloadProgress[.batchParakeet] = progress.fractionCompleted
                         }

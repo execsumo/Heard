@@ -1077,7 +1077,6 @@ public final class PipelineProcessor: ObservableObject {
     private var appTranscription: ASRResult?
     private var micTranscription: ASRResult?
     private var appDiarization: DiarizationResult?
-    private var micDiarization: DiarizationResult?
 
     /// Cached models for keep-alive between jobs.
     private var cachedAsrModels: AsrModels?
@@ -1153,7 +1152,6 @@ public final class PipelineProcessor: ObservableObject {
         appTranscription = nil
         micTranscription = nil
         appDiarization = nil
-        micDiarization = nil
 
         // Schedule model unload based on keep-alive setting
         let keepAlive = settingsStore.settings.pipelineKeepAlive
@@ -1340,9 +1338,11 @@ public final class PipelineProcessor: ObservableObject {
         // Reuse cached models if available, otherwise load fresh
         let asrManager: AsrManager
         if let cached = cachedAsrManager {
+            // Reset decoder state so stale context from the previous job doesn't bleed in
+            await cached.resetDecoderState()
             asrManager = cached
         } else {
-            let models = try await AsrModels.loadFromCache(version: .v2)
+            let models = try await AsrModels.loadFromCache(version: .v3)
             let manager = AsrManager()
             try await manager.loadModels(models)
             asrManager = manager
@@ -1369,29 +1369,18 @@ public final class PipelineProcessor: ObservableObject {
     // MARK: - Stage 3: Diarization (LS-EEND + WeSpeaker)
 
     private func runDiarization(_ job: PipelineJob) async throws {
-        // Diarization needs meaningful audio (at least a few seconds)
+        // Diarization only applies to the app track (remote speakers).
+        // The mic track is a single known speaker (the local user) so diarization adds no value.
         let minSamples = 16_000 * 2 // 2 seconds at 16kHz
 
-        let hasAppAudio = appTrack.map { $0.samples.count >= minSamples } ?? false
-        let hasMicAudio = micTrack.map { $0.samples.count >= minSamples } ?? false
-
-        guard hasAppAudio || hasMicAudio else {
-            // Too short for diarization — skip, speaker assignment will use defaults
+        guard let track = appTrack, track.samples.count >= minSamples else {
+            // Too short or missing — skip, speaker assignment will use defaults
             return
         }
 
         let diarizer = OfflineDiarizerManager()
         try await diarizer.prepareModels()
-
-        // Diarize app track (may have multiple remote speakers)
-        if hasAppAudio, let track = appTrack {
-            appDiarization = try await diarizer.process(audio: track.samples)
-        }
-
-        // Diarize mic track (expect 1 speaker = local user)
-        if hasMicAudio, let track = micTrack {
-            micDiarization = try await diarizer.process(audio: track.samples)
-        }
+        appDiarization = try await diarizer.process(audio: track.samples)
 
         // Models are released when diarizer goes out of scope
     }

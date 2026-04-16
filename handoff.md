@@ -27,8 +27,8 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15
 ### Pipeline (Fully Implemented)
 - Sequential job queue with stages: queued → preprocessing → transcribing → diarizing → assigning → complete
 - **Preprocessing**: Resample to 16kHz mono via `AudioConverter`, Silero VAD silence trimming, `VadSegmentMap` for timestamp remapping
-- **Transcription**: Parakeet TDT V2 via `AsrManager` with 16k sample minimum guard
-- **Diarization**: `OfflineDiarizerManager` for speaker segments + embeddings
+- **Transcription**: Parakeet TDT V3 via `AsrManager` with 16k sample minimum guard; decoder state reset between cached jobs to prevent context bleed
+- **Diarization**: `OfflineDiarizerManager` on app track only (mic track is a single known speaker, diarization was unused)
 - **Speaker Assignment**: Cosine distance matching against `SpeakerStore`, confidence margin filtering, embedding diversity management
 - Non-retryable errors (no audio, too short) fail immediately; transient errors retry 3x with backoff (5s, 30s, 5min)
 - Jobs persist to JSON and survive app restart; failed jobs auto-retry on relaunch

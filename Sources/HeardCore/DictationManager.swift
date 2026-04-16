@@ -63,7 +63,7 @@ public final class DictationManager: ObservableObject {
 
         // Load batch ASR models if needed
         if asrModels == nil {
-            let models = try await AsrModels.loadFromCache(version: .v2)
+            let models = try await AsrModels.loadFromCache(version: .v3)
             asrModels = models
         }
 
