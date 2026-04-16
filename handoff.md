@@ -35,14 +35,11 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15
 - Pipeline fires `onPipelineIdle` callback so app phase returns to dormant
 - Markdown transcript output with timestamped speaker-labeled segments
 
-### Custom Vocabulary Boosting (Fully Working)
-- Uses FluidAudio's CTC-based vocabulary boosting (Parakeet TDT V2 + Parakeet CTC 110M dual-encoder)
-- Applied to both **pipeline transcription** (`Services.swift` `runTranscription()`) and **dictation** (`DictationManager.swift`)
-- User-defined terms from Settings → Transcription are converted to `CustomVocabularyTerm` and passed via `AsrManager.configureVocabularyBoosting()`
-- CTC models auto-download on first use via `CtcModels.downloadAndLoad(variant: .ctc110m)`
-- Graceful fallback: if CTC models fail to load, transcription proceeds without boosting
-- Dictation tracks vocabulary changes across sessions — reconfigures boosting if terms changed since last start
-- Memory: ~130 MB with boosting (vs ~66 MB TDT-only); Performance: ~63x RTFx (still well above real-time)
+### Custom Vocabulary Boosting (Needs Migration)
+- FluidAudio 0.13.6 removed `configureVocabularyBoosting` from batch `AsrManager` — it now only exists on `SlidingWindowAsrManager`
+- Vocabulary terms are still stored in Settings → Transcription (and `customVocabulary` property on `DictationManager`), but are not yet applied
+- Migration path: use `CtcKeywordSpotter` + `VocabularyRescorer.ctcTokenRescore()` as post-processing after batch transcription (see `TranscribeCommand.swift` in FluidAudio CLI for reference)
+- CTC models (`CtcModels`, `CtcTokenizer`) are still available for this purpose; `ModelDownloadManager` still downloads them
 
 ### Model Management
 - `ModelDownloadManager` pre-downloads all 4 model sets (VAD, Parakeet, Diarizer, CTC 110M) via FluidAudio

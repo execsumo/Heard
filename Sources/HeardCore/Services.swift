@@ -1344,33 +1344,10 @@ public final class PipelineProcessor: ObservableObject {
         } else {
             let models = try await AsrModels.loadFromCache(version: .v2)
             let manager = AsrManager()
-            try await manager.initialize(models: models)
+            try await manager.loadModels(models)
             asrManager = manager
             cachedAsrModels = models
             cachedAsrManager = manager
-        }
-
-        // Configure custom vocabulary boosting if terms are set and CTC models available
-        let vocab = settingsStore.settings.customVocabulary
-        if !vocab.isEmpty {
-            do {
-                let ctcModels = try await CtcModels.downloadAndLoad(variant: .ctc110m)
-                let ctcTokenizer = try await CtcTokenizer.load(
-                    from: CtcModels.defaultCacheDirectory(for: .ctc110m)
-                )
-                let terms = vocab.map { term in
-                    let tokenIds = ctcTokenizer.encode(term)
-                    return CustomVocabularyTerm(text: term, weight: 10.0, ctcTokenIds: tokenIds.isEmpty ? nil : tokenIds)
-                }
-                let context = CustomVocabularyContext(terms: terms)
-                try await asrManager.configureVocabularyBoosting(
-                    vocabulary: context,
-                    ctcModels: ctcModels
-                )
-                NSLog("Heard: Vocabulary boosting configured with \(vocab.count) terms")
-            } catch {
-                NSLog("Heard: Vocabulary boosting unavailable, continuing without: \(error)")
-            }
         }
 
         // Minimum 16,000 samples (1 second at 16kHz) required by Parakeet
