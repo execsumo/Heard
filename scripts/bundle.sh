@@ -57,7 +57,15 @@ echo -n "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
 # Copy entitlements (for reference; used during signing)
 cp "$REPO_ROOT/Heard.entitlements" "$APP_BUNDLE/Contents/Resources/Heard.entitlements"
 
-# Code sign if identity provided
+# Auto-detect "Dev Cert" if no identity explicitly provided
+if [[ -z "$SIGN_IDENTITY" ]]; then
+    if security find-identity -v -p codesigning | grep -q '"Dev Cert"'; then
+        SIGN_IDENTITY="Dev Cert"
+        echo "==> Found 'Dev Cert' — using it for signing"
+    fi
+fi
+
+# Code sign
 if [[ -n "$SIGN_IDENTITY" ]]; then
     echo "==> Signing with identity: $SIGN_IDENTITY"
     # NOTE: --options runtime (Hardened Runtime) is intentionally omitted for self-signed
@@ -79,7 +87,7 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
     echo "    Then re-grant both in System Settings → Privacy & Security."
 else
     # Ad-hoc sign so macOS will run it locally
-    echo "==> Ad-hoc signing..."
+    echo "==> Ad-hoc signing (no 'Dev Cert' found)..."
     codesign --force --sign - \
         --entitlements "$REPO_ROOT/Heard.entitlements" \
         "$APP_BUNDLE"

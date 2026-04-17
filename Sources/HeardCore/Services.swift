@@ -598,9 +598,9 @@ public final class RecordingManager: ObservableObject {
 
             var cb = AURenderCallbackStruct(
                 inputProc: { inRefCon, ioActionFlags, inTimeStamp, inBusNumber, inNumberFrames, _ -> OSStatus in
-                    guard let ptr = inRefCon,
-                          let ts = inTimeStamp,
-                          inNumberFrames > 0 else { return noErr }
+                    guard inNumberFrames > 0 else { return noErr }
+                    let ptr = inRefCon
+                    let ts = inTimeStamp
                     let context = Unmanaged<AppAudioInputContext>.fromOpaque(ptr).takeUnretainedValue()
                     guard !context.isStopped else { return noErr }
 
@@ -1343,7 +1343,7 @@ public final class PipelineProcessor: ObservableObject {
         let asrManager: AsrManager
         if let cached = cachedAsrManager, cachedAsrVersion == selectedVersion {
             // Reset decoder state so stale context from the previous job doesn't bleed in
-            await cached.resetDecoderState()
+            try await cached.resetDecoderState()
             asrManager = cached
         } else {
             // Version changed or no cache — discard old models and load the selected version
