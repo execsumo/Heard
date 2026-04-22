@@ -242,7 +242,9 @@ public final class PipelineQueueStore: ObservableObject {
     /// Prepare persisted queue state for a fresh app launch. Any job not in a
     /// terminal state (`.complete`) is re-queued: failed jobs get another attempt,
     /// and mid-stage jobs (orphaned by a crash) are recovered. `retryCount` is
-    /// preserved so the retry ceiling still applies across sessions.
+    /// preserved so the lifetime retry ceiling still applies across sessions —
+    /// jobs at/above `PipelineProcessor.lifetimeRetryLimit` stay `.failed` and
+    /// must be explicitly retried by the user.
     /// Returns the IDs of jobs that were modified.
     @discardableResult
     public func prepareForResume() -> [UUID] {
@@ -250,6 +252,14 @@ public final class PipelineQueueStore: ObservableObject {
         for index in jobs.indices {
             let stage = jobs[index].stage
             guard stage != .complete, stage != .queued else { continue }
+            if jobs[index].retryCount >= PipelineProcessor.lifetimeRetryLimit {
+                // Permanently-failed job — don't burn another round of retries.
+                if stage != .failed {
+                    jobs[index].stage = .failed
+                    changed.append(jobs[index].id)
+                }
+                continue
+            }
             jobs[index].stage = .queued
             jobs[index].error = nil
             jobs[index].stageStartTime = nil

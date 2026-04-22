@@ -1406,6 +1406,13 @@ public final class PipelineProcessor: ObservableObject {
 
     private static let retryDelays: [TimeInterval] = [5, 30, 300]
     private static let maxRetries = 3
+    /// Cumulative retry cap across sessions. Once `job.retryCount` reaches this
+    /// value, the job stays `.failed` until the user explicitly retries it
+    /// (which resets `retryCount` to 0). Prevents a permanently-broken job
+    /// (corrupt WAV, missing file) from burning retries on every app launch.
+    /// With `maxRetries = 3` per session, this allows two full session
+    /// exhaustions before giving up for good.
+    public static let lifetimeRetryLimit = 6
 
     public init(
         queueStore: PipelineQueueStore,
@@ -1446,6 +1453,11 @@ public final class PipelineProcessor: ObservableObject {
         var retry = job
         retry.stage = .queued
         retry.error = nil
+        // User-initiated retry gets a fresh budget. Without this, a job that
+        // already hit the lifetime cap would be filtered out by
+        // `PipelineQueueStore.prepareForResume` / `executeWithRetry` and
+        // never run again.
+        retry.retryCount = 0
         queueStore.update(retry)
         runNextIfNeeded()
     }
@@ -1509,6 +1521,7 @@ public final class PipelineProcessor: ObservableObject {
         await Self.executeWithRetry(
             job: &working,
             maxRetries: Self.maxRetries,
+            lifetimeRetryLimit: Self.lifetimeRetryLimit,
             retryDelays: Self.retryDelays,
             isNonRetryable: { ($0 as? PipelineError)?.isNonRetryable ?? false },
             onUpdate: { [weak self] updated in self?.queueStore.update(updated) },
@@ -1525,17 +1538,26 @@ public final class PipelineProcessor: ObservableObject {
     /// - Success: returns with the job's final state from `process`.
     /// - CancellationError: returns silently, no further updates.
     /// - Non-retryable error: sets `.failed`, persists once, returns.
-    /// - Retryable error: increments `retryCount`, records `error`, persists, sleeps, retries.
-    /// - Exhausted retries: sets `.failed`, persists.
+    /// - Retryable error: increments `retryCount` cumulatively, records `error`, persists, sleeps, retries.
+    /// - Exhausted per-session retries: sets `.failed`, persists.
+    /// - Lifetime cap reached (`retryCount >= lifetimeRetryLimit`): sets `.failed`
+    ///   immediately without attempting. `retryCount` is cumulative across sessions
+    ///   so a permanently-broken job eventually stops re-running on every app launch.
     public static func executeWithRetry(
         job: inout PipelineJob,
         maxRetries: Int,
+        lifetimeRetryLimit: Int,
         retryDelays: [TimeInterval],
         isNonRetryable: (Error) -> Bool,
         onUpdate: (PipelineJob) -> Void,
         sleep: (TimeInterval) async throws -> Void,
         process: (inout PipelineJob) async throws -> Void
     ) async {
+        if job.retryCount >= lifetimeRetryLimit {
+            job.stage = .failed
+            onUpdate(job)
+            return
+        }
         for attempt in 0..<maxRetries {
             do {
                 try await process(&job)
@@ -1544,9 +1566,15 @@ public final class PipelineProcessor: ObservableObject {
                 return
             } catch {
                 job.error = error.localizedDescription
-                job.retryCount = attempt + 1
+                job.retryCount += 1
 
                 if isNonRetryable(error) {
+                    job.stage = .failed
+                    onUpdate(job)
+                    return
+                }
+
+                if job.retryCount >= lifetimeRetryLimit {
                     job.stage = .failed
                     onUpdate(job)
                     return

@@ -867,6 +867,7 @@ private struct FakeFailure: Error {
         await PipelineProcessor.executeWithRetry(
             job: &job,
             maxRetries: 3,
+            lifetimeRetryLimit: 100,
             retryDelays: [1, 2, 3],
             isNonRetryable: { _ in false },
             onUpdate: { updates.append($0) },
@@ -886,6 +887,7 @@ private struct FakeFailure: Error {
         await PipelineProcessor.executeWithRetry(
             job: &job,
             maxRetries: 3,
+            lifetimeRetryLimit: 100,
             retryDelays: [1, 2, 3],
             isNonRetryable: { _ in false },
             onUpdate: { updates.append($0) },
@@ -913,6 +915,7 @@ private struct FakeFailure: Error {
         await PipelineProcessor.executeWithRetry(
             job: &job,
             maxRetries: 3,
+            lifetimeRetryLimit: 100,
             retryDelays: [1, 2, 3],
             isNonRetryable: { _ in false },
             onUpdate: { updates.append($0) },
@@ -938,6 +941,7 @@ private struct FakeFailure: Error {
         await PipelineProcessor.executeWithRetry(
             job: &job,
             maxRetries: 3,
+            lifetimeRetryLimit: 100,
             retryDelays: [1, 2, 3],
             isNonRetryable: { _ in true },
             onUpdate: { updates.append($0) },
@@ -960,6 +964,7 @@ private struct FakeFailure: Error {
         await PipelineProcessor.executeWithRetry(
             job: &job,
             maxRetries: 3,
+            lifetimeRetryLimit: 100,
             retryDelays: [1, 2, 3],
             isNonRetryable: { _ in false },
             onUpdate: { updates.append($0) },
@@ -980,6 +985,7 @@ private struct FakeFailure: Error {
         await PipelineProcessor.executeWithRetry(
             job: &job,
             maxRetries: 3,
+            lifetimeRetryLimit: 100,
             retryDelays: [0, 0, 0],
             isNonRetryable: { _ in false },
             onUpdate: { _ in },
@@ -1004,6 +1010,7 @@ private struct FakeFailure: Error {
         await PipelineProcessor.executeWithRetry(
             job: &job,
             maxRetries: 5,
+            lifetimeRetryLimit: 100,
             retryDelays: [1, 2], // only 2 delays for 4 retries
             isNonRetryable: { _ in false },
             onUpdate: { _ in },
@@ -1011,6 +1018,135 @@ private struct FakeFailure: Error {
             process: { _ in throw FakeFailure() }
         )
         try expectEqual(sleeps, [1, 2, 2, 2], "Last delay is reused after exhaustion")
+    }
+
+    // MARK: Lifetime retry cap
+
+    await testAsync("retryCount increments cumulatively across simulated sessions") {
+        // First session: 3 failures take retryCount 0 → 3
+        var job = makeJob(stage: .queued)
+        await PipelineProcessor.executeWithRetry(
+            job: &job,
+            maxRetries: 3,
+            lifetimeRetryLimit: 6,
+            retryDelays: [0, 0, 0],
+            isNonRetryable: { _ in false },
+            onUpdate: { _ in },
+            sleep: noSleep,
+            process: { _ in throw FakeFailure() }
+        )
+        try expectEqual(job.retryCount, 3)
+        try expectEqual(job.stage, .failed)
+
+        // Second session: prepareForResume would flip .failed → .queued; simulate
+        // that here. retryCount stays at 3 going in, hits 6 after three more fails.
+        job.stage = .queued
+        await PipelineProcessor.executeWithRetry(
+            job: &job,
+            maxRetries: 3,
+            lifetimeRetryLimit: 6,
+            retryDelays: [0, 0, 0],
+            isNonRetryable: { _ in false },
+            onUpdate: { _ in },
+            sleep: noSleep,
+            process: { _ in throw FakeFailure() }
+        )
+        try expectEqual(job.retryCount, 6, "Cumulative across sessions, not reset")
+        try expectEqual(job.stage, .failed)
+    }
+
+    await testAsync("Lifetime cap hit mid-session short-circuits remaining attempts") {
+        var job = makeJob(stage: .queued)
+        job.retryCount = 5 // one failure away from the cap
+        var attempts = 0
+        var sleeps: [TimeInterval] = []
+        await PipelineProcessor.executeWithRetry(
+            job: &job,
+            maxRetries: 3,
+            lifetimeRetryLimit: 6,
+            retryDelays: [1, 2, 3],
+            isNonRetryable: { _ in false },
+            onUpdate: { _ in },
+            sleep: { sleeps.append($0) },
+            process: { _ in
+                attempts += 1
+                throw FakeFailure()
+            }
+        )
+        try expectEqual(attempts, 1, "Only one attempt — cap reached, no further retries")
+        try expectEqual(job.retryCount, 6)
+        try expectEqual(job.stage, .failed)
+        try expect(sleeps.isEmpty, "No sleep after hitting lifetime cap")
+    }
+
+    await testAsync("Job already at lifetime cap fails immediately without attempting") {
+        var job = makeJob(stage: .queued)
+        job.retryCount = 6
+        var attempts = 0
+        var updates: [PipelineJob] = []
+        await PipelineProcessor.executeWithRetry(
+            job: &job,
+            maxRetries: 3,
+            lifetimeRetryLimit: 6,
+            retryDelays: [1, 2, 3],
+            isNonRetryable: { _ in false },
+            onUpdate: { updates.append($0) },
+            sleep: noSleep,
+            process: { _ in
+                attempts += 1
+                return
+            }
+        )
+        try expectEqual(attempts, 0, "Process never invoked when already capped")
+        try expectEqual(job.stage, .failed)
+        try expectEqual(job.retryCount, 6, "retryCount unchanged")
+        try expectEqual(updates.count, 1, "One persist to flip stage to .failed")
+    }
+}
+
+@MainActor func runLifetimeRetryCapTests() async {
+    print("\n🛑 Lifetime Retry Cap Tests")
+
+    func queueStore() -> PipelineQueueStore {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("heard-tests-\(UUID().uuidString).json")
+        return PipelineQueueStore(url: url)
+    }
+
+    await testAsync("prepareForResume leaves jobs at lifetime cap as .failed") {
+        let store = queueStore()
+        var jobA = makeJob(stage: .failed)
+        jobA.retryCount = PipelineProcessor.lifetimeRetryLimit // at cap
+        var jobB = makeJob(stage: .failed)
+        jobB.retryCount = 2 // below cap
+        store.enqueue(jobA)
+        store.enqueue(jobB)
+
+        let changed = store.prepareForResume()
+
+        let reloadedA = store.jobs.first(where: { $0.id == jobA.id })!
+        let reloadedB = store.jobs.first(where: { $0.id == jobB.id })!
+        try expectEqual(reloadedA.stage, .failed, "Capped job stays failed")
+        try expectEqual(reloadedA.retryCount, PipelineProcessor.lifetimeRetryLimit)
+        try expectEqual(reloadedB.stage, .queued, "Sub-cap job gets re-queued")
+        try expectEqual(reloadedB.retryCount, 2, "retryCount preserved across resume")
+        try expect(!changed.contains(jobA.id), "No change persisted for already-failed capped job")
+        try expect(changed.contains(jobB.id))
+    }
+
+    await testAsync("prepareForResume marks orphaned mid-stage job past cap as .failed") {
+        // A job crashed mid-transcribing and somehow its retryCount is already
+        // at the cap — prepareForResume should not quietly requeue it.
+        let store = queueStore()
+        var job = makeJob(stage: .transcribing)
+        job.retryCount = PipelineProcessor.lifetimeRetryLimit
+        store.enqueue(job)
+
+        let changed = store.prepareForResume()
+
+        let reloaded = store.jobs.first(where: { $0.id == job.id })!
+        try expectEqual(reloaded.stage, .failed)
+        try expect(changed.contains(job.id), "Stage flip persisted")
     }
 }
 
@@ -1238,6 +1374,7 @@ struct TestRunner {
         runTeamsIdentificationTests()
         runMeetingDetectorLifecycleTests()
         await runRetryExecutorTests()
+        await runLifetimeRetryCapTests()
         runSpeakerMatcherEdgeTests()
         runRosterReaderTests()
 

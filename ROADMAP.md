@@ -33,7 +33,7 @@ These land inside the existing v1 scope and mostly tighten things the user alrea
 - ~~**`stopWatching` should end the active meeting.**~~ Done — `MeetingDetector.stopWatching` now synchronously fires `onMeetingEnded` for any active snapshot, and `AppModel.stopWatching` preserves the resulting `.processing` phase.
 
 ### Pipeline
-- **Lifetime retry ceiling.** `PipelineProcessor.executeWithRetry` overwrites `retryCount = attempt + 1` where `attempt` is session-local. Combined with `PipelineQueueStore.prepareForResume()` now requeuing both `.failed` and mid-stage jobs on every launch, a permanently-broken job (corrupt WAV, missing file) will burn through 3 retries every app start, forever. Make `retryCount` cumulative across sessions and have `prepareForResume()` leave jobs above a lifetime cap in `.failed` so the user has to explicitly dismiss or retry.
+- ~~**Lifetime retry ceiling.**~~ Done — `executeWithRetry` now increments `retryCount` cumulatively (`+=`) with a `lifetimeRetryLimit = 6` cap; `prepareForResume()` leaves capped jobs in `.failed`; `retryFailedJob` resets the count so user-initiated retry gets a fresh budget.
 - **Preprocessing concurrency guard.** Both tracks are currently preprocessed concurrently in a `TaskGroup`. On machines with tight memory, this doubles the peak RAM during VAD. Expose a setting to serialize preprocessing.
 - **Progress in the UI.** The menu bar dropdown shows the current stage but no sub-stage progress. Emit sample-count-based progress from `AsrManager.transcribe` through an `AsyncStream`.
 - **Transcript preview in the dropdown.** Show the first ~100 chars of the most recent completed transcript so the user can verify the right meeting got captured.
