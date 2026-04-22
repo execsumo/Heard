@@ -26,7 +26,7 @@ These land inside the existing v1 scope and mostly tighten things the user alrea
 - **Graceful AX permission flow.** If Accessibility is revoked mid-session, text injection silently fails. Detect the failure and surface a one-shot banner with a re-grant button.
 
 ### Meeting detection & recording
-- **Teams bundle-ID fallback.** Detection matches localized app names (`"Microsoft Teams"`, `"Microsoft Teams classic"`, `"Microsoft Teams (work or school)"`). Add bundle-ID matching (`com.microsoft.teams`, `com.microsoft.teams2`) so non-English localizations of macOS/Teams still work.
+- ~~**Teams bundle-ID fallback.**~~ Done — `MeetingDetector.isTeamsMainApp` matches `com.microsoft.teams` / `com.microsoft.teams2` first, with the localized-name set kept as a fallback for builds under unfamiliar bundle IDs.
 - **Audible meeting-start chime (opt-in).** A short non-intrusive sound confirms recording started. Off by default.
 - ~~**Recording self-test.**~~ Done — tap is verified at T+2s; on silence, the chain is rebuilt once with fresh helper enumeration; persistent silence flips `appAudioTapFailed` and shows "Recording (mic only)" in the menu bar. Mic-side self-test still TODO.
 - **Graceful fallback on tap failure.** Already mic-only-on-tap-error; surface a warning banner in the menu bar dropdown so the user knows the meeting will only have their own voice.

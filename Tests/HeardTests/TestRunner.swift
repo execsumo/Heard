@@ -753,6 +753,48 @@ func runMeetingDetectionTests() {
     }
 }
 
+// MARK: - Teams Identification Tests
+
+func runTeamsIdentificationTests() {
+    print("\n🟣 Teams Identification Tests")
+
+    test("Matches new Teams by bundle ID even with non-English name") {
+        try expect(MeetingDetector.isTeamsMainApp(
+            bundleID: "com.microsoft.teams2", localizedName: "Microsoft Teams 团队"))
+    }
+
+    test("Matches classic Teams by bundle ID with localized name") {
+        try expect(MeetingDetector.isTeamsMainApp(
+            bundleID: "com.microsoft.teams", localizedName: "Microsoft Teams (Arbeit oder Schule)"))
+    }
+
+    test("Matches by localized name when bundle ID is missing") {
+        try expect(MeetingDetector.isTeamsMainApp(
+            bundleID: nil, localizedName: "Microsoft Teams"))
+    }
+
+    test("Matches all three known English names") {
+        try expect(MeetingDetector.isTeamsMainApp(bundleID: nil, localizedName: "Microsoft Teams"))
+        try expect(MeetingDetector.isTeamsMainApp(bundleID: nil, localizedName: "Microsoft Teams classic"))
+        try expect(MeetingDetector.isTeamsMainApp(
+            bundleID: nil, localizedName: "Microsoft Teams (work or school)"))
+    }
+
+    test("Rejects Teams helper sub-processes") {
+        try expect(!MeetingDetector.isTeamsMainApp(
+            bundleID: "com.microsoft.teams2.helper", localizedName: "Microsoft Teams Helper"))
+        try expect(!MeetingDetector.isTeamsMainApp(
+            bundleID: "com.microsoft.teams2.helper.gpu", localizedName: "Microsoft Teams Helper (GPU)"))
+    }
+
+    test("Rejects unrelated apps") {
+        try expect(!MeetingDetector.isTeamsMainApp(
+            bundleID: "com.apple.Safari", localizedName: "Safari"))
+        try expect(!MeetingDetector.isTeamsMainApp(bundleID: nil, localizedName: nil))
+        try expect(!MeetingDetector.isTeamsMainApp(bundleID: "", localizedName: ""))
+    }
+}
+
 // MARK: - MeetingDetector (live) Tests
 
 @MainActor func runMeetingDetectorLifecycleTests() {
@@ -1193,6 +1235,7 @@ struct TestRunner {
         runStoreTests()
         runPipelineResumeTests()
         runMeetingDetectionTests()
+        runTeamsIdentificationTests()
         runMeetingDetectorLifecycleTests()
         await runRetryExecutorTests()
         runSpeakerMatcherEdgeTests()

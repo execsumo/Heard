@@ -127,6 +127,22 @@ public final class MeetingDetector {
         "Microsoft Teams classic",
     ]
 
+    /// Bundle IDs of the main Teams app (not helpers). Bundle-ID matching catches
+    /// non-English macOS locales where `localizedName` is translated.
+    private static let teamsBundleIDs: Set<String> = [
+        "com.microsoft.teams",   // classic
+        "com.microsoft.teams2",  // new Teams
+    ]
+
+    /// True if the given app metadata identifies the main Microsoft Teams process.
+    /// Matches by bundle ID first (locale-independent), then by localized name as a fallback
+    /// for builds that ship under an unfamiliar bundle ID.
+    nonisolated public static func isTeamsMainApp(bundleID: String?, localizedName: String?) -> Bool {
+        if let bundleID, teamsBundleIDs.contains(bundleID) { return true }
+        if let localizedName, teamsProcessNames.contains(localizedName) { return true }
+        return false
+    }
+
     public init(
         onMeetingStarted: @escaping @MainActor (MeetingSnapshot) -> Void,
         onMeetingEnded: @escaping @MainActor (MeetingSnapshot) -> Void
@@ -203,8 +219,7 @@ public final class MeetingDetector {
     private static func detectTeamsMeeting() -> (detected: Bool, pid: pid_t?) {
         let runningApps = NSWorkspace.shared.runningApplications
         let teamsApps = runningApps.filter { app in
-            guard let name = app.localizedName else { return false }
-            return teamsProcessNames.contains(name)
+            isTeamsMainApp(bundleID: app.bundleIdentifier, localizedName: app.localizedName)
         }
         guard !teamsApps.isEmpty else { return (false, nil) }
 
