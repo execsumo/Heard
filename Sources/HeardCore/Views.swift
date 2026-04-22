@@ -111,7 +111,7 @@ public struct MenuBarView: View {
                 title: tapFailed ? "Recording (mic only)" : "Recording",
                 titleColor: .red,
                 subtitle: tapFailed
-                    ? "No system audio — grant Screen Recording"
+                    ? "No system audio — check Screen Recording permission"
                     : (session.title.isEmpty ? "Meeting" : session.title),
                 trailing: AnyView(
                     RecordingTimerView(startTime: session.startTime)

@@ -753,6 +753,59 @@ func runMeetingDetectionTests() {
     }
 }
 
+// MARK: - MeetingDetector (live) Tests
+
+@MainActor func runMeetingDetectorLifecycleTests() {
+    print("\n🛑 MeetingDetector Lifecycle Tests")
+
+    test("stopWatching with active simulated meeting fires onMeetingEnded") {
+        var startedTitles: [String] = []
+        var endedTitles: [String] = []
+        let detector = MeetingDetector(
+            onMeetingStarted: { startedTitles.append($0.title) },
+            onMeetingEnded: { endedTitles.append($0.title) }
+        )
+
+        detector.startWatching()
+        detector.simulateMeetingStart(title: "Standup")
+        try expectEqual(startedTitles, ["Standup"])
+        try expectEqual(endedTitles, [])
+
+        detector.stopWatching()
+        try expectEqual(endedTitles, ["Standup"], "stopWatching must end the active meeting")
+        try expect(!detector.isWatching)
+    }
+
+    test("stopWatching with no active meeting does not fire onMeetingEnded") {
+        var endedTitles: [String] = []
+        let detector = MeetingDetector(
+            onMeetingStarted: { _ in },
+            onMeetingEnded: { endedTitles.append($0.title) }
+        )
+
+        detector.startWatching()
+        detector.stopWatching()
+        try expectEqual(endedTitles, [])
+    }
+
+    test("Restarting after stopWatching mid-meeting does not double-end") {
+        var endedTitles: [String] = []
+        let detector = MeetingDetector(
+            onMeetingStarted: { _ in },
+            onMeetingEnded: { endedTitles.append($0.title) }
+        )
+
+        detector.startWatching()
+        detector.simulateMeetingStart(title: "Sync")
+        detector.stopWatching()
+        try expectEqual(endedTitles, ["Sync"])
+
+        // A subsequent stopWatching is a no-op.
+        detector.stopWatching()
+        try expectEqual(endedTitles, ["Sync"])
+    }
+}
+
 // MARK: - Retry Executor Tests
 
 /// Fake failures for testing the retry machinery.
@@ -1140,6 +1193,7 @@ struct TestRunner {
         runStoreTests()
         runPipelineResumeTests()
         runMeetingDetectionTests()
+        runMeetingDetectorLifecycleTests()
         await runRetryExecutorTests()
         runSpeakerMatcherEdgeTests()
         runRosterReaderTests()

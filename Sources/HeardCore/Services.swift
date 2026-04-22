@@ -144,7 +144,16 @@ public final class MeetingDetector {
         isWatching = false
         pollingTask?.cancel()
         pollingTask = nil
-        detectionState.consecutiveDetections = 0
+        detectionState = MeetingDetectionState()
+
+        // End any active meeting so the recording stops and the transcript pipeline runs.
+        // Without this, toggling watching off mid-meeting would orphan the recording —
+        // the poll loop is cancelled, but activeSnapshot stays set and onMeetingEnded never fires.
+        if let snapshot = activeSnapshot {
+            stopRosterPolling()
+            activeSnapshot = nil
+            onMeetingEnded(snapshot)
+        }
     }
 
     private func startPolling() {
@@ -490,7 +499,7 @@ public final class RecordingManager: ObservableObject {
 
     // MARK: - App Audio Recording (CATapDescription + Process Tap + Raw AUHAL)
 
-    private func setupAppAudioRecording(pid: pid_t, to url: URL) throws {
+    private func setupAppAudioRecording(pid: pid_t, to url: URL, allowSelfTestRebuild: Bool = true) throws {
         // ── Step 1: Collect ALL Teams-related process object IDs ──────────────
         // Teams (Electron/Chromium) renders audio in renderer / GPU sub-processes,
         // not necessarily the main process that holds the power assertion. Tapping
@@ -772,7 +781,7 @@ public final class RecordingManager: ObservableObject {
             NSLog("Heard: App audio capture started (raw AUHAL, aggregate=%u)", aggregateDeviceID)
 
             installDefaultOutputDeviceListener(initial: outputDeviceID)
-            startAppAudioMonitor(context: ctx)
+            startAppAudioMonitor(context: ctx, pid: pid, appPath: url, allowRebuild: allowSelfTestRebuild)
 
         } catch {
             AudioComponentInstanceDispose(hal)
@@ -829,15 +838,22 @@ public final class RecordingManager: ObservableObject {
         removeDefaultOutputDeviceListener()
 
         let finalContext = appHALContext
+        teardownAppAudioChainOnly()
+        if let ctx = finalContext {
+            logAppAudioStats(prefix: "App audio capture stopped", context: ctx)
+        }
+    }
+
+    /// Tear down only the audio chain (AUHAL + aggregate + tap + file), leaving the monitor
+    /// task and device listener alive. Used by the self-test rebuild path so the monitor that
+    /// triggered the rebuild can drive the new setup without cancelling itself mid-call.
+    private func teardownAppAudioChainOnly() {
         appHALContext?.isStopped = true
         if let hal = appHALUnit {
             AudioOutputUnitStop(hal)
             AudioUnitUninitialize(hal)
             AudioComponentInstanceDispose(hal)
             appHALUnit = nil
-        }
-        if let ctx = finalContext {
-            logAppAudioStats(prefix: "App audio capture stopped", context: ctx)
         }
         appHALContext = nil
         appAudioFile = nil
@@ -854,32 +870,72 @@ public final class RecordingManager: ObservableObject {
 
     // MARK: - App Audio Diagnostics
 
-    /// Log periodic stats and flag silent capture so problems are visible without playback.
-    private func startAppAudioMonitor(context ctx: AppAudioInputContext) {
+    /// Self-test at T+2s, optional one-shot rebuild on silence, then periodic stats logging.
+    /// Cancellation: teardownAppAudioRecording cancels this task. The task also exits early after
+    /// triggering a rebuild — the rebuild creates a fresh context + monitor that supersedes this one.
+    private func startAppAudioMonitor(context ctx: AppAudioInputContext, pid: pid_t, appPath: URL, allowRebuild: Bool) {
         appAudioMonitorTask?.cancel()
         let started = CACurrentMediaTime()
         appAudioMonitorTask = Task { [weak self] in
+            // ── T+2s self-test ─────────────────────────────────────────────────
+            try? await Task.sleep(for: .seconds(2))
+            if Task.isCancelled { return }
+
+            let elapsed = CACurrentMediaTime() - started
+            if ctx.nonZeroFrames > 0 {
+                NSLog("Heard: Self-test PASSED at +%.1fs (%d non-zero of %d frames, peak=%.4f)",
+                      elapsed, ctx.nonZeroFrames, ctx.totalFrames, ctx.peakAmplitude)
+            } else {
+                let reason = ctx.renderCycles == 0
+                    ? "no render callbacks fired"
+                    : "callbacks firing (cycles=\(ctx.renderCycles), frames=\(ctx.totalFrames)) but all-zero samples"
+                if allowRebuild {
+                    NSLog("Heard: Self-test FAILED at +%.1fs — %@. Rebuilding tap with fresh helper enumeration (one attempt).",
+                          elapsed, reason)
+                    self?.attemptAppAudioRebuild(pid: pid, appPath: appPath)
+                    return
+                } else {
+                    NSLog("Heard: Self-test FAILED again at +%.1fs after rebuild — %@. Flagging recording as mic-only.",
+                          elapsed, reason)
+                    self?.appAudioTapFailed = true
+                }
+            }
+
+            // ── Periodic stats / silence warnings ──────────────────────────────
             var tick = 0
             var warnedSilent = false
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(5))
                 if Task.isCancelled { break }
                 tick += 1
-                let elapsed = CACurrentMediaTime() - started
+                let now = CACurrentMediaTime() - started
 
                 if ctx.renderCycles == 0 {
-                    NSLog("Heard: App audio — NO render callbacks fired after %.1fs (tap/aggregate not producing input)", elapsed)
-                } else if !warnedSilent && ctx.nonZeroFrames == 0 && elapsed >= 5 {
+                    NSLog("Heard: App audio — NO render callbacks fired after %.1fs (tap/aggregate not producing input)", now)
+                } else if !warnedSilent && ctx.nonZeroFrames == 0 {
                     warnedSilent = true
-                    NSLog("Heard: App audio — callbacks firing (cycles=%d, frames=%d) but ALL samples are zero after %.1fs. Likely causes: no audio playing through Teams, wrong process tapped, or Teams using a helper that wasn't enumerated.",
-                          ctx.renderCycles, ctx.totalFrames, elapsed)
+                    NSLog("Heard: App audio — callbacks firing but still all-zero after %.1fs. Likely causes: no audio playing through Teams, wrong process tapped, or muted output.",
+                          now)
                 }
 
-                // Stats summary every 10s (every 2 ticks).
                 if tick % 2 == 0 {
                     self?.logAppAudioStats(prefix: "App audio", context: ctx)
                 }
             }
+        }
+    }
+
+    /// Tear down the tap/aggregate/AUHAL and rebuild with fresh process enumeration.
+    /// Called once from the self-test on silence. Helper processes that opened audio
+    /// after the initial setup will now translate to non-zero process object IDs.
+    private func attemptAppAudioRebuild(pid: pid_t, appPath: URL) {
+        teardownAppAudioChainOnly()
+        do {
+            try setupAppAudioRecording(pid: pid, to: appPath, allowSelfTestRebuild: false)
+            NSLog("Heard: App-audio chain rebuilt successfully — self-test will re-run at +2s")
+        } catch {
+            NSLog("Heard: App-audio rebuild failed: %@", error.localizedDescription)
+            appAudioTapFailed = true
         }
     }
 

@@ -22,7 +22,9 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15
 - 4-hour max recording duration with automatic split and re-start
 - Temp file cleanup on app launch (removes stale `.wav` files older than 48 hours)
 - Orphan aggregate-device cleanup on app launch (destroys any `com.execsumo.heard.tap.*` private aggregate devices left behind by a crashed recording)
-- **Diagnostic logging** (`Console.app` filter `Heard:`): default output device + sample rate at start; default-output-change warnings (aggregate stays bound to original device); render-thread stats every 10s (cycles, frames, non-zero %, peak/RMS in dB, render errors); silence warnings at T+5s distinguishing "no callbacks fired" (tap broken) vs "callbacks firing but all-zero samples" (likely wrong process tapped)
+- **Diagnostic logging** (`Console.app` filter `Heard:`): default output device + sample rate at start; default-output-change warnings (aggregate stays bound to original device); render-thread stats every 10s (cycles, frames, non-zero %, peak/RMS in dB, render errors); silence warnings distinguishing "no callbacks fired" (tap broken) vs "callbacks firing but all-zero samples" (likely wrong process tapped)
+- **Recording self-test + one-shot recovery**: at T+2s, the monitor checks whether non-zero samples have arrived. If silent, it tears down and rebuilds the tap/aggregate/AUHAL once with fresh helper-process enumeration (catches Teams 2.0 helpers that opened audio after the initial setup). If the rebuild's self-test still fails at +2s, the recording is flagged `appAudioTapFailed` and the menu bar shows "Recording (mic only)".
+- **`stopWatching` ends the active meeting**: toggling watching off mid-meeting now fires `onMeetingEnded` synchronously so the recording stops and the transcript pipeline runs (previously the snapshot was orphaned and the recording continued indefinitely). `AppModel.stopWatching` preserves the resulting `.processing` phase instead of overwriting it with `.dormant`.
 
 ### Pipeline (Fully Implemented)
 - Sequential job queue with stages: queued → preprocessing → transcribing → diarizing → assigning → complete

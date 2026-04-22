@@ -28,9 +28,9 @@ These land inside the existing v1 scope and mostly tighten things the user alrea
 ### Meeting detection & recording
 - **Teams bundle-ID fallback.** Detection matches localized app names (`"Microsoft Teams"`, `"Microsoft Teams classic"`, `"Microsoft Teams (work or school)"`). Add bundle-ID matching (`com.microsoft.teams`, `com.microsoft.teams2`) so non-English localizations of macOS/Teams still work.
 - **Audible meeting-start chime (opt-in).** A short non-intrusive sound confirms recording started. Off by default.
-- **Recording self-test.** After starting, verify that non-zero samples are flowing from both the mic and the tap within 2 s. If not, surface an error and try to recover (re-create the aggregate device once).
+- ~~**Recording self-test.**~~ Done — tap is verified at T+2s; on silence, the chain is rebuilt once with fresh helper enumeration; persistent silence flips `appAudioTapFailed` and shows "Recording (mic only)" in the menu bar. Mic-side self-test still TODO.
 - **Graceful fallback on tap failure.** Already mic-only-on-tap-error; surface a warning banner in the menu bar dropdown so the user knows the meeting will only have their own voice.
-- **`stopWatching` should end the active meeting.** Today toggling watching off mid-meeting cancels the poll loop but leaves `MeetingDetector.activeSnapshot` set and never calls `onMeetingEnded`, so the recording keeps running indefinitely with no transcript to follow. Either fire end on stop, or block the toggle while a meeting is active.
+- ~~**`stopWatching` should end the active meeting.**~~ Done — `MeetingDetector.stopWatching` now synchronously fires `onMeetingEnded` for any active snapshot, and `AppModel.stopWatching` preserves the resulting `.processing` phase.
 
 ### Pipeline
 - **Lifetime retry ceiling.** `PipelineProcessor.executeWithRetry` overwrites `retryCount = attempt + 1` where `attempt` is session-local. Combined with `PipelineQueueStore.prepareForResume()` now requeuing both `.failed` and mid-stage jobs on every launch, a permanently-broken job (corrupt WAV, missing file) will burn through 3 retries every app start, forever. Make `retryCount` cumulative across sessions and have `prepareForResume()` leave jobs above a lifetime cap in `.failed` so the user has to explicitly dismiss or retry.

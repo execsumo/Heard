@@ -192,8 +192,13 @@ public var filteredSpeakers: [SpeakerProfile] {
     }
 
     public func stopWatching() {
+        // stopWatching may synchronously fire onMeetingEnded (which sets phase = .processing).
+        // Only fall back to .dormant when no meeting was active.
+        let phaseBefore = phase
         meetingDetector.stopWatching()
-        phase = .dormant
+        if phase == phaseBefore {
+            phase = .dormant
+        }
     }
 
     public func toggleWatching() {
