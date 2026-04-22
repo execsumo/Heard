@@ -15,13 +15,14 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15
 - Simulation mode available for testing without a real Teams call (with `isSimulated` flag to prevent polling interference)
 
 ### Audio Capture
-- **App audio**: `CATapDescription` process tap on the Teams PID, recorded via `AVAudioEngine` to WAV
+- **App audio**: `CATapDescription` process tap on all Teams-related PIDs (main + helpers), routed through a private aggregate device + raw AUHAL, recorded to WAV
 - **Microphone**: Separate `AVAudioEngine` instance recording to WAV
 - Both tracks saved to `~/Library/Application Support/Heard/recordings/`
 - Mic delay calibration stored per session for alignment
 - 4-hour max recording duration with automatic split and re-start
 - Temp file cleanup on app launch (removes stale `.wav` files older than 48 hours)
 - Orphan aggregate-device cleanup on app launch (destroys any `com.execsumo.heard.tap.*` private aggregate devices left behind by a crashed recording)
+- **Diagnostic logging** (`Console.app` filter `Heard:`): default output device + sample rate at start; default-output-change warnings (aggregate stays bound to original device); render-thread stats every 10s (cycles, frames, non-zero %, peak/RMS in dB, render errors); silence warnings at T+5s distinguishing "no callbacks fired" (tap broken) vs "callbacks firing but all-zero samples" (likely wrong process tapped)
 
 ### Pipeline (Fully Implemented)
 - Sequential job queue with stages: queued → preprocessing → transcribing → diarizing → assigning → complete
@@ -99,8 +100,8 @@ The dictation feature captures mic audio, transcribes in real-time, and injects 
 ### App Bundle
 - `Info.plist` with `LSUIElement` (menu bar app), `NSMicrophoneUsageDescription`, bundle ID `com.execsumo.heard`
 - `Heard.entitlements` with audio-input only (no sandbox per spec)
-- `scripts/bundle.sh` builds via SPM, creates `.app` bundle, ad-hoc signs
-- Supports `--release` and `--sign IDENTITY` flags for distribution builds
+- `scripts/bundle.sh` builds via SPM, creates `.app` bundle, auto-signs with `Dev Cert` if available else ad-hoc
+- Flags: `--release`, `--sign IDENTITY`, `--output DIR`, `--install` (quit running app, replace `/Applications/Heard.app`, relaunch — anchors TCC grants to a stable path), `--reset` (also `tccutil reset` Microphone/ScreenCapture/Accessibility before install — implies `--install`)
 
 ### Testing
 - `HeardTests` executable target with 86 tests across: VadSegmentMap, cosine distance, SpeakerMatcher (incl. threshold/margin edge cases), SegmentMerger, AudioPreprocessor, TranscriptWriter, SpeakerStore, PipelineQueueStore, pipeline resume/recovery (`prepareForResume`), meeting detection state machine (`MeetingDetectionState`), retry executor (`PipelineProcessor.executeWithRetry`), and RosterReader (window-title parser + filter)
@@ -173,7 +174,7 @@ These approaches were tried and failed, documented here to prevent re-attempting
 ## Known Issues
 
 - ~~**Custom vocabulary is a no-op**~~: Resolved — custom vocabulary now uses CTC-based vocabulary boosting for both pipeline transcription and dictation.
-- **Accessibility permission for dictation**: Must build with `./scripts/bundle.sh --sign "Heard Dev"` (stable self-signed cert) so Accessibility grant persists across rebuilds. If permission stops working after a rebuild, reset with `tccutil reset Accessibility com.execsumo.heard` and re-grant.
+- **TCC permissions on rebuild**: macOS ties Screen Recording / Accessibility grants to the code signature *and* the bundle path. Each rebuild changes the CDHash, and a copy in `build/` is treated as a different app from one in `/Applications/`. Use `./scripts/bundle.sh --install` to anchor to `/Applications/Heard.app`, or `--reset` to also wipe TCC grants first. After granting, **fully Quit Heard from the menu bar and relaunch** — Screen Recording grants do not propagate to a process that was already running.
 - Running via `swift run` in a terminal causes macOS to attribute microphone permission to the terminal app (e.g., Ghostty) rather than Heard. Use `./scripts/bundle.sh && open build/Heard.app` instead.
 - The `.window` style MenuBarExtra panel has a fixed max height; if many jobs accumulate, the bottom of the panel may clip.
 - Simulated meetings produce very short recordings that fail in the pipeline (expected — they exist for UI testing, not audio testing).

@@ -310,11 +310,24 @@ public final class RecordingManager: ObservableObject {
     public init() {}
 
     // Context object shared between the main actor and the AUHAL render callback thread.
+    // Stats fields are word-sized scalars updated from the render thread and read from the
+    // logging task; torn reads are acceptable for diagnostic output.
     private final class AppAudioInputContext: @unchecked Sendable {
         let hal: AudioUnit
         let file: AVAudioFile
         let format: AVAudioFormat
         var isStopped = false
+
+        // Lifetime stats (monotonically increasing, written by render callback)
+        var renderCycles: Int = 0
+        var renderErrorCount: Int = 0
+        var lastRenderError: OSStatus = noErr
+        var totalFrames: Int = 0
+        var nonZeroFrames: Int = 0
+        var peakAmplitude: Float = 0
+        var sumSquares: Double = 0
+        var firstAudioAt: CFTimeInterval = 0  // 0 = never
+
         init(hal: AudioUnit, file: AVAudioFile, format: AVAudioFormat) {
             self.hal = hal; self.file = file; self.format = format
         }
@@ -328,6 +341,8 @@ public final class RecordingManager: ObservableObject {
     private var tapObjectID: AudioObjectID = 0
     private var aggregateDeviceID: AudioObjectID = 0
     private var maxDurationTask: Task<Void, Never>?
+    private var appAudioMonitorTask: Task<Void, Never>?
+    private var defaultOutputListenerBlock: AudioObjectPropertyListenerBlock?
     private var micStartTime: Date?
     private var appStartTime: Date?
 
@@ -482,10 +497,13 @@ public final class RecordingManager: ObservableObject {
         // only the reported PID misses audio from those child processes.
         let processObjectIDs = collectTeamsProcessObjectIDs(requiredPID: pid)
         guard !processObjectIDs.isEmpty else {
-            NSLog("Heard: No CoreAudio process objects found for Teams (pid=%d)", pid)
+            NSLog("Heard: No CoreAudio process objects found for Teams (pid=%d). The Teams process(es) haven't opened audio yet — translate-PID returns 0 until they do.", pid)
             throw RecordingError.processTapFailed(kAudioHardwareBadObjectError)
         }
         NSLog("Heard: Creating process tap for %d Teams process(es)", processObjectIDs.count)
+        if processObjectIDs.count == 1 {
+            NSLog("Heard: WARNING — only ONE Teams audio process found. Teams 2.0 typically renders call audio in helper processes; if the captured WAV is silent, the wrong process is being tapped.")
+        }
 
         // ── Step 2: Create the process tap ────────────────────────────────────
         // Screen Recording permission is required for AudioHardwareCreateProcessTap.
@@ -494,10 +512,10 @@ public final class RecordingManager: ObservableObject {
         }
         let tapDesc = CATapDescription(stereoMixdownOfProcesses: processObjectIDs)
         tapDesc.name = "Heard Tap"
-        // Use non-exclusive (isPrivate = false) so our tap works alongside Teams' own internal
-        // audio taps (noise cancellation, echo processing, etc.). An exclusive tap would be
-        // rejected if any other client already holds a tap on the same processes.
-        tapDesc.isPrivate = false
+        // isPrivate=true scopes the tap to this process — other apps can't see or attach to it.
+        // It does NOT prevent the tap from coexisting with Teams' own internal taps; multiple
+        // taps on the same source processes are always allowed.
+        tapDesc.isPrivate = true
         tapDesc.muteBehavior = .unmuted
 
         let tapErr = AudioHardwareCreateProcessTap(tapDesc, &tapObjectID)
@@ -546,6 +564,19 @@ public final class RecordingManager: ObservableObject {
             AudioObjectGetPropertyData(outputDeviceID, &outputUIDProp, 0, nil, &outputUIDSize, ptr)
         }
         let outputUID = outputUIDRef as String
+
+        // Log device details for diagnostics (name + nominal sample rate).
+        let outputName = copyDeviceStringProperty(outputDeviceID, selector: kAudioObjectPropertyName) ?? "?"
+        var outputSampleRate: Float64 = 0
+        var outputSRSize = UInt32(MemoryLayout<Float64>.size)
+        var outputSRProp = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        _ = AudioObjectGetPropertyData(outputDeviceID, &outputSRProp, 0, nil, &outputSRSize, &outputSampleRate)
+        NSLog("Heard: Default output device: \"%@\" (id=%u, uid=%@, sr=%.0f)",
+              outputName, outputDeviceID, outputUID, outputSampleRate)
 
         // ── Step 5: Create private aggregate device containing the tap ────────
         let aggregateUID = "\(AudioDeviceCleanup.heardAggregateUIDPrefix)\(UUID().uuidString)"
@@ -663,6 +694,8 @@ public final class RecordingManager: ObservableObject {
                     let context = Unmanaged<AppAudioInputContext>.fromOpaque(ptr).takeUnretainedValue()
                     guard !context.isStopped else { return noErr }
 
+                    context.renderCycles &+= 1
+
                     guard let buf = AVAudioPCMBuffer(pcmFormat: context.format,
                                                     frameCapacity: inNumberFrames) else { return noErr }
                     buf.frameLength = inNumberFrames
@@ -670,11 +703,43 @@ public final class RecordingManager: ObservableObject {
                     let renderErr = AudioUnitRender(context.hal, ioActionFlags, ts,
                                                    inBusNumber, inNumberFrames,
                                                    buf.mutableAudioBufferList)
-                    if renderErr == noErr {
-                        try? context.file.write(from: buf)
-                    } else {
-                        NSLog("Heard: AudioUnitRender error %d", renderErr)
+                    guard renderErr == noErr else {
+                        context.renderErrorCount &+= 1
+                        context.lastRenderError = renderErr
+                        // Throttle: log at most once every 64 errors to avoid flooding.
+                        if context.renderErrorCount % 64 == 1 {
+                            NSLog("Heard: AudioUnitRender error %d (count=%d)", renderErr, context.renderErrorCount)
+                        }
+                        return noErr
                     }
+
+                    // Scan samples for stats. Buffer is non-interleaved float32.
+                    let frames = Int(inNumberFrames)
+                    var localPeak: Float = 0
+                    var localSumSq: Double = 0
+                    var localNonZero = 0
+                    if let channels = buf.floatChannelData {
+                        let channelCount = Int(buf.format.channelCount)
+                        for ch in 0..<channelCount {
+                            let samples = channels[ch]
+                            for i in 0..<frames {
+                                let s = samples[i]
+                                let a = abs(s)
+                                if a > 0 { localNonZero &+= 1 }
+                                if a > localPeak { localPeak = a }
+                                localSumSq += Double(s) * Double(s)
+                            }
+                        }
+                    }
+                    context.totalFrames &+= frames
+                    context.nonZeroFrames &+= localNonZero
+                    if localPeak > context.peakAmplitude { context.peakAmplitude = localPeak }
+                    context.sumSquares += localSumSq
+                    if localNonZero > 0 && context.firstAudioAt == 0 {
+                        context.firstAudioAt = CACurrentMediaTime()
+                    }
+
+                    try? context.file.write(from: buf)
                     return noErr
                 },
                 inputProcRefCon: Unmanaged.passUnretained(ctx).toOpaque()
@@ -705,6 +770,9 @@ public final class RecordingManager: ObservableObject {
             appHALUnit = hal
             appStartTime = Date()
             NSLog("Heard: App audio capture started (raw AUHAL, aggregate=%u)", aggregateDeviceID)
+
+            installDefaultOutputDeviceListener(initial: outputDeviceID)
+            startAppAudioMonitor(context: ctx)
 
         } catch {
             AudioComponentInstanceDispose(hal)
@@ -756,12 +824,20 @@ public final class RecordingManager: ObservableObject {
     }
 
     private func teardownAppAudioRecording() {
+        appAudioMonitorTask?.cancel()
+        appAudioMonitorTask = nil
+        removeDefaultOutputDeviceListener()
+
+        let finalContext = appHALContext
         appHALContext?.isStopped = true
         if let hal = appHALUnit {
             AudioOutputUnitStop(hal)
             AudioUnitUninitialize(hal)
             AudioComponentInstanceDispose(hal)
             appHALUnit = nil
+        }
+        if let ctx = finalContext {
+            logAppAudioStats(prefix: "App audio capture stopped", context: ctx)
         }
         appHALContext = nil
         appAudioFile = nil
@@ -774,6 +850,120 @@ public final class RecordingManager: ObservableObject {
             AudioHardwareDestroyProcessTap(tapObjectID)
             tapObjectID = 0
         }
+    }
+
+    // MARK: - App Audio Diagnostics
+
+    /// Log periodic stats and flag silent capture so problems are visible without playback.
+    private func startAppAudioMonitor(context ctx: AppAudioInputContext) {
+        appAudioMonitorTask?.cancel()
+        let started = CACurrentMediaTime()
+        appAudioMonitorTask = Task { [weak self] in
+            var tick = 0
+            var warnedSilent = false
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                if Task.isCancelled { break }
+                tick += 1
+                let elapsed = CACurrentMediaTime() - started
+
+                if ctx.renderCycles == 0 {
+                    NSLog("Heard: App audio — NO render callbacks fired after %.1fs (tap/aggregate not producing input)", elapsed)
+                } else if !warnedSilent && ctx.nonZeroFrames == 0 && elapsed >= 5 {
+                    warnedSilent = true
+                    NSLog("Heard: App audio — callbacks firing (cycles=%d, frames=%d) but ALL samples are zero after %.1fs. Likely causes: no audio playing through Teams, wrong process tapped, or Teams using a helper that wasn't enumerated.",
+                          ctx.renderCycles, ctx.totalFrames, elapsed)
+                }
+
+                // Stats summary every 10s (every 2 ticks).
+                if tick % 2 == 0 {
+                    self?.logAppAudioStats(prefix: "App audio", context: ctx)
+                }
+            }
+        }
+    }
+
+    private func logAppAudioStats(prefix: String, context ctx: AppAudioInputContext) {
+        let total = ctx.totalFrames
+        let nonZero = ctx.nonZeroFrames
+        let cycles = ctx.renderCycles
+        let peak = ctx.peakAmplitude
+        let errs = ctx.renderErrorCount
+        let lastErr = ctx.lastRenderError
+        let firstAudio = ctx.firstAudioAt
+        let rms = total > 0 ? sqrt(ctx.sumSquares / Double(total)) : 0
+        let nonZeroPct = total > 0 ? Double(nonZero) * 100.0 / Double(total) : 0
+        let peakDb = peak > 0 ? 20 * log10(Double(peak)) : -.infinity
+        let rmsDb  = rms  > 0 ? 20 * log10(rms) : -.infinity
+        NSLog("Heard: %@ — cycles=%d frames=%d nonZero=%.1f%% peak=%.4f (%.1fdB) rms=%.4f (%.1fdB) errs=%d lastErr=%d firstAudio=%@",
+              prefix, cycles, total, nonZeroPct, peak, peakDb, rms, rmsDb, errs, lastErr,
+              firstAudio == 0 ? "never" : "yes")
+    }
+
+    private func installDefaultOutputDeviceListener(initial: AudioObjectID) {
+        guard defaultOutputListenerBlock == nil else { return }
+        var prop = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let block: AudioObjectPropertyListenerBlock = { _, _ in
+            var newID: AudioObjectID = 0
+            var size = UInt32(MemoryLayout<AudioObjectID>.size)
+            var p = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            _ = AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject), &p, 0, nil, &size, &newID
+            )
+            let name = RecordingManager.copyDeviceStringProperty(newID, selector: kAudioObjectPropertyName) ?? "?"
+            NSLog("Heard: Default output device CHANGED to \"%@\" (id=%u). Aggregate is still bound to the original device — capture may stop if the original device disappeared.",
+                  name, newID)
+        }
+        let status = AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &prop, nil, block
+        )
+        if status == noErr {
+            defaultOutputListenerBlock = block
+        } else {
+            NSLog("Heard: Failed to install default-output listener (%d)", status)
+        }
+    }
+
+    private func removeDefaultOutputDeviceListener() {
+        guard let block = defaultOutputListenerBlock else { return }
+        var prop = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectRemovePropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &prop, nil, block
+        )
+        if status != noErr {
+            NSLog("Heard: Failed to remove default-output listener (%d)", status)
+        }
+        defaultOutputListenerBlock = nil
+    }
+
+    nonisolated static func copyDeviceStringProperty(_ deviceID: AudioObjectID, selector: AudioObjectPropertySelector) -> String? {
+        var prop = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var ref: CFString = "" as CFString
+        var size = UInt32(MemoryLayout<CFString>.size)
+        let err = withUnsafeMutablePointer(to: &ref) { ptr in
+            AudioObjectGetPropertyData(deviceID, &prop, 0, nil, &size, ptr)
+        }
+        return err == noErr ? (ref as String) : nil
+    }
+
+    private func copyDeviceStringProperty(_ deviceID: AudioObjectID, selector: AudioObjectPropertySelector) -> String? {
+        return Self.copyDeviceStringProperty(deviceID, selector: selector)
     }
 
     private func handleMaxDurationReached() {
