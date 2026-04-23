@@ -26,7 +26,7 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Heard needs microphone access to record your voice during meetings for transcription.</string>
-	<key>NSSystemAudioCaptureUsageDescription</key>
+	<key>NSAudioCaptureUsageDescription</key>
 	<string>Heard needs system audio access to record the other participants' voices during meetings for transcription.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2024-2026 execsumo. All rights reserved.</string>
