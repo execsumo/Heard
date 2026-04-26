@@ -18,8 +18,7 @@ let package = Package(
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ],
-            path: "Sources/HeardCore",
-            resources: [.process("Resources")]
+            path: "Sources/HeardCore"
         ),
         .executableTarget(
             name: "Heard",

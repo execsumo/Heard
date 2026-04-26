@@ -67,6 +67,13 @@ echo -n "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
 # Copy entitlements (for reference; used during signing)
 cp "$REPO_ROOT/Heard.entitlements" "$APP_BUNDLE/Contents/Resources/Heard.entitlements"
 
+# Compile and copy app icon
+echo "==> Compiling AppIcon.icns..."
+iconutil -c icns "$REPO_ROOT/Resources/AppIcon.iconset" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+
+# Copy menu bar template image (SVG; NSImage renders it sharp at any resolution)
+cp "$REPO_ROOT/Resources/MenuBarIconTemplate.svg" "$APP_BUNDLE/Contents/Resources/"
+
 # Auto-detect "Dev Cert" if no identity explicitly provided
 if [[ -z "$SIGN_IDENTITY" ]]; then
     if security find-identity -v -p codesigning | grep -q '"Dev Cert"'; then

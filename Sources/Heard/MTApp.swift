@@ -5,29 +5,41 @@ import SwiftUI
 private struct MenuBarIcon: View {
     @ObservedObject var model: AppModel
 
+    private static let templateImage: NSImage = {
+        guard let url = Bundle.main.url(forResource: "MenuBarIconTemplate", withExtension: "svg"),
+              let img = NSImage(contentsOf: url) else {
+            return NSImage()
+        }
+        img.size = NSSize(width: 18, height: 18)
+        img.isTemplate = true
+        return img
+    }()
+
     var body: some View {
-        Group {
-            if model.isDictating {
-                Image(systemName: "record")
-                    .symbolVariant(.circle)
-                    .symbolEffect(.breathe, isActive: true)
-            } else {
-                switch model.phase {
-                case .dormant:
-                    Image(systemName: "recordingtape")
-                case .recording:
-                    Image(systemName: "record")
-                        .symbolVariant(.circle)
-                        .symbolEffect(.breathe, isActive: true)
-                case .processing:
-                    Image(systemName: "waveform")
-                        .symbolEffect(.variableColor.iterative.reversing)
-                case .error:
-                    Image(systemName: "exclamationmark.circle.fill")
-                case .userAction:
-                    Image(systemName: "person.crop.circle.badge.exclamationmark")
-                }
+        Image(nsImage: Self.templateImage)
+            .renderingMode(.template)
+            .foregroundStyle(isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+            .overlay(alignment: .topTrailing) {
+                badge
             }
+    }
+
+    /// Recording or dictating: tint to system accent.
+    private var isActive: Bool {
+        model.isDictating || model.phase == .recording
+    }
+
+    @ViewBuilder
+    private var badge: some View {
+        switch model.phase {
+        case .error:
+            Circle().fill(.red).frame(width: 5, height: 5)
+                .offset(x: 1, y: -1)
+        case .userAction:
+            Circle().fill(.orange).frame(width: 5, height: 5)
+                .offset(x: 1, y: -1)
+        default:
+            EmptyView()
         }
     }
 }
