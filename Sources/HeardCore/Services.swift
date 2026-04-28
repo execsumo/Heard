@@ -535,10 +535,8 @@ public final class RecordingManager: ObservableObject {
             NSLog("Heard: Screen Recording permission not granted — process tap will likely fail")
         }
         let tapDesc = CATapDescription(stereoMixdownOfProcesses: processObjectIDs)
+        tapDesc.uuid = UUID()
         tapDesc.name = "Heard Tap"
-        // isPrivate=true scopes the tap to this process — other apps can't see or attach to it.
-        // It does NOT prevent the tap from coexisting with Teams' own internal taps; multiple
-        // taps on the same source processes are always allowed.
         tapDesc.isPrivate = true
         tapDesc.muteBehavior = .unmuted
 
@@ -549,22 +547,11 @@ public final class RecordingManager: ObservableObject {
         }
         NSLog("Heard: Process tap created (id=%u)", tapObjectID)
 
-        // ── Step 3: Get tap UID ───────────────────────────────────────────────
-        var tapUIDRef: CFString = "" as CFString
-        var tapUIDSize = UInt32(MemoryLayout<CFString>.size)
-        var tapUIDProp = AudioObjectPropertyAddress(
-            mSelector: kAudioTapPropertyUID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let tapUIDErr = withUnsafeMutablePointer(to: &tapUIDRef) { ptr in
-            AudioObjectGetPropertyData(tapObjectID, &tapUIDProp, 0, nil, &tapUIDSize, ptr)
-        }
-        guard tapUIDErr == noErr else {
-            AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
-            throw RecordingError.deviceSetupFailed(tapUIDErr)
-        }
-        let tapUID = tapUIDRef as String
+        // ── Step 3: Tap UID ───────────────────────────────────────────────────
+        // Use the UUID we set on the description directly — avoids a silent
+        // failure if kAudioTapPropertyUID query returns an error (which previously
+        // threw with no log, making it look like setupAppAudioRecording was never called).
+        let tapUID = tapDesc.uuid.uuidString
 
         // ── Step 4: Locate default output device (provides the aggregate clock) ─
         var outputDeviceID: AudioObjectID = 0
@@ -609,7 +596,6 @@ public final class RecordingManager: ObservableObject {
             kAudioAggregateDeviceUIDKey as String: aggregateUID,
             kAudioAggregateDeviceMainSubDeviceKey as String: outputUID,
             kAudioAggregateDeviceIsPrivateKey as String: true,
-            kAudioAggregateDeviceIsStackedKey as String: false,
             kAudioAggregateDeviceTapAutoStartKey as String: true,
             kAudioAggregateDeviceSubDeviceListKey as String: [
                 [kAudioSubDeviceUIDKey as String: outputUID]
