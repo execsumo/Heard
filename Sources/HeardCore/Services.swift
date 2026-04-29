@@ -622,19 +622,11 @@ public final class RecordingManager: ObservableObject {
             mElement: kAudioObjectPropertyElementMain)
         _ = AudioObjectGetPropertyData(aggregateDeviceID, &rateProp, 0, nil, &rateSize, &nominalRate)
         let sampleRate = nominalRate > 0 ? nominalRate : 48000.0
-        // CATapDescription stereoMixdown delivers 2-channel interleaved float32.
         let channels: AVAudioChannelCount = 2
-        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                         sampleRate: sampleRate,
-                                         channels: channels,
-                                         interleaved: true) else {
-            AudioHardwareDestroyAggregateDevice(aggregateDeviceID); aggregateDeviceID = 0
-            AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
-            throw RecordingError.deviceSetupFailed(kAudioHardwareUnspecifiedError)
-        }
-        NSLog("Heard: IOProc format sr=%.0f ch=%u interleaved float32", sampleRate, channels)
 
         // ── Step 7: Create WAV file ────────────────────────────────────────────
+        // Use non-interleaved float32 — AVAudioFile.processingFormat is always
+        // non-interleaved regardless of what the file format specifies.
         let fileSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: sampleRate,
@@ -642,7 +634,7 @@ public final class RecordingManager: ObservableObject {
             AVLinearPCMBitDepthKey: 32,
             AVLinearPCMIsFloatKey: true,
             AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: false,
+            AVLinearPCMIsNonInterleaved: true,
         ]
         let file: AVAudioFile
         do {
@@ -653,6 +645,10 @@ public final class RecordingManager: ObservableObject {
             throw error
         }
         appAudioFile = file
+        // processingFormat is the format write(from:) actually expects.
+        let format = file.processingFormat
+        NSLog("Heard: IOProc format sr=%.0f ch=%u interleaved=%d",
+              format.sampleRate, format.channelCount, format.isInterleaved ? 1 : 0)
 
         // ── Step 8: Create IOProc directly on the aggregate device ─────────────
         // AudioDeviceCreateIOProcIDWithBlock with a dispatch queue: CoreAudio copies
@@ -668,30 +664,35 @@ public final class RecordingManager: ObservableObject {
             ctx.renderCycles &+= 1
 
             let abl = inInputData.pointee
+            // Tap delivers interleaved stereo float32 in a single buffer.
             guard abl.mNumberBuffers > 0,
                   let dataPtr = abl.mBuffers.mData else { return }
             let byteCount = Int(abl.mBuffers.mDataByteSize)
             guard byteCount > 0 else { return }
 
-            let framesPerBuffer = Int(format.channelCount) * MemoryLayout<Float32>.size
-            let frameCount = byteCount / framesPerBuffer
+            let ch = Int(format.channelCount)
+            let frameCount = byteCount / (ch * MemoryLayout<Float32>.size)
             guard frameCount > 0,
                   let buf = AVAudioPCMBuffer(pcmFormat: format,
-                                             frameCapacity: AVAudioFrameCount(frameCount)) else { return }
+                                             frameCapacity: AVAudioFrameCount(frameCount)),
+                  let channelData = buf.floatChannelData else { return }
             buf.frameLength = AVAudioFrameCount(frameCount)
-            memcpy(buf.mutableAudioBufferList.pointee.mBuffers.mData!, dataPtr, byteCount)
 
-            // Scan interleaved float32 samples for stats.
-            let floatCount = byteCount / MemoryLayout<Float32>.size
-            let samples = dataPtr.bindMemory(to: Float32.self, capacity: floatCount)
+            // Deinterleave: [L0,R0,L1,R1,...] → separate channel arrays.
+            let src = dataPtr.bindMemory(to: Float32.self, capacity: frameCount * ch)
+            for c in 0..<ch { channelData[c][0] = 0 } // ensure initialised
             var localPeak: Float = 0
             var localSumSq: Double = 0
             var localNonZero = 0
-            for i in 0..<floatCount {
-                let a = abs(samples[i])
-                if a > 0 { localNonZero &+= 1 }
-                if a > localPeak { localPeak = a }
-                localSumSq += Double(samples[i]) * Double(samples[i])
+            for f in 0..<frameCount {
+                for c in 0..<ch {
+                    let s = src[f * ch + c]
+                    channelData[c][f] = s
+                    let a = abs(s)
+                    if a > 0 { localNonZero &+= 1 }
+                    if a > localPeak { localPeak = a }
+                    localSumSq += Double(s) * Double(s)
+                }
             }
             ctx.totalFrames &+= frameCount
             ctx.nonZeroFrames &+= localNonZero
