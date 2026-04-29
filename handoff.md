@@ -15,16 +15,19 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15
 - Simulation mode available for testing without a real Teams call (with `isSimulated` flag to prevent polling interference)
 
 ### Audio Capture
-- **App audio**: `CATapDescription` process tap on all Teams-related PIDs (main + helpers), routed through a private aggregate device + raw AUHAL, recorded to WAV
+- **App audio**: `CATapDescription` process tap on all Teams-related PIDs (main + helpers), routed through a private aggregate device + `AudioDeviceCreateIOProcIDWithBlock`, recorded to WAV (32-bit float non-interleaved PCM)
 - **Microphone**: Separate `AVAudioEngine` instance recording to WAV
 - Both tracks saved to `~/Library/Application Support/Heard/recordings/`
 - Mic delay calibration stored per session for alignment
 - 4-hour max recording duration with automatic split and re-start
 - Temp file cleanup on app launch (removes stale `.wav` files older than 48 hours)
 - Orphan aggregate-device cleanup on app launch (destroys any `com.execsumo.heard.tap.*` private aggregate devices left behind by a crashed recording)
-- **Diagnostic logging** (`Console.app` filter `Heard:`): default output device + sample rate at start; default-output-change warnings (aggregate stays bound to original device); render-thread stats every 10s (cycles, frames, non-zero %, peak/RMS in dB, render errors); silence warnings distinguishing "no callbacks fired" (tap broken) vs "callbacks firing but all-zero samples" (likely wrong process tapped)
-- **Recording self-test + one-shot recovery**: at T+2s, the monitor checks whether non-zero samples have arrived. If silent, it tears down and rebuilds the tap/aggregate/AUHAL once with fresh helper-process enumeration (catches Teams 2.0 helpers that opened audio after the initial setup). If the rebuild's self-test still fails at +2s, the recording is flagged `appAudioTapFailed` and the menu bar shows "Recording (mic only)".
-- **`stopWatching` ends the active meeting**: toggling watching off mid-meeting now fires `onMeetingEnded` synchronously so the recording stops and the transcript pipeline runs (previously the snapshot was orphaned and the recording continued indefinitely). `AppModel.stopWatching` preserves the resulting `.processing` phase instead of overwriting it with `.dormant`.
+- **Tap UID**: `tapDesc.uuid = UUID()` is set on `CATapDescription` before calling `AudioHardwareCreateProcessTap`; `tapDesc.uuid.uuidString` is used directly in the aggregate device's tap list — avoids the silent failure path of querying `kAudioTapPropertyUID` via `AudioObjectGetPropertyData` after the fact
+- **IOProc instead of AUHAL**: `AudioDeviceCreateIOProcIDWithBlock` is called directly on the aggregate device (dispatched to a serial queue so CoreAudio copies buffers before dispatch). The tap delivers interleaved stereo float32; the IOProc deinterleaves into `AVAudioPCMBuffer` matching `AVAudioFile.processingFormat` (non-interleaved float32) before writing
+- **Diagnostic logging** (`log show --last 1m --predicate 'process == "Heard"' --info`): default output device + sample rate at start; default-output-change warnings; IOProc stats every 10s (cycles, frames, non-zero %, peak/RMS in dB); silence warnings distinguishing "no callbacks fired" vs "callbacks firing but all-zero samples"
+- **Recording self-test + one-shot recovery**: at T+2s, the monitor checks whether non-zero samples have arrived. If silent, it tears down and rebuilds the tap/aggregate/IOProc once with fresh helper-process enumeration. If the rebuild's self-test still fails, the recording is flagged `appAudioTapFailed` and the menu bar shows "Recording (mic only)".
+- **`stopWatching` ends the active meeting**: toggling watching off mid-meeting fires `onMeetingEnded` synchronously so the recording stops and the transcript pipeline runs. `AppModel.stopWatching` preserves the resulting `.processing` phase instead of overwriting it with `.dormant`.
+- **TCC permissions required**: Microphone (`NSMicrophoneUsageDescription`), System Audio Capture (`NSAudioCaptureUsageDescription`), Screen Recording (`NSScreenCaptureUsageDescription`), Accessibility (`NSAccessibilityUsageDescription`) — all four must be granted. Use `./scripts/bundle.sh --reset` to clear all four TCC grants and reinstall cleanly.
 
 ### Pipeline (Fully Implemented)
 - Sequential job queue with stages: queued → preprocessing → transcribing → diarizing → assigning → complete
