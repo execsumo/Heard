@@ -81,6 +81,8 @@ public struct SpeakerProfile: Codable, Identifiable, Equatable {
     public var firstSeen: Date
     public var lastSeen: Date
     public var meetingCount: Int
+    /// Optional persisted voice sample for this speaker (used for replay in settings).
+    public var audioClipURL: URL?
 
     public init(
         id: UUID,
@@ -88,7 +90,8 @@ public struct SpeakerProfile: Codable, Identifiable, Equatable {
         embeddings: [[Float]],
         firstSeen: Date,
         lastSeen: Date,
-        meetingCount: Int
+        meetingCount: Int,
+        audioClipURL: URL? = nil
     ) {
         self.id = id
         self.name = name
@@ -96,6 +99,7 @@ public struct SpeakerProfile: Codable, Identifiable, Equatable {
         self.firstSeen = firstSeen
         self.lastSeen = lastSeen
         self.meetingCount = meetingCount
+        self.audioClipURL = audioClipURL
     }
 }
 
@@ -105,19 +109,23 @@ public struct NamingCandidate: Identifiable, Equatable {
     public var suggestedName: String?
     public var audioClipURL: URL?
     public var embedding: [Float]
+    /// Path to the transcript file that uses this temporary name; used to rewrite the file when the speaker is named.
+    public var transcriptPath: URL?
 
     public init(
         id: UUID,
         temporaryName: String,
         suggestedName: String? = nil,
         audioClipURL: URL? = nil,
-        embedding: [Float] = []
+        embedding: [Float] = [],
+        transcriptPath: URL? = nil
     ) {
         self.id = id
         self.temporaryName = temporaryName
         self.suggestedName = suggestedName
         self.audioClipURL = audioClipURL
         self.embedding = embedding
+        self.transcriptPath = transcriptPath
     }
 }
 
