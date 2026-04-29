@@ -312,6 +312,7 @@ public struct SettingsView: View {
     @ObservedObject public var model: AppModel
     @ObservedObject private var permissionCenter: PermissionCenter
     @State private var isRecordingHotkey = false
+    @StateObject private var clipPlayer = SpeakerClipController()
 
     public init(model: AppModel) {
         self.model = model
@@ -698,6 +699,10 @@ public struct SettingsView: View {
             Divider()
 
             Table(model.filteredSpeakers, selection: $model.mergeSelection) {
+                TableColumn("Voice") { speaker in
+                    SpeakerVoiceCell(speaker: speaker, controller: clipPlayer)
+                }
+                .width(56)
                 TableColumn("Name") { speaker in
                     InlineEditableText(value: speaker.name) { newValue in
                         model.speakerStore.rename(id: speaker.id, to: newValue)
@@ -716,6 +721,7 @@ public struct SettingsView: View {
             .contextMenu(forSelectionType: UUID.self) { ids in
                 if ids.count == 1, let id = ids.first {
                     Button("Delete Speaker", role: .destructive) {
+                        clipPlayer.stop()
                         model.speakerStore.delete(id: id)
                     }
                 }
@@ -1105,6 +1111,7 @@ public struct SpeakerNamingView: View {
     @State private var audioPlayer: AVAudioPlayer?
     @State private var countdownSeconds = 120
     @State private var countdownTask: Task<Void, Never>?
+    @Environment(\.dismissWindow) private var dismissWindow
 
     public init(model: AppModel) { self.model = model }
 
@@ -1149,14 +1156,16 @@ public struct SpeakerNamingView: View {
                 Button("Skip All") {
                     stopAudio()
                     model.skipNaming()
+                    dismissWindow(id: "speaker-naming")
                 }
                 .keyboardShortcut(.cancelAction)
 
                 Spacer()
 
-                Button("Save All") {
+                Button("Save & Close") {
                     stopAudio()
                     saveAll()
+                    dismissWindow(id: "speaker-naming")
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
@@ -1173,6 +1182,7 @@ public struct SpeakerNamingView: View {
             if candidates.isEmpty {
                 stopAudio()
                 countdownTask?.cancel()
+                dismissWindow(id: "speaker-naming")
             }
         }
     }
@@ -1304,6 +1314,79 @@ public struct SpeakerNamingView: View {
                 countdownSeconds -= 1
             }
         }
+    }
+}
+
+// MARK: - Speaker Voice Cell (Speakers tab playback)
+
+@MainActor
+final class SpeakerClipController: ObservableObject {
+    @Published private(set) var playingID: UUID?
+    private var player: AVAudioPlayer?
+    private var stopTask: Task<Void, Never>?
+
+    func toggle(speakerID: UUID, clipURL: URL?) {
+        if playingID == speakerID {
+            stop()
+            return
+        }
+        stop()
+        guard let url = clipURL,
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            let p = try AVAudioPlayer(contentsOf: url)
+            p.play()
+            player = p
+            playingID = speakerID
+            let duration = p.duration
+            stopTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(duration + 0.1))
+                guard let self, !Task.isCancelled else { return }
+                if self.playingID == speakerID {
+                    self.stop()
+                }
+            }
+        } catch {
+            NSLog("Heard: Failed to play speaker clip: \(error)")
+        }
+    }
+
+    func stop() {
+        player?.stop()
+        player = nil
+        stopTask?.cancel()
+        stopTask = nil
+        playingID = nil
+    }
+}
+
+struct SpeakerVoiceCell: View {
+    let speaker: SpeakerProfile
+    @ObservedObject var controller: SpeakerClipController
+
+    private var hasClip: Bool {
+        guard let url = speaker.audioClipURL else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    private var isPlaying: Bool { controller.playingID == speaker.id }
+
+    var body: some View {
+        Button {
+            controller.toggle(speakerID: speaker.id, clipURL: speaker.audioClipURL)
+        } label: {
+            Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(hasClip ? (isPlaying ? Color.red : HeardTheme.accent) : Color.secondary)
+                .frame(width: 28, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill((hasClip ? (isPlaying ? Color.red : HeardTheme.accent) : Color.secondary).opacity(0.14))
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!hasClip)
+        .help(hasClip ? "Play voice sample" : "No voice sample saved")
     }
 }
 

@@ -17,7 +17,12 @@ public extension FileManager {
         try createDirectory(at: support, withIntermediateDirectories: true)
         try createDirectory(at: support.appendingPathComponent("Models", isDirectory: true), withIntermediateDirectories: true)
         try createDirectory(at: support.appendingPathComponent("recordings", isDirectory: true), withIntermediateDirectories: true)
+        try createDirectory(at: support.appendingPathComponent("speaker_clips", isDirectory: true), withIntermediateDirectories: true)
         try createDirectory(at: heardOutputDirectory, withIntermediateDirectories: true)
+    }
+
+    var heardSpeakerClipsDirectory: URL {
+        heardAppSupportDirectory.appendingPathComponent("speaker_clips", isDirectory: true)
     }
 }
 
@@ -176,6 +181,9 @@ public final class SpeakerStore: ObservableObject {
     }
 
     public func delete(id: UUID) {
+        if let clipURL = speakers.first(where: { $0.id == id })?.audioClipURL {
+            try? FileManager.default.removeItem(at: clipURL)
+        }
         speakers.removeAll { $0.id == id }
         persist()
     }

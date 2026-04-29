@@ -1265,6 +1265,39 @@ public enum WindowActivationCoordinator {
 // MARK: - Transcript Writer
 
 public enum TranscriptWriter {
+    /// Replace a temporary speaker label (e.g. "Speaker 1") with a real name in an
+    /// existing transcript markdown file. Updates speaker tags in body lines and the
+    /// `**Participants:**` header line.
+    public static func renameSpeaker(in transcriptURL: URL, from oldName: String, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, oldName != trimmed else { return }
+        guard let data = try? Data(contentsOf: transcriptURL),
+              let original = String(data: data, encoding: .utf8) else { return }
+
+        var lines = original.components(separatedBy: "\n")
+        for index in lines.indices {
+            // Body line: "[hh:mm] **OldName:** ..." → "[hh:mm] **NewName:** ..."
+            let bodyMarker = "**\(oldName):**"
+            if lines[index].contains(bodyMarker) {
+                lines[index] = lines[index].replacingOccurrences(of: bodyMarker, with: "**\(trimmed):**")
+            }
+            // Participants header line
+            if lines[index].hasPrefix("**Participants:**") {
+                let prefix = "**Participants:**"
+                let rest = String(lines[index].dropFirst(prefix.count))
+                let names = rest.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                let renamed = names.map { $0 == oldName ? trimmed : $0 }
+                // Deduplicate while preserving order
+                var seen = Set<String>()
+                let unique = renamed.filter { seen.insert($0).inserted && !$0.isEmpty }
+                lines[index] = "\(prefix) \(unique.joined(separator: ", "))"
+            }
+        }
+
+        let updated = lines.joined(separator: "\n")
+        try? updated.write(to: transcriptURL, atomically: true, encoding: .utf8)
+    }
+
     public static func write(document: TranscriptDocument, outputDirectory: URL) throws -> URL {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         let prefix = Formatting.transcriptDatePrefixFormatter.string(from: document.startTime)
@@ -1578,7 +1611,8 @@ public final class PipelineProcessor: ObservableObject {
                         temporaryName: clip.temporaryName,
                         suggestedName: index < rosterSuggestions.count ? rosterSuggestions[index] : nil,
                         audioClipURL: clip.clipURL,
-                        embedding: clip.embedding
+                        embedding: clip.embedding,
+                        transcriptPath: outputURL
                     )
                 }
                 onNamingRequired(candidates)
@@ -1817,8 +1851,28 @@ public final class PipelineProcessor: ObservableObject {
                 }
             }
 
-            // Update speaker database
+            // Update speaker database for matched profiles
             SpeakerMatcher.updateDatabase(matches: matches, speakerStore: speakerStore)
+
+            // Create profiles for roster-auto-assigned new speakers (those whose
+            // temporary "Speaker N" label got replaced by a real roster name).
+            // Unresolved new speakers are skipped here — saveSpeakerName/skipNaming
+            // creates them after the user names them through the prompt.
+            let stillUnmatchedIDs = Set(stillUnmatched.map(\.detectedSpeakerID))
+            for match in matches where match.isNewSpeaker
+                && !match.embedding.isEmpty
+                && !stillUnmatchedIDs.contains(match.detectedSpeakerID) {
+                let resolvedName = nameMap[match.detectedSpeakerID] ?? match.assignedName
+                let profile = SpeakerProfile(
+                    id: UUID(),
+                    name: resolvedName,
+                    embeddings: [match.embedding],
+                    firstSeen: Date(),
+                    lastSeen: Date(),
+                    meetingCount: 1
+                )
+                speakerStore.upsert(profile)
+            }
         }
 
         // Sort by start time and merge consecutive same-speaker segments

@@ -7,6 +7,35 @@ public enum AudioClipExtractor {
     /// Maximum clip duration in seconds.
     private static let maxClipDuration: TimeInterval = 10.0
 
+    /// Move a clip from the temporary `recordings/` directory into the persistent
+    /// `speaker_clips/` directory so it survives the 48-hour stale-recording cleanup.
+    /// Returns the new URL on success, or the original on failure.
+    public static func persistClip(_ source: URL) -> URL? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: source.path) else { return nil }
+        let destDir = fm.heardSpeakerClipsDirectory
+        try? fm.createDirectory(at: destDir, withIntermediateDirectories: true)
+        let destination = destDir.appendingPathComponent(source.lastPathComponent)
+        // If a file with the same name already lives in the destination, reuse it
+        if fm.fileExists(atPath: destination.path) {
+            try? fm.removeItem(at: source)
+            return destination
+        }
+        do {
+            try fm.moveItem(at: source, to: destination)
+            return destination
+        } catch {
+            // Fall back to copy if move fails (e.g. cross-volume)
+            do {
+                try fm.copyItem(at: source, to: destination)
+                try? fm.removeItem(at: source)
+                return destination
+            } catch {
+                return source
+            }
+        }
+    }
+
     /// Extract a clip from a WAV file at the given time range.
     /// Returns the URL of the saved clip file, or nil on failure.
     public static func extractClip(

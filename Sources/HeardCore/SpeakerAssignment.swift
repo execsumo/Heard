@@ -169,41 +169,31 @@ public enum SpeakerMatcher {
     }
 
     /// Update speaker database with new embeddings from a processed meeting.
+    /// Only refreshes existing matched profiles. New (unmatched) speakers are not
+    /// created here — they're created later when the user names them through the
+    /// naming prompt (or when the prompt is skipped/timed out).
     @MainActor public static func updateDatabase(
         matches: [MatchResult],
         speakerStore: SpeakerStore
     ) {
         for match in matches {
             guard !match.embedding.isEmpty else { continue }
+            guard let profileID = match.matchedProfileID else { continue }
 
-            if let profileID = match.matchedProfileID {
-                // Update existing speaker
-                guard var profile = speakerStore.speakers.first(where: { $0.id == profileID }) else { continue }
-                profile.lastSeen = Date()
-                profile.meetingCount += 1
+            guard var profile = speakerStore.speakers.first(where: { $0.id == profileID }) else { continue }
+            profile.lastSeen = Date()
+            profile.meetingCount += 1
 
-                // Add embedding if we have room, keeping diverse set
-                if profile.embeddings.count < maxEmbeddingsPerSpeaker {
-                    profile.embeddings.append(match.embedding)
-                } else {
-                    // Replace the most similar existing embedding (least diverse)
-                    if let replaceIndex = mostSimilarIndex(to: match.embedding, in: profile.embeddings) {
-                        profile.embeddings[replaceIndex] = match.embedding
-                    }
+            // Add embedding if we have room, keeping diverse set
+            if profile.embeddings.count < maxEmbeddingsPerSpeaker {
+                profile.embeddings.append(match.embedding)
+            } else {
+                // Replace the most similar existing embedding (least diverse)
+                if let replaceIndex = mostSimilarIndex(to: match.embedding, in: profile.embeddings) {
+                    profile.embeddings[replaceIndex] = match.embedding
                 }
-                speakerStore.upsert(profile)
-            } else if match.isNewSpeaker {
-                // Create new speaker profile
-                let profile = SpeakerProfile(
-                    id: UUID(),
-                    name: match.assignedName,
-                    embeddings: [match.embedding],
-                    firstSeen: Date(),
-                    lastSeen: Date(),
-                    meetingCount: 1
-                )
-                speakerStore.upsert(profile)
             }
+            speakerStore.upsert(profile)
         }
     }
 

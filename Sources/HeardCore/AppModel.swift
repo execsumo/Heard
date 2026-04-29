@@ -397,6 +397,9 @@ public var filteredSpeakers: [SpeakerProfile] {
     public func saveSpeakerName(candidate: NamingCandidate, name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        // Move the audio clip to its persistent home so it survives the 48-hour
+        // recordings cleanup and can be replayed from the Speakers settings tab.
+        let persistedClip = candidate.audioClipURL.flatMap { AudioClipExtractor.persistClip($0) }
         speakerStore.upsert(
             SpeakerProfile(
                 id: UUID(),
@@ -404,12 +407,13 @@ public var filteredSpeakers: [SpeakerProfile] {
                 embeddings: candidate.embedding.isEmpty ? [] : [candidate.embedding],
                 firstSeen: Date(),
                 lastSeen: Date(),
-                meetingCount: 1
+                meetingCount: 1,
+                audioClipURL: persistedClip
             )
         )
-        // Clean up the audio clip file
-        if let clipURL = candidate.audioClipURL {
-            try? FileManager.default.removeItem(at: clipURL)
+        // Rewrite the transcript so it uses the real name everywhere.
+        if let transcriptPath = candidate.transcriptPath {
+            TranscriptWriter.renameSpeaker(in: transcriptPath, from: candidate.temporaryName, to: trimmed)
         }
         namingCandidates.removeAll { $0.id == candidate.id }
         if namingCandidates.isEmpty {
@@ -421,8 +425,9 @@ public var filteredSpeakers: [SpeakerProfile] {
     }
 
     public func skipNaming() {
-        // Store remaining unnamed candidates with generic names (preserving embeddings)
+        // Store remaining unnamed candidates with generic names (preserving embeddings + clip).
         for candidate in namingCandidates {
+            let persistedClip = candidate.audioClipURL.flatMap { AudioClipExtractor.persistClip($0) }
             speakerStore.upsert(
                 SpeakerProfile(
                     id: UUID(),
@@ -430,12 +435,10 @@ public var filteredSpeakers: [SpeakerProfile] {
                     embeddings: candidate.embedding.isEmpty ? [] : [candidate.embedding],
                     firstSeen: Date(),
                     lastSeen: Date(),
-                    meetingCount: 1
+                    meetingCount: 1,
+                    audioClipURL: persistedClip
                 )
             )
-            if let clipURL = candidate.audioClipURL {
-                try? FileManager.default.removeItem(at: clipURL)
-            }
         }
         namingCandidates.removeAll()
         namingDismissTask?.cancel()
