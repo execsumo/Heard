@@ -56,6 +56,16 @@ public enum SpeakerMatcher {
     /// Maximum stored embeddings per speaker.
     public static let maxEmbeddingsPerSpeaker = 5
 
+    /// True when `name` matches the auto-generated `Speaker N` placeholder pattern.
+    /// Placeholders come from skipped or auto-dismissed naming prompts; they are
+    /// excluded from matching so the user always gets another chance to name the
+    /// speaker on a later meeting.
+    public static func isPlaceholderName(_ name: String) -> Bool {
+        guard name.hasPrefix("Speaker ") else { return false }
+        let suffix = name.dropFirst("Speaker ".count)
+        return !suffix.isEmpty && suffix.allSatisfy(\.isWholeNumber)
+    }
+
     public struct MatchResult {
         public let detectedSpeakerID: String
         public let assignedName: String
@@ -138,6 +148,12 @@ public enum SpeakerMatcher {
 
         for profile in database where !excludeIDs.contains(profile.id) {
             guard !profile.embeddings.isEmpty else { continue }
+            // Placeholder profiles ("Speaker 1", "Speaker 2", ...) are skipped/timed-out
+            // entries that the user never actually named. They must not poison matching —
+            // otherwise a new speaker on a later meeting silently matches an old phantom
+            // profile and the naming prompt never fires. The user can still see and rename
+            // these in the Speakers settings tab, which converts them into real matches.
+            if isPlaceholderName(profile.name) { continue }
 
             // Use minimum distance across all stored embeddings for this speaker
             let minDistance = profile.embeddings
