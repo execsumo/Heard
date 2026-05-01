@@ -416,8 +416,15 @@ public var filteredSpeakers: [SpeakerProfile] {
                 audioClipURLs: persistedClips
             )
         )
-        // Rewrite the transcript so it uses the real name everywhere.
-        if let transcriptPath = candidate.transcriptPath {
+        // Rewrite every transcript that references the placeholder. Speaker
+        // numbers are globally unique, so this normally only touches the one
+        // transcript in `candidate.transcriptPath`, but scanning the output
+        // directory keeps the rename complete if the user moved/renamed files
+        // or if the placeholder ever shows up in more than one transcript.
+        let outputDir = URL(fileURLWithPath: settingsStore.settings.outputDirectory, isDirectory: true)
+        TranscriptWriter.renameSpeakerInDirectory(outputDir, from: candidate.temporaryName, to: trimmed)
+        if let transcriptPath = candidate.transcriptPath,
+           transcriptPath.deletingLastPathComponent().standardizedFileURL != outputDir.standardizedFileURL {
             TranscriptWriter.renameSpeaker(in: transcriptPath, from: candidate.temporaryName, to: trimmed)
         }
         namingCandidates.removeAll { $0.id == candidate.id }

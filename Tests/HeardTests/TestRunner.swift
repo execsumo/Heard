@@ -168,6 +168,32 @@ func runSpeakerMatcherTests() {
         try expect(results[0].isNewSpeaker)
     }
 
+    test("startingSpeakerNumber offsets unknown labels") {
+        let embeddings = [
+            SpeakerEmbedding(speakerID: "R_0", vector: [1, 0, 0]),
+            SpeakerEmbedding(speakerID: "R_1", vector: [0, 1, 0]),
+        ]
+        let results = SpeakerMatcher.matchSpeakers(
+            embeddings: embeddings,
+            database: [],
+            localUserName: "Me",
+            startingSpeakerNumber: 7
+        )
+        try expectEqual(results[0].assignedName, "Speaker 7")
+        try expectEqual(results[1].assignedName, "Speaker 8")
+    }
+
+    test("startingSpeakerNumber below 1 clamps to 1") {
+        let embeddings = [SpeakerEmbedding(speakerID: "R_0", vector: [1, 0, 0])]
+        let results = SpeakerMatcher.matchSpeakers(
+            embeddings: embeddings,
+            database: [],
+            localUserName: "Me",
+            startingSpeakerNumber: 0
+        )
+        try expectEqual(results[0].assignedName, "Speaker 1")
+    }
+
     test("Matches known speaker by embedding") {
         let profile = SpeakerProfile(
             id: UUID(), name: "Bob", embeddings: [[1, 0, 0, 0, 0]],
@@ -341,6 +367,67 @@ func runTranscriptWriterTests() {
         try expect(url1 != url2, "Should have different filenames")
     }
 
+    test("renameSpeakerInDirectory rewrites every matching transcript") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let date = Date()
+        let docA = TranscriptDocument(
+            title: "Standup", startTime: date, endTime: date.addingTimeInterval(60),
+            participants: ["Speaker 7", "Me"],
+            segments: [
+                TranscriptSegment(speaker: "Speaker 7", startTime: 0, endTime: 30, text: "Morning."),
+                TranscriptSegment(speaker: "Me", startTime: 30, endTime: 60, text: "Hi."),
+            ]
+        )
+        let docB = TranscriptDocument(
+            title: "Retro", startTime: date, endTime: date.addingTimeInterval(60),
+            participants: ["Speaker 7", "Alice"],
+            segments: [
+                TranscriptSegment(speaker: "Speaker 7", startTime: 0, endTime: 30, text: "Hey."),
+            ]
+        )
+        let docC = TranscriptDocument(
+            title: "Other", startTime: date, endTime: date.addingTimeInterval(60),
+            participants: ["Speaker 8"],
+            segments: [TranscriptSegment(speaker: "Speaker 8", startTime: 0, endTime: 30, text: "Unrelated.")]
+        )
+        let urlA = try TranscriptWriter.write(document: docA, outputDirectory: tmpDir)
+        let urlB = try TranscriptWriter.write(document: docB, outputDirectory: tmpDir)
+        let urlC = try TranscriptWriter.write(document: docC, outputDirectory: tmpDir)
+
+        TranscriptWriter.renameSpeakerInDirectory(tmpDir, from: "Speaker 7", to: "Bob")
+
+        let a = try String(contentsOf: urlA, encoding: .utf8)
+        let b = try String(contentsOf: urlB, encoding: .utf8)
+        let c = try String(contentsOf: urlC, encoding: .utf8)
+        try expect(a.contains("**Bob:**"), "A should reference Bob")
+        try expect(!a.contains("**Speaker 7:**"), "A should not reference Speaker 7")
+        try expect(b.contains("**Bob:**"), "B should reference Bob")
+        try expect(!b.contains("**Speaker 7:**"), "B should not reference Speaker 7")
+        try expect(c.contains("**Speaker 8:**"), "C should be untouched")
+    }
+
+    test("renameSpeakerInDirectory ignores non-md files and missing dirs") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let txt = tmpDir.appendingPathComponent("notes.txt")
+        try "**Speaker 7:** hello".write(to: txt, atomically: true, encoding: .utf8)
+
+        TranscriptWriter.renameSpeakerInDirectory(tmpDir, from: "Speaker 7", to: "Bob")
+        let after = try String(contentsOf: txt, encoding: .utf8)
+        try expect(after.contains("**Speaker 7:**"), "Non-md files must not be rewritten")
+
+        // Missing directory must not crash.
+        let missing = tmpDir.appendingPathComponent("does-not-exist")
+        TranscriptWriter.renameSpeakerInDirectory(missing, from: "Speaker 7", to: "Bob")
+    }
+
     test("Timestamp formatting") {
         let t1: TimeInterval = 3661
         try expectEqual(t1.timestampString, "1:01:01")
@@ -406,6 +493,82 @@ func runTranscriptWriterTests() {
         try expectEqual(store.speakers.count, 1)
         try expectEqual(store.speakers.first?.meetingCount, 5)
         try expectEqual(store.speakers.first?.embeddings.count, 2)
+    }
+
+    test("SpeakerStore nextSpeakerNumber starts at 1 on a fresh store") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let store = SpeakerStore(url: tmpDir.appendingPathComponent("speakers.json"))
+        try expectEqual(store.nextSpeakerNumber, 1)
+    }
+
+    test("SpeakerStore reserveSpeakerNumbers returns start and advances counter") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let store = SpeakerStore(url: tmpDir.appendingPathComponent("speakers.json"))
+        try expectEqual(store.reserveSpeakerNumbers(count: 3), 1)
+        try expectEqual(store.nextSpeakerNumber, 4)
+        try expectEqual(store.reserveSpeakerNumbers(count: 2), 4)
+        try expectEqual(store.nextSpeakerNumber, 6)
+    }
+
+    test("SpeakerStore reserveSpeakerNumbers with zero count is a no-op") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let store = SpeakerStore(url: tmpDir.appendingPathComponent("speakers.json"))
+        _ = store.reserveSpeakerNumbers(count: 5)
+        let before = store.nextSpeakerNumber
+        try expectEqual(store.reserveSpeakerNumbers(count: 0), before)
+        try expectEqual(store.nextSpeakerNumber, before)
+    }
+
+    test("SpeakerStore counter persists across reload") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let url = tmpDir.appendingPathComponent("speakers.json")
+        let store = SpeakerStore(url: url)
+        _ = store.reserveSpeakerNumbers(count: 4)
+        store.upsert(SpeakerProfile(
+            id: UUID(), name: "Speaker 1", embeddings: [],
+            firstSeen: Date(), lastSeen: Date(), meetingCount: 1
+        ))
+
+        let reloaded = SpeakerStore(url: url)
+        try expectEqual(reloaded.nextSpeakerNumber, 5)
+        try expectEqual(reloaded.speakers.count, 1)
+    }
+
+    test("SpeakerStore migrates legacy bare-array file by deriving counter") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let url = tmpDir.appendingPathComponent("speakers.json")
+        let legacy = [
+            SpeakerProfile(id: UUID(), name: "Alice", embeddings: [], firstSeen: Date(), lastSeen: Date(), meetingCount: 1),
+            SpeakerProfile(id: UUID(), name: "Speaker 3", embeddings: [], firstSeen: Date(), lastSeen: Date(), meetingCount: 1),
+            SpeakerProfile(id: UUID(), name: "Speaker 5", embeddings: [], firstSeen: Date(), lastSeen: Date(), meetingCount: 1),
+        ]
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(legacy).write(to: url)
+
+        let store = SpeakerStore(url: url)
+        try expectEqual(store.speakers.count, 3)
+        try expectEqual(store.nextSpeakerNumber, 6, "Highest 'Speaker N' is 5, so next is 6")
     }
 
     test("SpeakerStore delete") {

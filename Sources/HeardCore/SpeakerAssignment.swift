@@ -80,14 +80,19 @@ public enum SpeakerMatcher {
 
     /// Match detected speaker embeddings against the speaker database.
     /// Returns a mapping from detected speaker IDs to display names.
+    /// `startingSpeakerNumber` is the first "Speaker N" label to assign to an
+    /// unmatched speaker. Callers persist a monotonic counter so numbers stay
+    /// globally unique across meetings — naming "Speaker 7" later only rewrites
+    /// the one transcript that actually used it.
     public static func matchSpeakers(
         embeddings: [SpeakerEmbedding],
         database: [SpeakerProfile],
-        localUserName: String
+        localUserName: String,
+        startingSpeakerNumber: Int = 1
     ) -> [MatchResult] {
         var results: [MatchResult] = []
         var usedProfileIDs = Set<UUID>()
-        var unnamedCounter = 1
+        var unnamedCounter = max(startingSpeakerNumber, 1)
 
         for detected in embeddings {
             // Mic-track speakers (M_ prefix) are always the local user
