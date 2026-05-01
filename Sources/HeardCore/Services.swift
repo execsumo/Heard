@@ -121,7 +121,7 @@ public final class MeetingDetector {
     private var detectionState = MeetingDetectionState()
     private var isSimulated = false
 
-    private static let teamsProcessNames: Set<String> = [
+    nonisolated private static let teamsProcessNames: Set<String> = [
         "Microsoft Teams",
         "Microsoft Teams (work or school)",
         "Microsoft Teams classic",
@@ -129,7 +129,7 @@ public final class MeetingDetector {
 
     /// Bundle IDs of the main Teams app (not helpers). Bundle-ID matching catches
     /// non-English macOS locales where `localizedName` is translated.
-    private static let teamsBundleIDs: Set<String> = [
+    nonisolated private static let teamsBundleIDs: Set<String> = [
         "com.microsoft.teams",   // classic
         "com.microsoft.teams2",  // new Teams
     ]
