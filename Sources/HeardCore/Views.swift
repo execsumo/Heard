@@ -702,7 +702,7 @@ public struct SettingsView: View {
                 TableColumn("Voice") { speaker in
                     SpeakerVoiceCell(speaker: speaker, controller: clipPlayer)
                 }
-                .width(56)
+                .width(min: 90, ideal: 110, max: 140)
                 TableColumn("Name") { speaker in
                     InlineEditableText(value: speaker.name) { newValue in
                         model.speakerStore.rename(id: speaker.id, to: newValue)
@@ -1108,7 +1108,8 @@ struct NamingCandidateRow: View {
 public struct SpeakerNamingView: View {
     @ObservedObject var model: AppModel
     @State private var drafts: [UUID: String] = [:]
-    @State private var playingID: UUID?
+    @State private var playingCandidateID: UUID?
+    @State private var playingClipIndex: Int?
     @State private var audioPlayer: AVAudioPlayer?
     @State private var countdownSeconds = 120
     @State private var countdownTask: Task<Void, Never>?
@@ -1190,19 +1191,7 @@ public struct SpeakerNamingView: View {
 
     private func speakerRow(_ candidate: NamingCandidate) -> some View {
         HStack(spacing: HeardTheme.Spacing.md) {
-            Button(action: { togglePlayback(candidate) }) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(playButtonColor(candidate).opacity(0.14))
-                        .frame(width: 42, height: 42)
-                    Image(systemName: playingID == candidate.id ? "stop.fill" : "play.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(playButtonColor(candidate))
-                }
-            }
-            .buttonStyle(.plain)
-            .disabled(candidate.audioClipURL == nil)
-            .help(candidate.audioClipURL == nil ? "No audio clip available" : "Play voice sample")
+            clipButtons(for: candidate)
 
             VStack(alignment: .leading, spacing: HeardTheme.Spacing.xs) {
                 HStack(spacing: 6) {
@@ -1232,26 +1221,75 @@ public struct SpeakerNamingView: View {
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: HeardTheme.Radius.card))
     }
 
+    @ViewBuilder
+    private func clipButtons(for candidate: NamingCandidate) -> some View {
+        if candidate.audioClipURLs.isEmpty {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.secondary.opacity(0.14))
+                    .frame(width: 42, height: 42)
+                Image(systemName: "play.slash")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
+            }
+            .help("No audio clip available")
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Samples")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                HStack(spacing: 4) {
+                    ForEach(Array(candidate.audioClipURLs.enumerated()), id: \.offset) { index, url in
+                        clipButton(candidateID: candidate.id, index: index, url: url)
+                    }
+                }
+            }
+        }
+    }
+
+    private func clipButton(candidateID: UUID, index: Int, url: URL) -> some View {
+        let isPlaying = playingCandidateID == candidateID && playingClipIndex == index
+        let tint = isPlaying ? Color.red : HeardTheme.accent
+        return Button {
+            togglePlayback(candidateID: candidateID, index: index, url: url)
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                Text("\(index + 1)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .monospacedDigit()
+            }
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5)
+            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .help("Play sample \(index + 1)")
+    }
+
     // MARK: Playback
 
-    private func togglePlayback(_ candidate: NamingCandidate) {
-        if playingID == candidate.id {
+    private func togglePlayback(candidateID: UUID, index: Int, url: URL) {
+        if playingCandidateID == candidateID && playingClipIndex == index {
             stopAudio()
             return
         }
         stopAudio()
 
-        guard let url = candidate.audioClipURL else { return }
         do {
             let player = try AVAudioPlayer(contentsOf: url)
             player.play()
             audioPlayer = player
-            playingID = candidate.id
+            playingCandidateID = candidateID
+            playingClipIndex = index
 
             Task {
                 try? await Task.sleep(for: .seconds(player.duration + 0.1))
-                if playingID == candidate.id {
-                    playingID = nil
+                if playingCandidateID == candidateID && playingClipIndex == index {
+                    playingCandidateID = nil
+                    playingClipIndex = nil
                 }
             }
         } catch {
@@ -1262,12 +1300,8 @@ public struct SpeakerNamingView: View {
     private func stopAudio() {
         audioPlayer?.stop()
         audioPlayer = nil
-        playingID = nil
-    }
-
-    private func playButtonColor(_ candidate: NamingCandidate) -> Color {
-        if candidate.audioClipURL == nil { return .secondary }
-        return playingID == candidate.id ? .red : HeardTheme.accent
+        playingCandidateID = nil
+        playingClipIndex = nil
     }
 
     // MARK: Drafts
@@ -1322,28 +1356,29 @@ public struct SpeakerNamingView: View {
 
 @MainActor
 final class SpeakerClipController: ObservableObject {
-    @Published private(set) var playingID: UUID?
+    @Published private(set) var playingSpeakerID: UUID?
+    @Published private(set) var playingClipIndex: Int?
     private var player: AVAudioPlayer?
     private var stopTask: Task<Void, Never>?
 
-    func toggle(speakerID: UUID, clipURL: URL?) {
-        if playingID == speakerID {
+    func toggle(speakerID: UUID, clipIndex: Int, clipURL: URL) {
+        if playingSpeakerID == speakerID && playingClipIndex == clipIndex {
             stop()
             return
         }
         stop()
-        guard let url = clipURL,
-              FileManager.default.fileExists(atPath: url.path) else { return }
+        guard FileManager.default.fileExists(atPath: clipURL.path) else { return }
         do {
-            let p = try AVAudioPlayer(contentsOf: url)
+            let p = try AVAudioPlayer(contentsOf: clipURL)
             p.play()
             player = p
-            playingID = speakerID
+            playingSpeakerID = speakerID
+            playingClipIndex = clipIndex
             let duration = p.duration
             stopTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(duration + 0.1))
                 guard let self, !Task.isCancelled else { return }
-                if self.playingID == speakerID {
+                if self.playingSpeakerID == speakerID && self.playingClipIndex == clipIndex {
                     self.stop()
                 }
             }
@@ -1357,7 +1392,8 @@ final class SpeakerClipController: ObservableObject {
         player = nil
         stopTask?.cancel()
         stopTask = nil
-        playingID = nil
+        playingSpeakerID = nil
+        playingClipIndex = nil
     }
 }
 
@@ -1365,29 +1401,49 @@ struct SpeakerVoiceCell: View {
     let speaker: SpeakerProfile
     @ObservedObject var controller: SpeakerClipController
 
-    private var hasClip: Bool {
-        guard let url = speaker.audioClipURL else { return false }
-        return FileManager.default.fileExists(atPath: url.path)
+    private var availableClips: [(index: Int, url: URL)] {
+        speaker.audioClipURLs.enumerated().compactMap { (index, url) in
+            FileManager.default.fileExists(atPath: url.path) ? (index, url) : nil
+        }
     }
 
-    private var isPlaying: Bool { controller.playingID == speaker.id }
-
     var body: some View {
-        Button {
-            controller.toggle(speakerID: speaker.id, clipURL: speaker.audioClipURL)
+        let clips = availableClips
+        if clips.isEmpty {
+            Image(systemName: "play.slash")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .frame(width: 22, height: 20)
+                .help("No voice sample saved")
+        } else {
+            HStack(spacing: 3) {
+                ForEach(clips, id: \.index) { clip in
+                    clipButton(index: clip.index, url: clip.url)
+                }
+            }
+        }
+    }
+
+    private func clipButton(index: Int, url: URL) -> some View {
+        let isPlaying = controller.playingSpeakerID == speaker.id && controller.playingClipIndex == index
+        let tint = isPlaying ? Color.red : HeardTheme.accent
+        return Button {
+            controller.toggle(speakerID: speaker.id, clipIndex: index, clipURL: url)
         } label: {
-            Image(systemName: isPlaying ? "stop.fill" : "play.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(hasClip ? (isPlaying ? Color.red : HeardTheme.accent) : Color.secondary)
-                .frame(width: 28, height: 22)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill((hasClip ? (isPlaying ? Color.red : HeardTheme.accent) : Color.secondary).opacity(0.14))
-                )
+            HStack(spacing: 2) {
+                Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+                    .font(.system(size: 8, weight: .semibold))
+                Text("\(index + 1)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .monospacedDigit()
+            }
+            .foregroundStyle(tint)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 3)
+            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 5))
         }
         .buttonStyle(.plain)
-        .disabled(!hasClip)
-        .help(hasClip ? "Play voice sample" : "No voice sample saved")
+        .help("Play sample \(index + 1)")
     }
 }
 

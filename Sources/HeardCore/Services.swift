@@ -1635,7 +1635,7 @@ public final class PipelineProcessor: ObservableObject {
                         id: UUID(),
                         temporaryName: clip.temporaryName,
                         suggestedName: index < rosterSuggestions.count ? rosterSuggestions[index] : nil,
-                        audioClipURL: clip.clipURL,
+                        audioClipURLs: clip.clipURLs,
                         embedding: clip.embedding,
                         transcriptPath: outputURL
                     )

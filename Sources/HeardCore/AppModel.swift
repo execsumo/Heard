@@ -401,9 +401,9 @@ public var filteredSpeakers: [SpeakerProfile] {
     public func saveSpeakerName(candidate: NamingCandidate, name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        // Move the audio clip to its persistent home so it survives the 48-hour
+        // Move the audio clips to their persistent home so they survive the 48-hour
         // recordings cleanup and can be replayed from the Speakers settings tab.
-        let persistedClip = candidate.audioClipURL.flatMap { AudioClipExtractor.persistClip($0) }
+        let persistedClips = candidate.audioClipURLs.compactMap { AudioClipExtractor.persistClip($0) }
         speakerStore.upsert(
             SpeakerProfile(
                 id: UUID(),
@@ -412,7 +412,7 @@ public var filteredSpeakers: [SpeakerProfile] {
                 firstSeen: Date(),
                 lastSeen: Date(),
                 meetingCount: 1,
-                audioClipURL: persistedClip
+                audioClipURLs: persistedClips
             )
         )
         // Rewrite the transcript so it uses the real name everywhere.
@@ -429,9 +429,9 @@ public var filteredSpeakers: [SpeakerProfile] {
     }
 
     public func skipNaming() {
-        // Store remaining unnamed candidates with generic names (preserving embeddings + clip).
+        // Store remaining unnamed candidates with generic names (preserving embeddings + clips).
         for candidate in namingCandidates {
-            let persistedClip = candidate.audioClipURL.flatMap { AudioClipExtractor.persistClip($0) }
+            let persistedClips = candidate.audioClipURLs.compactMap { AudioClipExtractor.persistClip($0) }
             speakerStore.upsert(
                 SpeakerProfile(
                     id: UUID(),
@@ -440,7 +440,7 @@ public var filteredSpeakers: [SpeakerProfile] {
                     firstSeen: Date(),
                     lastSeen: Date(),
                     meetingCount: 1,
-                    audioClipURL: persistedClip
+                    audioClipURLs: persistedClips
                 )
             )
         }

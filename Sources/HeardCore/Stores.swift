@@ -181,8 +181,10 @@ public final class SpeakerStore: ObservableObject {
     }
 
     public func delete(id: UUID) {
-        if let clipURL = speakers.first(where: { $0.id == id })?.audioClipURL {
-            try? FileManager.default.removeItem(at: clipURL)
+        if let clips = speakers.first(where: { $0.id == id })?.audioClipURLs {
+            for clipURL in clips {
+                try? FileManager.default.removeItem(at: clipURL)
+            }
         }
         speakers.removeAll { $0.id == id }
         persist()

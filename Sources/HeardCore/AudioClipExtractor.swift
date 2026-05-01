@@ -89,76 +89,101 @@ public enum AudioClipExtractor {
         speakerID: String,
         diarizationSegments: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)]
     ) -> (startTime: TimeInterval, endTime: TimeInterval)? {
-        let speakerSegs = diarizationSegments
-            .filter { $0.speakerID == speakerID }
-            .sorted { $0.startTime < $1.startTime }
+        bestClipRegions(speakerID: speakerID, diarizationSegments: diarizationSegments, maxCount: 1).first
+    }
 
-        guard !speakerSegs.isEmpty else { return nil }
+    /// Find up to `maxCount` distinct clip regions for a speaker, ordered best-first.
+    /// Each region is up to ~10 s of audio drawn from a different point in the meeting so
+    /// the user has multiple voice samples to disambiguate when one clip is silent or has
+    /// crosstalk. Falls back to combining short fragments if no individual segment is long
+    /// enough.
+    public static func bestClipRegions(
+        speakerID: String,
+        diarizationSegments: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)],
+        maxCount: Int = 3
+    ) -> [(startTime: TimeInterval, endTime: TimeInterval)] {
+        guard maxCount > 0 else { return [] }
+        let speakerSegs = diarizationSegments.filter { $0.speakerID == speakerID }
+        guard !speakerSegs.isEmpty else { return [] }
 
-        // Find the longest single segment first
-        let longest = speakerSegs.max(by: {
-            ($0.endTime - $0.startTime) < ($1.endTime - $1.startTime)
-        })!
-
-        let longestDuration = longest.endTime - longest.startTime
-
-        if longestDuration >= maxClipDuration {
-            // Trim to maxClipDuration from the middle of the segment for best quality
-            let mid = (longest.startTime + longest.endTime) / 2
-            let halfClip = maxClipDuration / 2
-            return (max(0, mid - halfClip), mid + halfClip)
+        // Sort by duration descending — longest segments tend to be the cleanest samples.
+        let byDuration = speakerSegs.sorted {
+            ($0.endTime - $0.startTime) > ($1.endTime - $1.startTime)
         }
 
-        if longestDuration >= 3.0 {
-            // Good enough single segment
-            return (longest.startTime, longest.endTime)
+        var regions: [(startTime: TimeInterval, endTime: TimeInterval)] = []
+
+        for seg in byDuration {
+            if regions.count >= maxCount { break }
+            let duration = seg.endTime - seg.startTime
+            // Skip very short fragments — they make for unintelligible samples.
+            guard duration >= 1.5 else { continue }
+
+            if duration >= maxClipDuration {
+                let mid = (seg.startTime + seg.endTime) / 2
+                let half = maxClipDuration / 2
+                regions.append((max(0, mid - half), mid + half))
+            } else {
+                regions.append((seg.startTime, seg.endTime))
+            }
         }
 
-        // Combine consecutive segments to reach ~10s
-        var totalDuration: TimeInterval = 0
-        let startTime = speakerSegs[0].startTime
-        var endTime = speakerSegs[0].endTime
-
-        for seg in speakerSegs {
-            let segDuration = seg.endTime - seg.startTime
-            if totalDuration + segDuration > maxClipDuration { break }
-            endTime = seg.endTime
-            totalDuration += segDuration
+        // Fallback for highly fragmented audio: combine consecutive short segments to
+        // produce at least one usable clip.
+        if regions.isEmpty {
+            let chronological = speakerSegs.sorted { $0.startTime < $1.startTime }
+            var totalDuration: TimeInterval = 0
+            let startTime = chronological[0].startTime
+            var endTime = chronological[0].endTime
+            for seg in chronological {
+                let segDuration = seg.endTime - seg.startTime
+                if totalDuration + segDuration > maxClipDuration { break }
+                endTime = seg.endTime
+                totalDuration += segDuration
+            }
+            if totalDuration > 0 {
+                regions.append((startTime, endTime))
+            }
         }
 
-        return totalDuration > 0 ? (startTime, endTime) : nil
+        return regions
     }
 
     /// Extract clips for all unmatched speakers and return candidate info.
-    /// Saves clips to the recordings directory.
+    /// Each speaker gets up to `clipsPerSpeaker` distinct samples saved to the recordings
+    /// directory, ordered best-first.
     public static func extractSpeakerClips(
         unmatchedSpeakers: [(speakerID: String, temporaryName: String, embedding: [Float])],
         diarizationSegments: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)],
         sourceAudioURL: URL,
-        outputDirectory: URL
-    ) -> [(temporaryName: String, clipURL: URL?, embedding: [Float])] {
-        var results: [(temporaryName: String, clipURL: URL?, embedding: [Float])] = []
+        outputDirectory: URL,
+        clipsPerSpeaker: Int = 3
+    ) -> [(temporaryName: String, clipURLs: [URL], embedding: [Float])] {
+        var results: [(temporaryName: String, clipURLs: [URL], embedding: [Float])] = []
 
         for speaker in unmatchedSpeakers {
-            guard let region = bestClipRegion(
+            let regions = bestClipRegions(
                 speakerID: speaker.speakerID,
-                diarizationSegments: diarizationSegments
-            ) else {
-                results.append((speaker.temporaryName, nil, speaker.embedding))
-                continue
-            }
-
-            let clipFilename = "clip_\(UUID().uuidString.prefix(8)).wav"
-            let clipURL = outputDirectory.appendingPathComponent(clipFilename)
-
-            let savedURL = extractClip(
-                from: sourceAudioURL,
-                startTime: region.startTime,
-                endTime: region.endTime,
-                outputURL: clipURL
+                diarizationSegments: diarizationSegments,
+                maxCount: clipsPerSpeaker
             )
 
-            results.append((speaker.temporaryName, savedURL, speaker.embedding))
+            var savedURLs: [URL] = []
+            for region in regions {
+                let clipFilename = "clip_\(UUID().uuidString.prefix(8)).wav"
+                let clipURL = outputDirectory.appendingPathComponent(clipFilename)
+
+                if let savedURL = extractClip(
+                    from: sourceAudioURL,
+                    startTime: region.startTime,
+                    endTime: region.endTime,
+                    outputURL: clipURL
+                ) {
+                    savedURLs.append(savedURL)
+                }
+            }
+
+            results.append((speaker.temporaryName, savedURLs, speaker.embedding))
         }
 
         return results
