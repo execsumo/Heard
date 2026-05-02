@@ -1323,6 +1323,28 @@ public enum TranscriptWriter {
         try? updated.write(to: transcriptURL, atomically: true, encoding: .utf8)
     }
 
+    /// Rename `oldName` to `newName` across every `.md` transcript directly
+    /// inside `directory`. Speaker numbers are globally unique, so in practice
+    /// only one transcript matches — but scanning every file lets the rename
+    /// hold up if the same placeholder is ever shared across transcripts.
+    public static func renameSpeakerInDirectory(
+        _ directory: URL,
+        from oldName: String,
+        to newName: String
+    ) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, oldName != trimmed else { return }
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+        ) else { return }
+        for url in entries where url.pathExtension.lowercased() == "md" {
+            renameSpeaker(in: url, from: oldName, to: trimmed)
+        }
+    }
+
     public static func write(document: TranscriptDocument, outputDirectory: URL) throws -> URL {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         let prefix = Formatting.transcriptDatePrefixFormatter.string(from: document.startTime)
@@ -1617,7 +1639,7 @@ public final class PipelineProcessor: ObservableObject {
             job.error = nil
             queueStore.update(job)
 
-            NSLog("Heard: Pipeline finished → unmatchedSpeakers=\(transcript.unmatchedSpeakers.count), participants=\(transcript.participants.joined(separator: \", \"))")
+            NSLog("Heard: Pipeline finished → unmatchedSpeakers=\(transcript.unmatchedSpeakers.count), participants=\(transcript.participants.joined(separator: ", "))")
             if !transcript.unmatchedSpeakers.isEmpty {
                 // Extract audio clips for each unmatched speaker
                 let recordingsDir = FileManager.default.heardAppSupportDirectory
@@ -1817,11 +1839,20 @@ public final class PipelineProcessor: ObservableObject {
             var seenIDs = Set<String>()
             let uniqueEmbeddings = embeddings.filter { seenIDs.insert($0.speakerID).inserted }
 
+            // Use the persisted global counter so each unmatched speaker gets a
+            // globally unique "Speaker N". After matching we reserve only the
+            // numbers we actually consumed, so the counter stays tight.
+            let startingNumber = speakerStore.nextSpeakerNumber
+
             let matches = SpeakerMatcher.matchSpeakers(
                 embeddings: uniqueEmbeddings,
                 database: speakerStore.speakers,
-                localUserName: me
+                localUserName: me,
+                startingSpeakerNumber: startingNumber
             )
+
+            let consumedNumbers = matches.filter { $0.isNewSpeaker }.count
+            _ = speakerStore.reserveSpeakerNumbers(count: consumedNumbers)
 
             var nameMap: [String: String] = [:]
             for match in matches {

@@ -156,13 +156,28 @@ public final class SettingsStore: ObservableObject {
 @MainActor
 public final class SpeakerStore: ObservableObject {
     @Published public private(set) var speakers: [SpeakerProfile]
+    /// Monotonic counter for the next "Speaker N" placeholder label. Persists
+    /// across meetings so each unnamed speaker gets a globally unique number —
+    /// a future rename of "Speaker 7" can find/replace it in old transcripts
+    /// without colliding with a different "Speaker 7" from another meeting.
+    @Published public private(set) var nextSpeakerNumber: Int
 
     private let store = JSONStore()
     private let url: URL
 
+    /// On-disk schema. Encoded alongside the speakers array so the counter
+    /// survives relaunches. Older app versions wrote a bare `[SpeakerProfile]`
+    /// array; the loader detects that shape and migrates.
+    private struct PersistedContents: Codable {
+        var speakers: [SpeakerProfile]
+        var nextSpeakerNumber: Int
+    }
+
     public init(url: URL = AppPaths.speakersFile) {
         self.url = url
-        speakers = store.load([SpeakerProfile].self, from: url, defaultValue: [])
+        let (loadedSpeakers, loadedNext) = Self.loadContents(from: url)
+        self.speakers = loadedSpeakers
+        self.nextSpeakerNumber = loadedNext
     }
 
     public func upsert(_ speaker: SpeakerProfile) {
@@ -208,8 +223,53 @@ public final class SpeakerStore: ObservableObject {
         persist()
     }
 
+    /// Reserve `count` consecutive placeholder numbers and advance the counter.
+    /// Returns the first reserved number so callers can label N..<N+count.
+    /// Numbers are never re-used, even if the resulting profiles are renamed
+    /// or deleted — that keeps "Speaker N" unambiguous in saved transcripts.
+    public func reserveSpeakerNumbers(count: Int) -> Int {
+        guard count > 0 else { return nextSpeakerNumber }
+        let start = nextSpeakerNumber
+        nextSpeakerNumber += count
+        persist()
+        return start
+    }
+
     private func persist() {
-        try? store.save(speakers, to: url)
+        let contents = PersistedContents(speakers: speakers, nextSpeakerNumber: nextSpeakerNumber)
+        try? store.save(contents, to: url)
+    }
+
+    private static func loadContents(from url: URL) -> ([SpeakerProfile], Int) {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url) else {
+            return ([], 1)
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        if let contents = try? decoder.decode(PersistedContents.self, from: data) {
+            return (contents.speakers, max(contents.nextSpeakerNumber, 1))
+        }
+        // Legacy format: bare [SpeakerProfile]. Derive the counter from the
+        // highest existing "Speaker N" placeholder so subsequent meetings keep
+        // counting up rather than starting back at 1.
+        if let speakers = try? decoder.decode([SpeakerProfile].self, from: data) {
+            return (speakers, derivedNextNumber(from: speakers))
+        }
+        return ([], 1)
+    }
+
+    private static func derivedNextNumber(from speakers: [SpeakerProfile]) -> Int {
+        var maxN = 0
+        for profile in speakers {
+            guard profile.name.hasPrefix("Speaker ") else { continue }
+            let suffix = profile.name.dropFirst("Speaker ".count)
+            guard !suffix.isEmpty, suffix.allSatisfy(\.isWholeNumber),
+                  let n = Int(suffix) else { continue }
+            if n > maxN { maxN = n }
+        }
+        return maxN + 1
     }
 }
 
