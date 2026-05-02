@@ -32,7 +32,7 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15
 ### Pipeline (Fully Implemented)
 - Sequential job queue with stages: queued → preprocessing → transcribing → diarizing → assigning → complete
 - **Preprocessing**: Resample to 16kHz mono via `AudioConverter`, Silero VAD silence trimming, `VadSegmentMap` for timestamp remapping
-- **Transcription**: Parakeet TDT V3 via `AsrManager` with 16k sample minimum guard; decoder state reset between cached jobs to prevent context bleed
+- **Transcription**: Parakeet TDT V2/V3 (user-selectable) via `AsrManager` with 16k sample minimum guard. Each transcribe call uses a fresh `TdtDecoderState`, so no context bleeds between tracks or jobs. Always passes `language: .english` — required by FluidAudio 0.14.x to keep v3 from emitting Cyrillic for short Latin-script utterances; ignored by v2.
 - **Diarization**: `OfflineDiarizerManager` on app track only (mic track is a single known speaker, diarization was unused)
 - **Speaker Assignment**: Cosine distance matching against `SpeakerStore`, confidence margin filtering, embedding diversity management
 - Non-retryable errors (no audio, too short) fail immediately; transient errors retry 3x per session with backoff (5s, 30s, 5min) via `PipelineProcessor.executeWithRetry` (closure-driven, testable)
@@ -42,7 +42,7 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15
 - Markdown transcript output with timestamped speaker-labeled segments
 
 ### Custom Vocabulary Boosting (Needs Migration)
-- FluidAudio 0.13.6 removed `configureVocabularyBoosting` from batch `AsrManager` — it now only exists on `SlidingWindowAsrManager`
+- FluidAudio 0.13.6+ removed `configureVocabularyBoosting` from batch `AsrManager` — it now only exists on `SlidingWindowAsrManager`
 - Vocabulary terms are still stored in Settings → Transcription (and `customVocabulary` property on `DictationManager`), but are not yet applied
 - Migration path: use `CtcKeywordSpotter` + `VocabularyRescorer.ctcTokenRescore()` as post-processing after batch transcription (see `TranscribeCommand.swift` in FluidAudio CLI for reference)
 - CTC models (`CtcModels`, `CtcTokenizer`) are still available for this purpose; `ModelDownloadManager` still downloads them

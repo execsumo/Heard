@@ -1793,11 +1793,11 @@ public final class PipelineProcessor: ObservableObject {
 
         let selectedVersion = settingsStore.settings.transcriptionModel
 
-        // Reuse cached models if available and the same version; otherwise load fresh
+        // Reuse cached models if available and the same version; otherwise load fresh.
+        // Each transcribe() call uses its own fresh TdtDecoderState, so no stale context
+        // from prior jobs/tracks bleeds in.
         let asrManager: AsrManager
         if let cached = cachedAsrManager, cachedAsrVersion == selectedVersion {
-            // Reset decoder state so stale context from the previous job doesn't bleed in
-            try await cached.resetDecoderState()
             asrManager = cached
         } else {
             // Version changed or no cache — discard old models and load the selected version
@@ -1822,14 +1822,24 @@ public final class PipelineProcessor: ObservableObject {
         // Minimum 16,000 samples (1 second at 16kHz) required by Parakeet
         let minSamples = 16_000
 
-        // Transcribe app track (remote participants)
+        // v3 emits Cyrillic for short Latin utterances unless given a language hint;
+        // v2 ignores this parameter. Heard is English-only per spec.
+        let language: Language = .english
+
+        // Transcribe app track (remote participants) with a fresh decoder state.
         if let track = appTrack, track.samples.count >= minSamples {
-            appTranscription = try await asrManager.transcribe(track.samples, source: .system)
+            var decoderState = TdtDecoderState.make()
+            appTranscription = try await asrManager.transcribe(
+                track.samples, decoderState: &decoderState, language: language
+            )
         }
 
-        // Transcribe mic track (local user)
+        // Transcribe mic track (local user) with its own fresh decoder state.
         if let track = micTrack, track.samples.count >= minSamples {
-            micTranscription = try await asrManager.transcribe(track.samples, source: .microphone)
+            var decoderState = TdtDecoderState.make()
+            micTranscription = try await asrManager.transcribe(
+                track.samples, decoderState: &decoderState, language: language
+            )
         }
 
         // Models stay cached for keep-alive; unloaded by clearJobState() or forceUnload()

@@ -151,7 +151,10 @@ public final class DictationManager: ObservableObject {
         let samples = audioBuffer.getSamples()
 
         do {
-            let result = try await manager.transcribe(samples)
+            var decoderState = TdtDecoderState.make()
+            let result = try await manager.transcribe(
+                samples, decoderState: &decoderState, language: .english
+            )
             let trimmed = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
 
             guard !trimmed.isEmpty else { return }

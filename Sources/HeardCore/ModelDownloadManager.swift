@@ -35,7 +35,7 @@ public final class ModelDownloadManager: ObservableObject {
         // Parakeet: check whichever version is currently selected
         let selectedFluidVersion: AsrModelVersion = transcriptionModel == .v2 ? .v2 : .v3
         let asrDefaultDir = AsrModels.defaultCacheDirectory(for: selectedFluidVersion)
-        let parakeetRepo: Repo = transcriptionModel == .v2 ? .parakeetV2 : .parakeet
+        let parakeetRepo: Repo = transcriptionModel == .v2 ? .parakeetV2 : .parakeetV3
         let asrCustomDir = FileManager.default.heardAppSupportDirectory
             .appendingPathComponent(parakeetRepo.folderName, isDirectory: true)
         if fm.fileExists(atPath: asrDefaultDir.path) || fm.fileExists(atPath: asrCustomDir.path) {
