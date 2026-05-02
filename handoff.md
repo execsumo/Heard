@@ -41,11 +41,11 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15
 - Pipeline fires `onPipelineIdle` callback so app phase returns to dormant
 - Markdown transcript output with timestamped speaker-labeled segments
 
-### Custom Vocabulary Boosting (Needs Migration)
-- FluidAudio 0.13.6+ removed `configureVocabularyBoosting` from batch `AsrManager` — it now only exists on `SlidingWindowAsrManager`
-- Vocabulary terms are still stored in Settings → Transcription (and `customVocabulary` property on `DictationManager`), but are not yet applied
-- Migration path: use `CtcKeywordSpotter` + `VocabularyRescorer.ctcTokenRescore()` as post-processing after batch transcription (see `TranscribeCommand.swift` in FluidAudio CLI for reference)
-- CTC models (`CtcModels`, `CtcTokenizer`) are still available for this purpose; `ModelDownloadManager` still downloads them
+### Custom Vocabulary Boosting
+- FluidAudio 0.13.6+ removed `configureVocabularyBoosting` from batch `AsrManager` — it now only exists on `SlidingWindowAsrManager` (used by Dictation)
+- Batch pipeline applies vocabulary via post-processing rescoring in `PipelineProcessor.applyVocabularyBoosting`: runs `CtcKeywordSpotter.spotKeywordsWithLogProbs` over the same 16 kHz samples to compute log-probs, then `VocabularyRescorer.ctcTokenRescore` rewrites low-confidence words from the user's `customVocabulary` against the saved `ASRResult.tokenTimings`. The rescored text replaces the original via `ASRResult.withRescoring`
+- Best-effort: any failure (CTC model not downloaded, tokenizer load failure, missing tokenTimings) is logged and the original transcript is kept — vocab boosting never fails the pipeline
+- Requires the user to download the CTC 110M model from the Models tab; without it, vocabulary terms are stored but not applied
 
 ### Model Management
 - `ModelDownloadManager` pre-downloads all 4 model sets (VAD, Parakeet, Diarizer, CTC 110M) via FluidAudio
@@ -107,8 +107,9 @@ The dictation feature captures mic audio, transcribes in real-time, and injects 
 - Window also accessible from menu bar dropdown if dismissed
 
 ### App Bundle
-- `Info.plist` with `LSUIElement` (menu bar app), `NSMicrophoneUsageDescription`, bundle ID `com.execsumo.heard`
+- `Info.plist` with `LSUIElement` (menu bar app), `NSMicrophoneUsageDescription`, bundle ID `com.execsumo.heard`, `CFBundleIconFile = AppIcon`
 - `Heard.entitlements` with audio-input only (no sandbox per spec)
+- `Resources/AppIcon.iconset/` ships 16/32/128/256/512 PNG pairs; `bundle.sh` runs `iconutil -c icns` to compile `AppIcon.icns` into the bundle. Settings → About displays the real bundle icon via `NSApp.applicationIconImage`
 - `scripts/bundle.sh` builds via SPM, creates `.app` bundle, auto-signs with `Dev Cert` if available else ad-hoc
 - Flags: `--release`, `--sign IDENTITY`, `--output DIR`, `--install` (quit running app, replace `/Applications/Heard.app`, relaunch — anchors TCC grants to a stable path), `--reset` (also `tccutil reset` Microphone/ScreenCapture/Accessibility before install — implies `--install`)
 
@@ -156,7 +157,6 @@ The dictation feature captures mic audio, transcribes in real-time, and injects 
 See [`ROADMAP.md`](./ROADMAP.md) for the full list of planned improvements, organized by near-term polish, mid-term features, long-term bets, and technical debt. The highlights:
 
 ### 1. Distribution
-- App icon (currently an SF Symbol placeholder in the About tab)
 - CI pipeline — GitHub Actions: build, test, bundle, notarize, publish
 - DMG packaging for GitHub Releases
 - Homebrew Cask formula
@@ -183,7 +183,7 @@ These approaches were tried and failed, documented here to prevent re-attempting
 
 ## Known Issues
 
-- ~~**Custom vocabulary is a no-op**~~: Resolved — custom vocabulary now uses CTC-based vocabulary boosting for both pipeline transcription and dictation.
+- ~~**Custom vocabulary is a no-op**~~: Resolved — dictation uses `SlidingWindowAsrManager.configureVocabularyBoosting`; batch transcription uses post-processing CTC rescoring (`CtcKeywordSpotter` + `VocabularyRescorer.ctcTokenRescore` + `ASRResult.withRescoring`) inside `PipelineProcessor.applyVocabularyBoosting`. Both require the CTC 110M model to be downloaded.
 - **TCC permissions on rebuild**: macOS ties Screen Recording / Accessibility grants to the code signature *and* the bundle path. Each rebuild changes the CDHash, and a copy in `build/` is treated as a different app from one in `/Applications/`. Use `./scripts/bundle.sh --install` to anchor to `/Applications/Heard.app`, or `--reset` to also wipe TCC grants first. After granting, **fully Quit Heard from the menu bar and relaunch** — Screen Recording grants do not propagate to a process that was already running.
 - Running via `swift run` in a terminal causes macOS to attribute microphone permission to the terminal app (e.g., Ghostty) rather than Heard. Use `./scripts/bundle.sh && open build/Heard.app` instead.
 - The `.window` style MenuBarExtra panel has a fixed max height; if many jobs accumulate, the bottom of the panel may clip.

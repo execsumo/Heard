@@ -7,7 +7,7 @@ A living list of planned improvements and stretch ideas. Ordered by how close ea
 These land inside the existing v1 scope and mostly tighten things the user already sees.
 
 ### Distribution & install
-- **App icon.** Design and ship a proper `AppIcon.icns` for the bundle — currently the About tab uses an SF Symbol as a placeholder.
+- ~~**App icon.**~~ Done — `Resources/AppIcon.iconset/` ships full 16–512 px pairs, `bundle.sh` compiles them with `iconutil -c icns` into `AppIcon.icns`, `Info.plist` references it via `CFBundleIconFile`, and the About tab now renders `NSApp.applicationIconImage` instead of the SF Symbol placeholder.
 - **DMG packaging.** Add a `scripts/dmg.sh` that builds, signs, notarizes, and stamps out a DMG for GitHub Releases.
 - **Homebrew Cask.** Draft a Cask formula so the app is installable via `brew install --cask heard` once the DMG pipeline is live.
 - **CI pipeline.** GitHub Actions workflow: `swift build`, run `HeardTests`, build the bundle, (optionally) notarize, publish artifacts on tag pushes.
@@ -44,6 +44,7 @@ These land inside the existing v1 scope and mostly tighten things the user alrea
 - **Golden-file tests for `RosterReader` AX traversal.** The parser and filter are covered, but the actual DOM walk (`findRosterPanel`, `findParticipantList`, `extractTextChildren`) is still untested because it's bound to live `AXUIElement`. Introduce a small protocol wrapper around the AX tree that can be fed captured JSON snapshots from real Teams meetings (various states: pre-join lobby, 2-person call, 10-person call, roster panel open vs collapsed). This is the single highest-value remaining roster test — the one most likely to catch breakage when Teams updates its DOM.
 
 ### Custom vocabulary
+- ~~**Batch transcription path.**~~ Done — `PipelineProcessor.applyVocabularyBoosting` post-processes each track's `ASRResult` with `CtcKeywordSpotter` + `VocabularyRescorer.ctcTokenRescore`, then applies via `ASRResult.withRescoring`. Best-effort: gracefully skips when the CTC 110M model isn't downloaded or when an `ASRResult` lacks `tokenTimings`.
 - **Phrase boosting, not just terms.** The CTC path tokenizes whole strings, so multi-word phrases already work — but the UI suggests "terms" and the 3-char minimum blocks short acronyms. Reconsider the minimum and label the field "Terms or short phrases".
 - **Import/export vocabulary list.** JSON round-trip via drag-and-drop.
 

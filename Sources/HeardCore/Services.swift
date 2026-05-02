@@ -1842,7 +1842,98 @@ public final class PipelineProcessor: ObservableObject {
             )
         }
 
+        // Apply CTC-based custom vocabulary boosting as post-processing. Best-effort —
+        // never fails the job; original transcripts are kept on any error.
+        await applyVocabularyBoosting()
+
         // Models stay cached for keep-alive; unloaded by clearJobState() or forceUnload()
+    }
+
+    /// Post-process ASRResults with CTC vocabulary rescoring.
+    ///
+    /// FluidAudio 0.13.6+ removed `configureVocabularyBoosting` from batch `AsrManager`.
+    /// The supported migration runs `CtcKeywordSpotter` over the same audio to compute
+    /// log-probs, then asks `VocabularyRescorer.ctcTokenRescore` to rewrite low-confidence
+    /// words against the user's vocabulary. Skipped silently when the user has no terms
+    /// or the CTC 110M model isn't downloaded — the Models tab gates that download.
+    private func applyVocabularyBoosting() async {
+        let terms = settingsStore.settings.customVocabulary
+        guard !terms.isEmpty else { return }
+
+        let ctcDir = CtcModels.defaultCacheDirectory(for: .ctc110m)
+        guard CtcModels.modelsExist(at: ctcDir) else {
+            NSLog("Heard: Custom vocabulary set (%d terms) but CTC 110M not downloaded — skipping boost", terms.count)
+            return
+        }
+
+        do {
+            let ctcModels = try await CtcModels.downloadAndLoad(variant: .ctc110m)
+            let tokenizer = try await CtcTokenizer.load(from: ctcDir)
+            let vocabularyTerms = terms.map { term -> CustomVocabularyTerm in
+                let tokenIds = tokenizer.encode(term)
+                return CustomVocabularyTerm(
+                    text: term,
+                    weight: 10.0,
+                    ctcTokenIds: tokenIds.isEmpty ? nil : tokenIds
+                )
+            }
+            let context = CustomVocabularyContext(terms: vocabularyTerms)
+            let spotter = CtcKeywordSpotter(models: ctcModels)
+            let rescorer = try await VocabularyRescorer.create(
+                spotter: spotter,
+                vocabulary: context,
+                ctcModelDirectory: ctcDir
+            )
+
+            if let track = appTrack, let result = appTranscription {
+                appTranscription = await rescore(
+                    result: result, samples: track.samples,
+                    vocabulary: context, spotter: spotter, rescorer: rescorer
+                )
+            }
+            if let track = micTrack, let result = micTranscription {
+                micTranscription = await rescore(
+                    result: result, samples: track.samples,
+                    vocabulary: context, spotter: spotter, rescorer: rescorer
+                )
+            }
+        } catch {
+            NSLog("Heard: Vocab boost setup failed — keeping original transcript: %@", error.localizedDescription)
+        }
+    }
+
+    private func rescore(
+        result: ASRResult,
+        samples: [Float],
+        vocabulary: CustomVocabularyContext,
+        spotter: CtcKeywordSpotter,
+        rescorer: VocabularyRescorer
+    ) async -> ASRResult {
+        guard let tokenTimings = result.tokenTimings, !tokenTimings.isEmpty else {
+            return result
+        }
+        do {
+            let spot = try await spotter.spotKeywordsWithLogProbs(
+                audioSamples: samples,
+                customVocabulary: vocabulary
+            )
+            let rescored = rescorer.ctcTokenRescore(
+                transcript: result.text,
+                tokenTimings: tokenTimings,
+                logProbs: spot.logProbs,
+                frameDuration: spot.frameDuration
+            )
+            guard rescored.wasModified else { return result }
+
+            let detected = spot.detections.map(\.term.text)
+            let applied = rescored.replacements
+                .filter(\.shouldReplace)
+                .compactMap(\.replacementWord)
+            return result.withRescoring(text: rescored.text, detected: detected, applied: applied)
+        } catch {
+            NSLog("Heard: Vocab rescoring failed — keeping original transcript: %@", error.localizedDescription)
+            return result
+        }
     }
 
     // MARK: - Stage 3: Diarization (LS-EEND + WeSpeaker)

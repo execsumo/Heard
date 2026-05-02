@@ -747,14 +747,10 @@ public struct SettingsView: View {
         VStack(spacing: 0) {
             Spacer()
             VStack(spacing: HeardTheme.Spacing.md) {
-                ZStack {
-                    Circle()
-                        .fill(Color.primary.opacity(0.06))
-                        .frame(width: 88, height: 88)
-                    Image(systemName: "waveform")
-                        .font(.system(size: 38, weight: .regular))
-                        .foregroundStyle(HeardTheme.accent)
-                }
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 88, height: 88)
 
                 VStack(spacing: 2) {
                     Text("Heard")
