@@ -1052,7 +1052,7 @@ public final class PermissionCenter: ObservableObject {
             PermissionStatus(
                 id: "audioCapture",
                 title: "System Audio",
-                purpose: "Capture Teams audio to record other participants. The permission dialog appears when you join your first meeting.",
+                purpose: "Capture Teams audio to record other participants. Click Grant to approve up front instead of mid-meeting.",
                 state: audioCaptureState()
             ),
             PermissionStatus(
@@ -1088,6 +1088,78 @@ public final class PermissionCenter: ObservableObject {
         // automatically when AudioHardwareCreateProcessTap is first called (i.e. on
         // meeting join). Open the Microphone privacy page as the closest system UI.
         openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+    }
+
+    /// Preflight the System Audio (kTCCServiceAudioCapture) permission so the macOS
+    /// TCC prompt appears from Heard's Settings rather than mid-meeting. Creates and
+    /// immediately destroys a brief process tap; that call is what triggers the prompt.
+    /// If the permission is already granted, the tap succeeds and we mark the cached
+    /// state as granted. Falls back to opening System Settings if no audio process
+    /// objects exist yet to target.
+    public func requestAudioCapture() {
+        guard let target = anyAudioProcessObjectID() else {
+            openAudioCaptureSettings()
+            return
+        }
+
+        let desc = CATapDescription(stereoMixdownOfProcesses: [target])
+        desc.uuid = UUID()
+        desc.name = "Heard Permission Preflight"
+        desc.isPrivate = true
+        desc.muteBehavior = .unmuted
+
+        var tapID: AudioObjectID = 0
+        let err = AudioHardwareCreateProcessTap(desc, &tapID)
+        if err == noErr {
+            AudioHardwareDestroyProcessTap(tapID)
+            NSLog("Heard: System Audio preflight succeeded — permission granted")
+            markAudioCaptureGranted()
+            return
+        }
+
+        NSLog("Heard: System Audio preflight failed (%d) — TCC prompt should appear", err)
+        // The prompt is asynchronous; re-check shortly so the UI can flip to "Granted"
+        // once the user accepts without forcing them to wait for the next 3s refresh tick.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            Task { @MainActor in self?.recheckAudioCapture() }
+        }
+    }
+
+    /// Re-attempt the preflight tap silently to detect a freshly granted permission.
+    private func recheckAudioCapture() {
+        guard let target = anyAudioProcessObjectID() else { return }
+        let desc = CATapDescription(stereoMixdownOfProcesses: [target])
+        desc.uuid = UUID()
+        desc.name = "Heard Permission Recheck"
+        desc.isPrivate = true
+        desc.muteBehavior = .unmuted
+        var tapID: AudioObjectID = 0
+        if AudioHardwareCreateProcessTap(desc, &tapID) == noErr {
+            AudioHardwareDestroyProcessTap(tapID)
+            markAudioCaptureGranted()
+        }
+    }
+
+    /// Pick any process object the system already knows about, to use as a
+    /// preflight target. Returns nil if no processes have opened audio yet.
+    private func anyAudioProcessObjectID() -> AudioObjectID? {
+        var prop = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject), &prop, 0, nil, &size
+        ) == noErr, size > 0 else { return nil }
+
+        let count = Int(size) / MemoryLayout<AudioObjectID>.size
+        var list = [AudioObjectID](repeating: 0, count: count)
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &prop, 0, nil, &size, &list
+        ) == noErr else { return nil }
+
+        return list.first(where: { $0 != 0 })
     }
 
     public func requestMicrophone() {

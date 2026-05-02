@@ -926,7 +926,7 @@ private struct PermissionRow: View {
                     Button("Grant…") {
                         switch permission.id {
                         case "microphone": model.permissionCenter.requestMicrophone()
-                        case "audioCapture": model.permissionCenter.openAudioCaptureSettings()
+                        case "audioCapture": model.permissionCenter.requestAudioCapture()
                         case "screenCapture": model.permissionCenter.openScreenCaptureSettings()
                         case "accessibility": model.permissionCenter.openAccessibilitySettings()
                         default: break
@@ -942,6 +942,7 @@ private struct PermissionRow: View {
     private var iconName: String {
         switch permission.id {
         case "microphone": return "mic.fill"
+        case "audioCapture": return "speaker.wave.2.fill"
         case "screenCapture": return "rectangle.dashed.badge.record"
         case "accessibility": return "figure.stand"
         default: return "lock.fill"
