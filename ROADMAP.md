@@ -20,7 +20,6 @@ These land inside the existing v1 scope and mostly tighten things the user alrea
 
 ### Dictation UX
 - **Hotkey recorder validation.** The Record sheet accepts any combo today. Block combinations that clash with common system shortcuts (⌘Tab, ⌘Space, ⌘Q, etc.) and show a soft warning for single-modifier combos.
-- **Tune polling cadence.** The streaming loop sleeps 600 ms between transcriptions and requires 0.5 s of audio to start. Measure end-to-end latency with `os_signpost` and consider exposing the interval as a hidden developer setting.
 - **Spoken command passthrough.** Strip or interpret common fillers (`"uh"`, `"um"`) before injection — trivial post-processing that dramatically improves feel without adding any new models.
 - **Visible dictation indicator.** When dictation is active but the menu bar is hidden, the user has no feedback. Add an optional transient HUD (similar to macOS volume overlay) that fades while listening.
 - **Graceful AX permission flow.** If Accessibility is revoked mid-session, text injection silently fails. Detect the failure and surface a one-shot banner with a re-grant button.
@@ -69,8 +68,8 @@ Features that fit the on-device, single-process philosophy but require more code
 ### Dictation
 - **Dictation transcript log.** Optional history of dictated text (with timestamps and target-app name) for recovery if injection drops characters.
 - **Per-app enable list.** Disable dictation in banking apps, password managers, or other sensitive fields.
-- **Punctuation normalization.** `"new line"`, `"comma"`, `"period"` — explicitly deferred in the spec but a natural v1.5 addition once the batch-ASR loop is proven.
-- **Vocab-scoped dictation.** Reuse the custom-vocab boosting in a "coding mode" with camelCase / snake_case post-processing.
+- **Punctuation normalization.** `"new line"`, `"comma"`, `"period"` — explicitly deferred in the spec but a natural v1.5 addition.
+- **Vocab-scoped dictation.** Reuse the custom-vocab boosting (already wired into `SlidingWindowAsrManager`) in a "coding mode" with camelCase / snake_case post-processing.
 
 ### Preferences & UI
 - **Localize the settings UI.** The spec says English-only for transcription, but the app chrome could be localized.
@@ -87,6 +86,7 @@ These stretch the architecture and deserve a spec update before landing.
 
 - **Zoom / Webex / Google Meet detection.** Today Heard only recognises Teams power assertions. A pluggable "meeting source" abstraction could add others without touching the pipeline. Out of scope in `spec.md` as of v1.
 - **Live captions during the meeting.** The spec explicitly disables this to keep the Mac cool during calls; revisit once Apple Silicon idle cost improves or the user can opt-in per-meeting.
+- **Sortformer diarizer.** FluidAudio includes `SortformerDiarizer` (~11% DER vs ~17.7% for current LS-EEND + WeSpeaker). Blocked by an embedding gap: Sortformer's `DiarizerTimeline` carries no per-segment speaker embeddings, which the cross-meeting speaker identity system requires. Unblock by adding a WeSpeaker embedding-extraction pass on Sortformer's segments before converting to `DiarizationResult`. Selectable per-meeting size makes sense (Sortformer has 4 fixed speaker slots).
 - **Live speaker identification during the meeting.** Would need a streaming diarizer; today's LS-EEND is offline.
 - **Meeting note summaries.** Requires an LLM, which is explicitly out of scope. Revisit only if a local, on-device model ships that meets the quality bar.
 - **Batch import of existing recordings.** Drag-and-drop a `.wav` / `.m4a` file into the menu bar dropdown to run the same pipeline on it. Explicitly out of scope in v1.
@@ -96,6 +96,7 @@ These stretch the architecture and deserve a spec update before landing.
 
 - **`hotkeyManagerInstance` global.** The Carbon callback bridge uses a singleton. Acceptable for a one-hotkey app, but brittle if we ever add a second global shortcut. Replace with a `UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())` context.
 - **`Views.swift` size.** ~1.3 kLOC for all UI. Split by tab once we're past the early iteration phase.
+- **`SlidingWindowAsrConfig` doesn't expose `TdtConfig`.** The internal `asrConfig` hardcodes `TdtConfig()` (blankId 8192 = v3 default). `AsrManager` auto-adapts the blankId when it detects a mismatch against the loaded model, so v2 models work correctly today — but if FluidAudio ever removes that adaptation, v2 dictation would silently decode incorrectly. Upstream fix: add a `tdtConfig` parameter to `SlidingWindowAsrConfig`.
 
 ## Non-goals (from `spec.md`)
 

@@ -11,7 +11,7 @@ No cloud, no LLM, no external APIs — everything runs on-device on Apple Silico
 - **Meeting title extraction** — Reads the Teams window title via the Accessibility API and strips the ` | Microsoft Teams` suffix for the transcript filename.
 - **Dual-track recording** — The mic track is captured via `AVAudioEngine`; the app track is captured via `CATapDescription` + a private aggregate device + a raw AUHAL output unit. The tap collects **all** Teams-related CoreAudio process object IDs (main + renderer children) so audio from Electron/Chromium sub-processes isn't lost. Both tracks land on disk as 48 kHz WAVs and are never mixed during recording.
 - **Roster scraping** — Reads Teams participant names via Accessibility APIs every 15 s while a meeting is active. Three strategies: known roster-panel identifiers → AXList/AXTable containers → window-title parsing. Filters out UI control strings (mute, raise hand, etc.).
-- **On-device pipeline** — Sequential stages per job: preprocessing (48 kHz → 16 kHz mono via `AVAudioConverter`, in-memory Silero VAD trimming + `VadSegmentMap`) → Parakeet TDT V2 transcription (per-track, with optional CTC vocabulary boosting) → LS-EEND + WeSpeaker diarization → speaker assignment and Markdown output.
+- **On-device pipeline** — Sequential stages per job: preprocessing (48 kHz → 16 kHz mono via `AVAudioConverter`, in-memory Silero VAD trimming + `VadSegmentMap`) → Parakeet TDT V2/V3 transcription (per-track, parallel 4-chunk processing, with CTC vocabulary boosting) → LS-EEND + WeSpeaker diarization → speaker assignment and Markdown output.
 - **Speaker identification** — Cosine-distance matching (threshold 0.40, confidence margin 0.10) against a persistent speaker database, with embedding diversity management and auto-update on confident matches.
 - **Roster-aware auto-naming** — When one speaker is unmatched and exactly one roster name is unclaimed, the roster name is assigned automatically without prompting.
 - **Speaker naming window** — When unmatched speakers remain, a dedicated "Name Speakers" window opens with a **playable audio clip** (~10 s of each speaker's clearest speech, extracted from the 48 kHz recording), a text field pre-populated with any roster suggestion, and a 120 s auto-dismiss countdown.
@@ -21,8 +21,9 @@ No cloud, no LLM, no external APIs — everything runs on-device on Apple Silico
 - **Markdown output** — Timestamped, speaker-labeled transcripts written to a configurable output folder. Consecutive segments from the same speaker are merged into continuous blocks.
 
 ### Dictation
-- **Real-time speech-to-text** — Uses the same Parakeet TDT V2 batch `AsrManager` with a 0.6 s polling loop. Accumulates mic audio in a thread-safe buffer, re-transcribes every cycle, and diffs the output.
-- **Stability-based text injection** — Only injects words that appear in the same position across **two consecutive** transcription cycles. This prevents duplicates when the model revises earlier words as more audio accumulates.
+- **Real-time speech-to-text** — Uses FluidAudio's `SlidingWindowAsrManager` with overlapping windows and an internal stable/volatile text split. Audio is fed as `AVAudioPCMBuffer` straight from the mic tap; the manager handles resampling, chunking, and context accumulation internally.
+- **Incremental injection** — Confirmed text (high-confidence stable windows) is injected word by word as it's promoted from volatile; any remaining volatile text is flushed on stop.
+- **Vocabulary boosting** — When CTC models are downloaded, `configureVocabularyBoosting()` is applied so custom terms take effect in real time.
 - **Text injection** — `CGEvent.keyboardSetUnicodeString` + `postToPid` targets the frontmost app; falls back to HID-level events, then clipboard paste. All paths require Accessibility permission.
 - **Global hotkey** — Default ⌃⇧D, registered via Carbon `RegisterEventHotKey`. No Accessibility permission needed for the hotkey itself, so it keeps working across ad-hoc rebuilds. Rebindable via a Record sheet in the Dictation tab.
 - **Toggle and push-to-talk modes** — Tap to toggle, or hold the hotkey to dictate and release to stop.
@@ -38,7 +39,7 @@ No cloud, no LLM, no external APIs — everything runs on-device on Apple Silico
 
 - macOS 15.0+
 - Apple Silicon (FluidAudio CoreML/ANE models are ARM-only)
-- [FluidAudio](https://github.com/FluidInference/FluidAudio) 0.13.6+ (resolved automatically via SPM)
+- [FluidAudio](https://github.com/FluidInference/FluidAudio) 0.14.3+ (resolved automatically via SPM)
 
 ## Build & Run
 
@@ -88,7 +89,7 @@ Heard/
 │       ├── AudioClipExtractor.swift  # Extract speaker audio clips for the naming prompt
 │       ├── SpeakerAssignment.swift   # SpeakerMatcher, SegmentMerger, cosine distance
 │       ├── ModelDownloadManager.swift # Pre-download & status for FluidAudio models
-│       ├── DictationManager.swift    # Batch ASR + polling + stability diffing
+│       ├── DictationManager.swift    # SlidingWindowAsrManager wrapper + incremental injection
 │       ├── TextInjector.swift        # CGEvent unicode / HID / clipboard paths
 │       ├── HotkeyManager.swift       # Carbon RegisterEventHotKey wrapper
 │       └── RosterReader.swift        # Teams roster via AXUIElement
@@ -99,7 +100,7 @@ Heard/
 │   └── diagnose.swift                # Print what Heard sees from Teams & power assertions
 ├── Info.plist                        # LSUIElement, NSMicrophoneUsageDescription
 ├── Heard.entitlements                # Audio input only (no sandbox)
-├── Package.swift                     # SPM config, FluidAudio 0.12.4+
+├── Package.swift                     # SPM config, FluidAudio 0.14.3+
 ├── spec.md                           # Product source of truth
 ├── handoff.md                        # Current implementation status
 ├── ROADMAP.md                        # Planned improvements (this doc)
@@ -119,9 +120,8 @@ Heard/
 - **No sandbox.** Required for `CATapDescription` app-audio tapping and `CGEvent` text injection. The entitlements file grants `audio-input` and nothing else.
 - **AUHAL + private aggregate device for the tap.** `AVAudioEngine.inputNode` silently re-binds to the system default input when `prepare()` runs after a `kAudioOutputUnitProperty_CurrentDevice` change, so a standalone `kAudioUnitSubType_HALOutput` configured *before* `AudioUnitInitialize` is the only reliable path to capture from the tap's aggregate device.
 - **Multi-process Teams tap.** New Teams renders audio in renderer/GPU child processes, not in the process holding the power assertion. The recorder enumerates every Teams-related CoreAudio process object and taps them all.
-- **Batch ASR with polling for dictation.** Dictation reuses the same batch `AsrManager` as meeting transcription, re-running it every 0.6 s against an accumulating audio buffer. This is accurate and fast enough in practice; the stability-based injection guard (see below) prevents duplicates when the model revises earlier tokens.
+- **SlidingWindowAsrManager for dictation.** Dictation uses FluidAudio's `SlidingWindowAsrManager` with the `.streaming` preset (11 s chunks, 2 s left/right context). The manager handles overlapping windows, resampling, and stable/volatile text promotion internally. Confirmed text is injected incrementally; remaining volatile text is flushed on stop. This also restores vocabulary boosting, which was removed from the batch `AsrManager` API in FluidAudio 0.13.6.
 - **Carbon for global hotkeys.** `RegisterEventHotKey` doesn't need Accessibility permission and survives ad-hoc rebuilds, unlike `CGEvent.tapCreate` or `NSEvent` monitors (which can't suppress events).
-- **Stability-based text injection.** Only words that are identical across two consecutive dictation cycles are committed to the target app, preventing duplicates when the model revises earlier tokens.
 - **Per-track transcription.** The app and mic tracks are transcribed separately, then merged by timestamp. Avoids crosstalk artifacts from a pre-mixed source.
 - **Local user is the mic track.** No diarization needed to identify the local user — the mic track is always "Me" (or the name set in Settings → Speakers). The mic embedding is stored and updated silently each meeting.
 
@@ -132,7 +132,7 @@ All models are CoreML, loaded via [FluidAudio](https://github.com/FluidInference
 | Kind | Model | Purpose |
 |---|---|---|
 | `batchVad` | Silero VAD v6 | In-memory silence trimming during preprocessing |
-| `batchParakeet` | Parakeet TDT V2 0.6B | English speech-to-text for meetings and dictation |
+| `batchParakeet` | Parakeet TDT V2 0.6B (default) or V3 | English speech-to-text for meetings and dictation. V2 is recommended for English; V3 adds a Cyrillic-script guard. Selectable in Settings → Models. |
 | `diarization` | LS-EEND + WeSpeaker | Speaker segmentation + 256-d embedding extraction |
 | `ctcVocabulary` | Parakeet CTC 110M | Optional CTC vocabulary boosting for custom terms |
 
@@ -158,7 +158,7 @@ Only Microphone is strictly required; everything else degrades gracefully. Permi
 
 ~/Library/Application Support/FluidAudio/Models/
 ├── silero-vad-coreml/
-├── parakeet-tdt-0.6b-v2-coreml/
+├── parakeet-tdt-0.6b-v2-coreml/      # or parakeet-tdt-0.6b-v3-coreml/ if V3 selected
 ├── speaker-diarization-coreml/
 └── parakeet-tdt-0.6b-v2-ctc-110m-coreml/
 
@@ -174,7 +174,7 @@ Orphan WAVs from previous crashes are cleaned on launch, and any private aggrega
 swift run HeardTests
 ```
 
-~35 tests covering `VadSegmentMap`, cosine distance, `SpeakerMatcher`, `SegmentMerger`, `AudioPreprocessor`, `TranscriptWriter`, `SpeakerStore`, and `PipelineQueueStore` via a lightweight in-house harness — no XCTest or Xcode required.
+109 tests covering `VadSegmentMap`, cosine distance, `SpeakerMatcher`, `SegmentMerger`, `AudioPreprocessor`, `TranscriptWriter`, `SpeakerStore`, `PipelineQueueStore`, and `RosterReader` via a lightweight in-house harness — no XCTest or Xcode required.
 
 **Manual smoke test:** `./scripts/bundle.sh && open build/Heard.app`, enable Developer Mode in Settings → General, then use **Simulate Meeting** from the menu bar to exercise the full flow without a real Teams call.
 
