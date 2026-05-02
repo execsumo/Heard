@@ -1639,7 +1639,7 @@ public final class PipelineProcessor: ObservableObject {
             job.error = nil
             queueStore.update(job)
 
-            NSLog("Heard: Pipeline finished → unmatchedSpeakers=\(transcript.unmatchedSpeakers.count), participants=\(transcript.participants.joined(separator: \", \"))")
+            NSLog("Heard: Pipeline finished → unmatchedSpeakers=\(transcript.unmatchedSpeakers.count), participants=\(transcript.participants.joined(separator: ", "))")
             if !transcript.unmatchedSpeakers.isEmpty {
                 // Extract audio clips for each unmatched speaker
                 let recordingsDir = FileManager.default.heardAppSupportDirectory
