@@ -39,6 +39,8 @@ These land inside the existing v1 scope and mostly tighten things the user alrea
 - **Open transcript in reveal mode.** Right-click → "Reveal in Finder" on each job row.
 - **Re-run speaker assignment.** If the user renames a speaker or merges two profiles, older transcripts don't retroactively update. Add a "Re-run speaker assignment" action on completed jobs that re-reads the cached `.wav` files (while they're still within the 48 h window).
 - **Per-job log viewer.** When a job fails, the error string is short. Capture a rolling per-job log (stdout/NSLog lines) and show it in a disclosure view.
+- **Exclude silent clips from speaker naming.** When extracting audio clips for the speaker naming dialogue, filter out segments with silence/VAD gaps so each playback is continuous speech.
+- **Fix speaker naming dialogue auto-close.** The 120-second auto-dismiss is too aggressive when the user is actively filling out speaker names. Change behavior: close only if the window has been open and dormant (no text edits) for the full duration.
 
 ### Testing
 - **Golden-file tests for `RosterReader` AX traversal.** The parser and filter are covered, but the actual DOM walk (`findRosterPanel`, `findParticipantList`, `extractTextChildren`) is still untested because it's bound to live `AXUIElement`. Introduce a small protocol wrapper around the AX tree that can be fed captured JSON snapshots from real Teams meetings (various states: pre-join lobby, 2-person call, 10-person call, roster panel open vs collapsed). This is the single highest-value remaining roster test — the one most likely to catch breakage when Teams updates its DOM.
@@ -53,6 +55,7 @@ These land inside the existing v1 scope and mostly tighten things the user alrea
 Features that fit the on-device, single-process philosophy but require more code than a polish pass.
 
 ### Speaker management
+- **Cumulative transcription stats per speaker.** On the Speakers tab, show each speaker's cumulative hours transcribed and word count across all meetings.
 - **Speaker merge preview.** Before committing a merge, show both speakers' recent meeting counts, first/last-seen dates, and a diff of embeddings count.
 - **Manual speaker split.** Inverse of merge — split a speaker profile if the user realizes two voices were collapsed.
 - **Per-speaker colors in the transcript.** Lightweight Markdown footer or HTML export with consistent per-speaker colors.
