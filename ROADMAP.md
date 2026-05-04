@@ -57,7 +57,8 @@ Features that fit the on-device, single-process philosophy but require more code
 ### Speaker management
 - **Cumulative transcription stats per speaker.** On the Speakers tab, show each speaker's cumulative hours transcribed and word count across all meetings.
 - **Retroactive speaker name mapping.** When a new speaker is identified and named (via the naming dialogue or manual entry), automatically search and replace that speaker ID across all existing transcripts in the output directory. Surfaces a confirmation dialogue showing how many transcripts will be updated.
-- **Speaker merge preview.** Before committing a merge, show both speakers' recent meeting counts, first/last-seen dates, and a diff of embeddings count.
+- **Speaker merge preview.** Before committing a merge, show both speakers' recent meeting counts, first/last-seen dates, and a diff of embeddings count. When merging, keep the name that is not a "Speaker X" placeholder (prefer the real human-given name).
+
 - **Manual speaker split.** Inverse of merge — split a speaker profile if the user realizes two voices were collapsed.
 - **Per-speaker colors in the transcript.** Lightweight Markdown footer or HTML export with consistent per-speaker colors.
 - **Voice clip gallery.** Store a single 10-second reference clip per known speaker so the user can play it back from Settings → Speakers to verify identity.
