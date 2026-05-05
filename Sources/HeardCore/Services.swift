@@ -1417,9 +1417,17 @@ public enum TranscriptWriter {
         }
     }
 
-    public static func write(document: TranscriptDocument, outputDirectory: URL) throws -> URL {
+    public static func write(document: TranscriptDocument, outputDirectory: URL, dateFormat: TranscriptDateFormat = .short) throws -> URL {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        let prefix = Formatting.transcriptDatePrefixFormatter.string(from: document.startTime)
+        
+        let formatter = DateFormatter()
+        switch dateFormat {
+        case .short:
+            formatter.dateFormat = "yyMMdd"
+        case .iso:
+            formatter.dateFormat = "yyyy-MM-dd"
+        }
+        let prefix = formatter.string(from: document.startTime)
         let title = document.title.sanitizedFileName()
         var candidate = outputDirectory.appendingPathComponent("\(prefix)_\(title).md")
         var suffix = 2
@@ -1703,7 +1711,11 @@ public final class PipelineProcessor: ObservableObject {
             try await advanceTo(&job, stage: .assigning)
             let transcript = runSpeakerAssignment(job)
             let outputDirectory = URL(fileURLWithPath: settingsStore.settings.outputDirectory, isDirectory: true)
-            let outputURL = try TranscriptWriter.write(document: transcript, outputDirectory: outputDirectory)
+            let outputURL = try TranscriptWriter.write(
+                document: transcript,
+                outputDirectory: outputDirectory,
+                dateFormat: settingsStore.settings.transcriptDateFormat
+            )
 
             job.transcriptPath = outputURL
             job.stage = .complete

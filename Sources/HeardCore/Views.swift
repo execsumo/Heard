@@ -573,6 +573,12 @@ public struct SettingsView: View {
                     Button("Reset") { model.chooseDefaultOutputDirectory() }
                     Button("Open in Finder") { model.openOutputDirectory() }
                 }
+
+                Picker("Filename Date Format", selection: settingsBinding(\.transcriptDateFormat)) {
+                    ForEach(TranscriptDateFormat.allCases) { format in
+                        Text(format.displayName).tag(format)
+                    }
+                }
             }
 
             Section("Permissions") {

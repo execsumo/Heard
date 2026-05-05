@@ -230,6 +230,20 @@ public enum SpeakerSortMode: String, CaseIterable, Identifiable {
     }
 }
 
+public enum TranscriptDateFormat: String, Codable, CaseIterable, Identifiable {
+    case short = "YYMMDD"
+    case iso = "YYYY-MM-DD"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .short: return "Short (YYMMDD)"
+        case .iso: return "ISO (YYYY-MM-DD)"
+        }
+    }
+}
+
 public struct AppSettings: Codable, Equatable {
     public var userName: String
     public var launchAtLogin: Bool
@@ -248,6 +262,8 @@ public struct AppSettings: Codable, Equatable {
     public var transcriptionModel: TranscriptionModel
     /// Show a floating HUD while dictation is active (opt-in).
     public var showDictationHUD: Bool
+    /// Date format used for the transcript filename.
+    public var transcriptDateFormat: TranscriptDateFormat
 
     public static let `default` = AppSettings(
         userName: "",
@@ -262,7 +278,8 @@ public struct AppSettings: Codable, Equatable {
         dictationKeepAlive: 120,
         pipelineKeepAlive: 0,
         transcriptionModel: .v2,
-        showDictationHUD: false
+        showDictationHUD: false,
+        transcriptDateFormat: .short
     )
 
     public init(
@@ -278,7 +295,8 @@ public struct AppSettings: Codable, Equatable {
         dictationKeepAlive: TimeInterval = 120,
         pipelineKeepAlive: TimeInterval = 0,
         transcriptionModel: TranscriptionModel = .v2,
-        showDictationHUD: Bool = false
+        showDictationHUD: Bool = false,
+        transcriptDateFormat: TranscriptDateFormat = .short
     ) {
         self.userName = userName
         self.launchAtLogin = launchAtLogin
@@ -293,6 +311,7 @@ public struct AppSettings: Codable, Equatable {
         self.pipelineKeepAlive = pipelineKeepAlive
         self.transcriptionModel = transcriptionModel
         self.showDictationHUD = showDictationHUD
+        self.transcriptDateFormat = transcriptDateFormat
     }
 }
 

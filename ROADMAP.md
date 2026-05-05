@@ -70,7 +70,7 @@ Features that fit the on-device, single-process philosophy but require more code
 ### Pipeline & output
 - **Live meeting notes.** During an active meeting, allow the user to add timestamped text notes via a menu bar button or hotkey (e.g., Ctrl+Shift+N). Notes are stored in-memory and merged into the final transcript as `[HH:MM:SS] **Note:** text here` blocks, inserted chronologically. Future enhancements: voice notes that auto-transcribe, notes outside active meetings, note editing/deletion.
 - **Alternative output formats.** Out of scope per spec today, but worth re-evaluating: plain `.txt`, `.srt`, VTT for video workflows, or a lightweight HTML with anchors.
-- **Configurable date format.** The `YYMMDD_Title.md` filename is fixed. Let power users switch to `YYYY-MM-DD_Title.md`.
+- ~~**Configurable date format.**~~ Done - The `YYMMDD_Title.md` filename is fixed. Let power users switch to `YYYY-MM-DD_Title.md`.
 - **Transcript deduplication.** Detect when the same segment text appears from both the app and mic tracks (e.g. speaker bleed) and drop the quieter one.
 - **Grounded speaker assignment.** Use the WeSpeaker embedding on the mic track to double-check that the "longest-duration speaker on mic = local user" heuristic holds. If it doesn't, fall back to prompting the user.
 
