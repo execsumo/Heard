@@ -36,6 +36,10 @@ public struct MenuBarView: View {
                 errorBanner(errorMessage)
             }
 
+            if model.dictationAXLost {
+                axLostBanner
+            }
+
             statusHeader
                 .padding(.horizontal, 10)
                 .padding(.top, 10)
@@ -208,6 +212,36 @@ public struct MenuBarView: View {
         }
         .padding(10)
         .background(.red.opacity(0.10), in: RoundedRectangle(cornerRadius: HeardTheme.Radius.inline))
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
+    }
+
+    private var axLostBanner: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.caption)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Accessibility access was revoked. Dictation text injection stopped.")
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                    .lineLimit(3)
+                Button("Re-grant Access…") {
+                    TextInjector.ensureAccessibility()
+                    model.acknowledgeAXLost()
+                }
+                .buttonStyle(.plain)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(HeardTheme.accent)
+            }
+            Spacer(minLength: 4)
+            Button("Dismiss") { model.acknowledgeAXLost() }
+                .buttonStyle(.plain)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: HeardTheme.Radius.inline))
         .padding(.horizontal, 10)
         .padding(.top, 10)
     }
@@ -557,6 +591,18 @@ public struct SettingsView: View {
                 .disabled(model.isDictating)
             } header: {
                 Text("Model Keep-Alive")
+            }
+
+            Section("Overlay") {
+                Toggle(isOn: settingsBinding(\.showDictationHUD)) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Show Dictation Indicator")
+                        Text("A floating pill appears on screen when dictation is active — useful when the menu bar is hidden.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(!model.settingsStore.settings.dictationEnabled)
             }
 
             if model.isDictating {
@@ -1000,6 +1046,10 @@ private struct HotkeyRecorderView: View {
     @State private var captured: HotkeyCombo? = nil
     @State private var monitorToken: Any? = nil
 
+    private enum ValidationKind {
+        case noModifier, forbidden, singleModifier
+    }
+
     var body: some View {
         VStack(spacing: HeardTheme.Spacing.lg) {
             Image(systemName: "keyboard")
@@ -1032,6 +1082,22 @@ private struct HotkeyRecorderView: View {
             }
             .frame(height: 44)
 
+            // Validation feedback
+            if let validation = captured.flatMap({ validate($0) }) {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: validation == .singleModifier
+                          ? "exclamationmark.triangle.fill"
+                          : "xmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(validation == .singleModifier ? .orange : .red)
+                    Text(validationMessage(validation))
+                        .font(.caption)
+                        .foregroundStyle(validation == .singleModifier ? .orange : .red)
+                        .multilineTextAlignment(.leading)
+                }
+                .frame(maxWidth: 280, alignment: .leading)
+            }
+
             HStack(spacing: HeardTheme.Spacing.md) {
                 Button("Cancel") {
                     stopMonitoring()
@@ -1044,7 +1110,7 @@ private struct HotkeyRecorderView: View {
                     if let combo = captured { onCommit(combo) }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(captured == nil)
+                .disabled(captured == nil || isBlocked(captured))
                 .buttonStyle(.borderedProminent)
             }
         }
@@ -1052,6 +1118,55 @@ private struct HotkeyRecorderView: View {
         .frame(width: 360)
         .onAppear { startMonitoring() }
         .onDisappear { stopMonitoring() }
+    }
+
+    private func isBlocked(_ combo: HotkeyCombo?) -> Bool {
+        guard let combo else { return false }
+        let v = validate(combo)
+        return v == .noModifier || v == .forbidden
+    }
+
+    private func validate(_ combo: HotkeyCombo) -> ValidationKind? {
+        let flags = combo.modifierFlags
+        let modifiers: [NSEvent.ModifierFlags] = [.command, .control, .option, .shift]
+        let modCount = modifiers.filter { flags.contains($0) }.count
+        if modCount == 0 { return .noModifier }
+        if isForbiddenCombo(combo) { return .forbidden }
+        if modCount == 1 { return .singleModifier }
+        return nil
+    }
+
+    private func validationMessage(_ kind: ValidationKind) -> String {
+        switch kind {
+        case .noModifier:
+            return "A modifier key (⌘, ⌃, ⌥, or ⇧) is required."
+        case .forbidden:
+            return "This shortcut is reserved by macOS. Please choose another."
+        case .singleModifier:
+            return "Single-modifier shortcuts may conflict with app shortcuts."
+        }
+    }
+
+    // Common macOS system shortcuts that should not be overridden.
+    private func isForbiddenCombo(_ combo: HotkeyCombo) -> Bool {
+        let blocked: [(UInt16, NSEvent.ModifierFlags)] = [
+            (48, .command),                     // ⌘Tab — app switcher
+            (49, .command),                     // ⌘Space — Spotlight
+            (49, [.command, .option]),           // ⌥⌘Space — alternate Spotlight
+            (49, .control),                     // ⌃Space — input source switch
+            (12, .command),                     // ⌘Q — Quit
+            (4,  .command),                     // ⌘H — Hide
+            (46, .command),                     // ⌘M — Minimize
+            (13, .command),                     // ⌘W — Close window
+            (43, .command),                     // ⌘, — Preferences
+            (50, .command),                     // ⌘` — cycle windows
+            (20, [.command, .shift]),            // ⌘⇧3 — screenshot
+            (21, [.command, .shift]),            // ⌘⇧4 — screenshot region
+            (22, [.command, .shift]),            // ⌘⇧5 — screenshot toolbar
+        ]
+        return blocked.contains { keyCode, mods in
+            combo.keyCode == keyCode && combo.modifierFlags == mods
+        }
     }
 
     private func startMonitoring() {

@@ -229,6 +229,8 @@ public struct AppSettings: Codable, Equatable {
     public var pipelineKeepAlive: TimeInterval
     /// Which Parakeet model version to use for transcription (pipeline + dictation).
     public var transcriptionModel: TranscriptionModel
+    /// Show a floating HUD while dictation is active (opt-in).
+    public var showDictationHUD: Bool
 
     public static let `default` = AppSettings(
         userName: "",
@@ -242,7 +244,8 @@ public struct AppSettings: Codable, Equatable {
         pushToTalk: false,
         dictationKeepAlive: 120,
         pipelineKeepAlive: 0,
-        transcriptionModel: .v2
+        transcriptionModel: .v2,
+        showDictationHUD: false
     )
 
     public init(
@@ -257,7 +260,8 @@ public struct AppSettings: Codable, Equatable {
         pushToTalk: Bool = false,
         dictationKeepAlive: TimeInterval = 120,
         pipelineKeepAlive: TimeInterval = 0,
-        transcriptionModel: TranscriptionModel = .v2
+        transcriptionModel: TranscriptionModel = .v2,
+        showDictationHUD: Bool = false
     ) {
         self.userName = userName
         self.launchAtLogin = launchAtLogin
@@ -271,6 +275,7 @@ public struct AppSettings: Codable, Equatable {
         self.dictationKeepAlive = dictationKeepAlive
         self.pipelineKeepAlive = pipelineKeepAlive
         self.transcriptionModel = transcriptionModel
+        self.showDictationHUD = showDictationHUD
     }
 }
 

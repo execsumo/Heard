@@ -8,6 +8,17 @@ public enum DictationState: String {
     case listening
 }
 
+public enum DictationError: Error, LocalizedError {
+    case notIdle(current: DictationState)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notIdle(let s):
+            return "Cannot start dictation: already \(s.rawValue). Please wait for the current operation to finish."
+        }
+    }
+}
+
 /// Manages real-time dictation using FluidAudio's SlidingWindowAsrManager.
 /// Audio is fed as AVAudioPCMBuffer; the manager handles overlapping windows and
 /// stable/volatile split internally. Confirmed text is injected incrementally;
@@ -45,7 +56,7 @@ public final class DictationManager: ObservableObject {
     // MARK: - Public API
 
     public func start() async throws {
-        guard state == .idle else { return }
+        guard state == .idle else { throw DictationError.notIdle(current: state) }
 
         unloadTask?.cancel()
         unloadTask = nil
@@ -112,10 +123,13 @@ public final class DictationManager: ObservableObject {
         updateConsumerTask?.cancel()
         updateConsumerTask = nil
 
-        // Flush any remaining audio and inject whatever wasn't confirmed yet.
+        // Flush remaining audio, inject final text, then clean up fully.
+        // cleanup() closes the transcriptionUpdates AsyncStream so the consumer task can exit,
+        // and releases the internal ASR manager — required before reusing asrModels next session.
         if let mgr = slidingWindowMgr {
             let finalText = (try? await mgr.finish()) ?? ""
             injectDelta(to: finalText)
+            await mgr.cleanup()
         }
 
         slidingWindowMgr = nil
@@ -157,10 +171,13 @@ public final class DictationManager: ObservableObject {
         partialTranscript = [confirmed, volatile].filter { !$0.isEmpty }.joined(separator: " ")
 
         // Inject any newly confirmed text since the last injection.
-        if update.isConfirmed {
-            injectDelta(to: confirmed)
-        }
+        // We do this on every update (not just isConfirmed) so text flows in real-time
+        // as the sliding window confirms words, rather than all appearing at stop().
+        injectDelta(to: confirmed)
     }
+
+    /// Filler words stripped before injection. Matched case-insensitively at word boundaries.
+    private static let fillerWords: Set<String> = ["uh", "um", "er", "ah", "hmm", "hm", "uhh", "umm", "mhm"]
 
     /// Inject the portion of `newText` that extends beyond what we've already injected.
     private func injectDelta(to newText: String) {
@@ -169,12 +186,23 @@ public final class DictationManager: ObservableObject {
         guard newText.hasPrefix(injectedText) else { return }
 
         let raw = String(newText.dropFirst(injectedText.count))
-        let delta = raw.trimmingCharacters(in: .whitespaces)
+        // Strip filler words before injecting; always advance injectedText so we
+        // don't reprocess the same chunk on subsequent calls.
+        let needsLeadingSpace = !injectedText.isEmpty
+        injectedText = newText
+        let delta = stripFillers(raw).trimmingCharacters(in: .whitespaces)
         guard !delta.isEmpty else { return }
 
-        let space = injectedText.isEmpty ? "" : " "
-        onUtterance?(space + delta)
-        injectedText = newText
+        onUtterance?((needsLeadingSpace ? " " : "") + delta)
+    }
+
+    private func stripFillers(_ text: String) -> String {
+        let words = text.split(separator: " ", omittingEmptySubsequences: true)
+        let stripped = words.filter { word in
+            let bare = word.trimmingCharacters(in: .punctuationCharacters).lowercased()
+            return !Self.fillerWords.contains(bare)
+        }
+        return stripped.joined(separator: " ")
     }
 
     // MARK: - Mic Capture
