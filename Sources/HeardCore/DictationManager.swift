@@ -42,6 +42,9 @@ public final class DictationManager: ObservableObject {
     /// Custom vocabulary terms for boosting. Set before calling start().
     public var customVocabulary: [String] = []
 
+    /// Custom formatting commands for ITN. Set before calling start().
+    public var formattingCommands: [FormattingCommand] = []
+
     /// Which Parakeet model version to use. Changing mid-session reloads models on the next start.
     public var modelVersion: TranscriptionModel = .v2
 
@@ -105,10 +108,11 @@ public final class DictationManager: ObservableObject {
             }
         }
 
-        // Add custom dictation rules for new lines and paragraphs
-        TextNormalizer.shared.addRule(spoken: "new line", written: "\n")
-        TextNormalizer.shared.addRule(spoken: "newline", written: "\n")
-        TextNormalizer.shared.addRule(spoken: "new paragraph", written: "\n\n")
+        // Apply custom formatting commands
+        TextNormalizer.shared.clearRules()
+        for cmd in formattingCommands {
+            TextNormalizer.shared.addRule(spoken: cmd.spoken, written: cmd.written)
+        }
 
         slidingWindowMgr = mgr
         injectedText = ""

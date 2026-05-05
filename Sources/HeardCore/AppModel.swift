@@ -247,6 +247,7 @@ public var filteredSpeakers: [SpeakerProfile] {
                 do {
                     dictationAXLost = false
                     dictationManager.customVocabulary = settingsStore.settings.customVocabulary
+                    dictationManager.formattingCommands = settingsStore.settings.formattingCommands
                     dictationManager.modelVersion = settingsStore.settings.transcriptionModel
                     dictationManager.modelKeepAliveSeconds = settingsStore.settings.dictationKeepAlive
                     try await dictationManager.start()
@@ -392,6 +393,23 @@ public var filteredSpeakers: [SpeakerProfile] {
 
     public func removeVocabularyTerm(_ term: String) {
         settingsStore.settings.customVocabulary.removeAll { $0 == term }
+        objectWillChange.send()
+    }
+
+    public func addFormattingCommand(spoken: String, written: String) {
+        let cleanSpoken = spoken.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cleanWritten = written.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanSpoken.isEmpty && !cleanWritten.isEmpty else { return }
+        // Don't add if spoken phrase already exists
+        guard !settingsStore.settings.formattingCommands.contains(where: { $0.spoken == cleanSpoken }) else { return }
+        
+        let newCommand = FormattingCommand(spoken: cleanSpoken, written: cleanWritten)
+        settingsStore.settings.formattingCommands.append(newCommand)
+        objectWillChange.send()
+    }
+
+    public func removeFormattingCommand(id: UUID) {
+        settingsStore.settings.formattingCommands.removeAll { $0.id == id }
         objectWillChange.send()
     }
 

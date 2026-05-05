@@ -465,6 +465,8 @@ public struct SettingsView: View {
     @ObservedObject public var model: AppModel
     @ObservedObject private var permissionCenter: PermissionCenter
     @State private var isRecordingHotkey = false
+    @State private var commandSpokenDraft = ""
+    @State private var commandWrittenDraft = ""
     @StateObject private var clipPlayer = SpeakerClipController()
 
     public init(model: AppModel) {
@@ -693,6 +695,58 @@ public struct SettingsView: View {
                     }
                 }
                 .disabled(!model.settingsStore.settings.dictationEnabled)
+            }
+
+            Section {
+                if model.settingsStore.settings.formattingCommands.isEmpty {
+                    Text("No custom formatting commands.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 8)
+                } else {
+                    List {
+                        ForEach(model.settingsStore.settings.formattingCommands) { cmd in
+                            HStack {
+                                Text(cmd.spoken)
+                                    .font(.system(.body, design: .monospaced))
+                                Image(systemName: "arrow.right")
+                                    .foregroundStyle(.tertiary)
+                                Text(cmd.written.replacingOccurrences(of: "\n", with: "\\n"))
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button {
+                                    model.removeFormattingCommand(id: cmd.id)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    .frame(minHeight: 100)
+                }
+
+                HStack {
+                    TextField("Spoken (e.g. 'new paragraph')", text: $commandSpokenDraft)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Written (e.g. '\\n\\n')", text: $commandWrittenDraft)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Add") {
+                        let written = commandWrittenDraft.replacingOccurrences(of: "\\n", with: "\n")
+                        model.addFormattingCommand(spoken: commandSpokenDraft, written: written)
+                        commandSpokenDraft = ""
+                        commandWrittenDraft = ""
+                    }
+                    .disabled(commandSpokenDraft.trimmingCharacters(in: .whitespaces).isEmpty || commandWrittenDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            } header: {
+                Text("Custom Formatting Commands")
+            } footer: {
+                Text("Use `\\n` for new lines. Example: Spoken `new line` → Written `\\n`.")
             }
 
             if model.isDictating {

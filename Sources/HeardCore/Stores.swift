@@ -127,15 +127,29 @@ public final class SettingsStore: ObservableObject {
             hotkey = decoded
         }
 
+        var formattingCommands = base.formattingCommands
+        if let commandsData = defaults.data(forKey: "formattingCommands"),
+           let decoded = try? JSONDecoder().decode([FormattingCommand].self, from: commandsData) {
+            formattingCommands = decoded
+        }
+
+        var transcriptDateFormat = base.transcriptDateFormat
+        if let formatString = defaults.string(forKey: "transcriptDateFormat"),
+           let decoded = TranscriptDateFormat(rawValue: formatString) {
+            transcriptDateFormat = decoded
+        }
+
         settings = AppSettings(
             userName: defaults.string(forKey: "userName") ?? base.userName,
             launchAtLogin: defaults.object(forKey: "launchAtLogin") as? Bool ?? base.launchAtLogin,
             autoWatch: defaults.object(forKey: "autoWatch") as? Bool ?? base.autoWatch,
             outputDirectory: defaults.string(forKey: "outputDirectory") ?? base.outputDirectory,
             customVocabulary: defaults.stringArray(forKey: "customVocabulary") ?? base.customVocabulary,
+            formattingCommands: formattingCommands,
             developerMode: defaults.object(forKey: "developerMode") as? Bool ?? base.developerMode,
             dictationEnabled: defaults.object(forKey: "dictationEnabled") as? Bool ?? base.dictationEnabled,
-            dictationHotkey: hotkey
+            dictationHotkey: hotkey,
+            transcriptDateFormat: transcriptDateFormat
         )
     }
 
@@ -145,8 +159,12 @@ public final class SettingsStore: ObservableObject {
         defaults.set(settings.autoWatch, forKey: "autoWatch")
         defaults.set(settings.outputDirectory, forKey: "outputDirectory")
         defaults.set(settings.customVocabulary, forKey: "customVocabulary")
+        if let commandsData = try? JSONEncoder().encode(settings.formattingCommands) {
+            defaults.set(commandsData, forKey: "formattingCommands")
+        }
         defaults.set(settings.developerMode, forKey: "developerMode")
         defaults.set(settings.dictationEnabled, forKey: "dictationEnabled")
+        defaults.set(settings.transcriptDateFormat.rawValue, forKey: "transcriptDateFormat")
         if let hotkeyData = try? JSONEncoder().encode(settings.dictationHotkey) {
             defaults.set(hotkeyData, forKey: "dictationHotkey")
         }

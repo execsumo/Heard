@@ -244,12 +244,25 @@ public enum TranscriptDateFormat: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+public struct FormattingCommand: Codable, Equatable, Identifiable, Hashable {
+    public var id: UUID = UUID()
+    public var spoken: String
+    public var written: String
+
+    public init(id: UUID = UUID(), spoken: String, written: String) {
+        self.id = id
+        self.spoken = spoken
+        self.written = written
+    }
+}
+
 public struct AppSettings: Codable, Equatable {
     public var userName: String
     public var launchAtLogin: Bool
     public var autoWatch: Bool
     public var outputDirectory: String
     public var customVocabulary: [String]
+    public var formattingCommands: [FormattingCommand]
     public var developerMode: Bool
     public var dictationEnabled: Bool
     public var dictationHotkey: HotkeyCombo
@@ -271,6 +284,11 @@ public struct AppSettings: Codable, Equatable {
         autoWatch: true,
         outputDirectory: FileManager.default.heardOutputDirectory.path,
         customVocabulary: [],
+        formattingCommands: [
+            FormattingCommand(spoken: "new line", written: "\n"),
+            FormattingCommand(spoken: "newline", written: "\n"),
+            FormattingCommand(spoken: "new paragraph", written: "\n\n")
+        ],
         developerMode: false,
         dictationEnabled: false,
         dictationHotkey: .default,
@@ -288,6 +306,7 @@ public struct AppSettings: Codable, Equatable {
         autoWatch: Bool,
         outputDirectory: String,
         customVocabulary: [String],
+        formattingCommands: [FormattingCommand] = AppSettings.default.formattingCommands,
         developerMode: Bool = false,
         dictationEnabled: Bool = false,
         dictationHotkey: HotkeyCombo = .default,
@@ -303,6 +322,7 @@ public struct AppSettings: Codable, Equatable {
         self.autoWatch = autoWatch
         self.outputDirectory = outputDirectory
         self.customVocabulary = customVocabulary
+        self.formattingCommands = formattingCommands
         self.developerMode = developerMode
         self.dictationEnabled = dictationEnabled
         self.dictationHotkey = dictationHotkey

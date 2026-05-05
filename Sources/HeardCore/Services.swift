@@ -1860,6 +1860,12 @@ public final class PipelineProcessor: ObservableObject {
         // never fails the job; original transcripts are kept on any error.
         await applyVocabularyBoosting()
 
+        // Apply custom formatting commands
+        TextNormalizer.shared.clearRules()
+        for cmd in settingsStore.settings.formattingCommands {
+            TextNormalizer.shared.addRule(spoken: cmd.spoken, written: cmd.written)
+        }
+
         // Apply Inverse Text Normalization (punctuation and number formatting)
         if let result = appTranscription {
             appTranscription = TextNormalizer.shared.normalize(result: result)
