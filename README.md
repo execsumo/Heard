@@ -22,17 +22,21 @@ No cloud, no LLM, no external APIs — everything runs on-device on Apple Silico
 
 ### Dictation
 - **Real-time speech-to-text** — Uses FluidAudio's `SlidingWindowAsrManager` with overlapping windows and an internal stable/volatile text split. Audio is fed as `AVAudioPCMBuffer` straight from the mic tap; the manager handles resampling, chunking, and context accumulation internally.
-- **Incremental injection** — Confirmed text (high-confidence stable windows) is injected word by word as it's promoted from volatile; any remaining volatile text is flushed on stop.
+- **Incremental injection** — Confirmed text flows word by word in real time as the sliding window confirms it; remaining volatile text is flushed on stop. No batching — typed as you speak.
+- **Filler word stripping** — Standalone instances of "uh", "um", "er", "ah", "hmm", "hm", "uhh", "umm", "mhm" are automatically removed before injection; word boundaries and case-insensitivity apply. Keeps transcripts clean without user intervention.
 - **Vocabulary boosting** — When CTC models are downloaded, `configureVocabularyBoosting()` is applied so custom terms take effect in real time.
 - **Text injection** — `CGEvent.keyboardSetUnicodeString` + `postToPid` targets the frontmost app; falls back to HID-level events, then clipboard paste. All paths require Accessibility permission.
-- **Global hotkey** — Default ⌃⇧D, registered via Carbon `RegisterEventHotKey`. No Accessibility permission needed for the hotkey itself, so it keeps working across ad-hoc rebuilds. Rebindable via a Record sheet in the Dictation tab.
+- **Global hotkey** — Default ⌃⇧D, registered via Carbon `RegisterEventHotKey`. No Accessibility permission needed for the hotkey itself, so it keeps working across ad-hoc rebuilds. Rebindable via a Record sheet in the Dictation tab. Hotkey input is validated to block forbidden system shortcuts and warn on weak combos.
+- **Hotkey reuse fix** — Proper cleanup after stopping — `SlidingWindowAsrManager.cleanup()` closes the internal `AsyncStream` before starting a new session, preventing state corruption from rapid presses. State validation throws `DictationError.notIdle` to surface conflicts.
+- **Accessibility revocation detection** — If the user revokes Accessibility permission mid-dictation, `AppModel.startAXPolling()` detects it every 2 seconds and gracefully stops, showing an orange banner with a "Re-grant Access…" button.
+- **Floating dictation indicator (HUD)** — An optional on-screen pill at the bottom-center shows "Dictating" with a waveform icon while active (opt-in via Settings → Dictation). Appears at full opacity, dims to 35% after 2.5 seconds, and fades out on stop.
 - **Toggle and push-to-talk modes** — Tap to toggle, or hold the hotkey to dictate and release to stop.
 - **Model keep-alive** — ASR models stay resident for a configurable period (0 – 10 min, default 120 s) after dictation stops to avoid reload latency between utterances.
 
 ### UI
-- **Menu bar icon** — SF Symbols with symbol effects: static `recordingtape` when idle, pulsing/breathing `record.circle` while recording or dictating, iterative `waveform` while processing, `exclamationmark.circle.fill` on error, `person.crop.circle.badge.exclamationmark` when waiting for speaker naming.
+- **Menu bar icon** — SF Symbols with symbol effects: static `recordingtape` when idle, pulsing/breathing `record.circle` while recording or dictating, iterative `waveform` while processing, `exclamationmark.circle.fill` on error, `person.crop.circle.badge.exclamationmark` when waiting for speaker naming. Icon uses **accent tint** (blue) when actively capturing audio (recording or dictating) and **primary tint** (white/dark gray) otherwise. **Opacity** is 100% when the app is watching or recording, and 50% when paused (phase is dormant, not dictating, and meeting detection is off).
 - **Menu bar dropdown** — Current status card (watching/recording/processing/dictating), quick actions (start dictation, open transcripts, name speakers, settings, quit), and developer-mode simulate buttons.
-- **Settings window** — Five tabs: **General** (launch at login, auto-watch, developer mode, custom vocabulary, output folder, permissions), **Dictation** (enable, push-to-talk, hotkey recorder, model keep-alive slider, live status), **Models** (download cards with progress, pipeline keep-alive, "Unload All Models"), **Speakers** (your name, inline rename, merge, delete, search, sort), **About**.
+- **Settings window** — Five tabs: **General** (launch at login, auto-watch, developer mode, custom vocabulary, output folder, permissions), **Dictation** (enable, push-to-talk, hotkey recorder with validation feedback, model keep-alive slider, live status, show dictation HUD checkbox), **Models** (download cards with progress, pipeline keep-alive, "Unload All Models"), **Speakers** (your name, inline rename, merge, delete, search, sort), **About**.
 - **Name Speakers window** — Standalone scene with audio-clip playback per candidate, roster-suggestion hints, save/skip, and a 120 s countdown.
 
 ## Requirements

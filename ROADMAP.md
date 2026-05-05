@@ -14,7 +14,8 @@ These land inside the existing v1 scope and mostly tighten things the user alrea
 - **Sparkle (or equivalent) update checker.** Explicitly out of scope per `spec.md`, but worth reconsidering once CI publishes releases.
 
 ### Menu bar icons & state feedback
-- **Richer icon states.** Today the menu bar uses SF Symbols with built-in symbol effects. Investigate whether a custom `NSStatusItem` wrapper with frame-by-frame `NSImage` updates would give us more distinct states (error badge vs. user-action badge vs. processing vs. dictating) without adding a dependency.
+- ~~**Icon state signaling via tint and opacity.**~~ Done — Menu bar icon now uses **accent tint** (blue) when recording or dictating, and **primary tint** (white/gray) when idle. **Opacity** is 100% when watching or recording, and 50% when paused (dormant, not dictating, meeting detection off).
+- **Richer icon states (future).** Today the menu bar uses SF Symbols with built-in symbol effects. Once tint/opacity is stable, investigate whether a custom `NSStatusItem` wrapper with frame-by-frame `NSImage` updates would give us more distinct badges (error vs. user-action vs. processing vs. dictating) without adding a dependency.
 - **Error badge persistence.** The spec calls out a red exclamation badge that persists until acknowledged. Verify this survives app relaunch when a failed job stays in the queue.
 - **Menu bar dropdown height.** The `.window` style has a fixed max height; with many jobs queued, the bottom of the panel can clip. Add an internal `ScrollView` for the jobs list.
 
