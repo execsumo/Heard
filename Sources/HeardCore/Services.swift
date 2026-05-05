@@ -1732,7 +1732,9 @@ public final class PipelineProcessor: ObservableObject {
                         suggestedName: index < rosterSuggestions.count ? rosterSuggestions[index] : nil,
                         audioClipURLs: clip.clipURLs,
                         embedding: clip.embedding,
-                        transcriptPath: outputURL
+                        transcriptPath: outputURL,
+                        totalSpeechDuration: clip.duration,
+                        totalWordCount: clip.words
                     )
                 }
                 NSLog("Heard: Triggering naming prompt for \(candidates.count) candidate(s)")
@@ -1996,7 +1998,7 @@ public final class PipelineProcessor: ObservableObject {
         }
 
         // Apply diarization speaker labels
-        var unmatchedSpeakerInfo: [(speakerID: String, temporaryName: String, embedding: [Float])] = []
+        var unmatchedSpeakerInfo: [(speakerID: String, temporaryName: String, embedding: [Float], duration: TimeInterval, words: Int)] = []
         var diarSegTuples: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)] = []
         var unmatchedRosterNamesForPrompt: [String] = []
 
@@ -2058,9 +2060,9 @@ public final class PipelineProcessor: ObservableObject {
             }
 
             // Collect unmatched speaker info for naming prompt
-            let stillUnmatched = matches.filter { $0.isNewSpeaker && nameMap[$0.detectedSpeakerID]?.hasPrefix("Speaker ") ?? true }
+            let stillUnmatched = matches.filter { $0.isNewSpeaker && nameMap[$0.detectedSpeakerID]?.hasPrefix("Speaker_") ?? true }
             unmatchedSpeakerInfo = stillUnmatched.map {
-                (speakerID: $0.detectedSpeakerID, temporaryName: nameMap[$0.detectedSpeakerID] ?? $0.assignedName, embedding: $0.embedding)
+                (speakerID: $0.detectedSpeakerID, temporaryName: nameMap[$0.detectedSpeakerID] ?? $0.assignedName, embedding: $0.embedding, duration: 0.0, words: 0)
             }
 
             // Collect diarization segments with original-time timestamps for clip extraction
@@ -2115,6 +2117,31 @@ public final class PipelineProcessor: ObservableObject {
         let segmentSpeakers = Set(finalSegments.map(\.speaker))
         let allParticipants = segmentSpeakers.union(Set(job.rosterNames)).sorted()
 
+        // Calculate stats
+        var durationPerSpeaker: [String: TimeInterval] = [:]
+        var wordsPerSpeaker: [String: Int] = [:]
+        for segment in finalSegments {
+            let duration = max(0, segment.endTime - segment.startTime)
+            let words = segment.text.split(whereSeparator: { $0.isWhitespace }).count
+            durationPerSpeaker[segment.speaker, default: 0] += duration
+            wordsPerSpeaker[segment.speaker, default: 0] += words
+        }
+
+        // Apply to existing known speakers
+        for profile in speakerStore.speakers {
+            if let duration = durationPerSpeaker[profile.name], duration > 0 {
+                let words = wordsPerSpeaker[profile.name] ?? 0
+                speakerStore.updateStats(id: profile.id, addDuration: duration, addWords: words)
+            }
+        }
+
+        // Apply to unmatched speakers
+        for i in unmatchedSpeakerInfo.indices {
+            let name = unmatchedSpeakerInfo[i].temporaryName
+            unmatchedSpeakerInfo[i].duration = durationPerSpeaker[name] ?? 0
+            unmatchedSpeakerInfo[i].words = wordsPerSpeaker[name] ?? 0
+        }
+
         return TranscriptDocument(
             title: job.meetingTitle.isEmpty ? "Meeting" : job.meetingTitle,
             startTime: job.startTime,
@@ -2126,8 +2153,6 @@ public final class PipelineProcessor: ObservableObject {
             unmatchedRosterNames: unmatchedRosterNamesForPrompt
         )
     }
-
-    /// Convert token timings from ASR into TranscriptSegments, grouping tokens into sentences.
     private func buildSegmentsFromTimings(
         _ timings: [TokenTiming],
         vadMap: VadSegmentMap,

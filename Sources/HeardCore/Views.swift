@@ -876,6 +876,14 @@ public struct SettingsView: View {
                 TableColumn("Meetings") { speaker in
                     Text("\(speaker.meetingCount)").monospacedDigit()
                 }
+                TableColumn("Transcribed") { speaker in
+                    Text(formatDuration(speaker.totalSpeechDuration))
+                        .monospacedDigit()
+                }
+                TableColumn("Words") { speaker in
+                    Text(speaker.totalWordCount.formatted())
+                        .monospacedDigit()
+                }
                 TableColumn("First Seen") { speaker in
                     Text(speaker.firstSeen.formatted(date: .abbreviated, time: .omitted))
                 }
@@ -959,6 +967,19 @@ public struct SettingsView: View {
         if mins > 0 && secs > 0 { return "\(mins)m \(secs)s" }
         if mins > 0 { return "\(mins)m" }
         return "\(secs)s"
+    }
+
+    private func formatDuration(_ seconds: TimeInterval) -> String {
+        let totalMinutes = Int(seconds) / 60
+        if totalMinutes == 0 && seconds > 0 {
+            return "\(Int(seconds))s"
+        }
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        if hours > 0 {
+            return minutes > 0 ? "\(hours)h \(minutes)m" : "\(hours)h"
+        }
+        return "\(minutes)m"
     }
 }
 

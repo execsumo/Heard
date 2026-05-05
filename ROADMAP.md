@@ -59,7 +59,7 @@ Features that fit the on-device, single-process philosophy but require more code
 
 ### Speaker management
 - **Cumulative transcription stats per speaker.** On the Speakers tab, show each speaker's cumulative hours transcribed and word count across all meetings.
-- **Retroactive speaker name mapping.** When a new speaker is identified and named (via the naming dialogue or manual entry), automatically search and replace that speaker ID across all existing transcripts in the output directory. Surfaces a confirmation dialogue showing how many transcripts will be updated.
+- ~~**Retroactive speaker name mapping.**~~ Done - When a new speaker is identified and named (via the naming dialogue or manual entry), automatically search and replace that speaker ID across all existing transcripts in the output directory. Surfaces a confirmation dialogue showing how many transcripts will be updated.
 - **Speaker merge preview.** Before committing a merge, show both speakers' recent meeting counts, first/last-seen dates, and a diff of embeddings count. When merging, keep the name that is not a "Speaker X" placeholder (prefer the real human-given name).
 
 - **Manual speaker split.** Inverse of merge — split a speaker profile if the user realizes two voices were collapsed.
@@ -69,7 +69,6 @@ Features that fit the on-device, single-process philosophy but require more code
 
 ### Pipeline & output
 - **Live meeting notes.** During an active meeting, allow the user to add timestamped text notes via a menu bar button or hotkey (e.g., Ctrl+Shift+N). Notes are stored in-memory and merged into the final transcript as `[HH:MM:SS] **Note:** text here` blocks, inserted chronologically. Future enhancements: voice notes that auto-transcribe, notes outside active meetings, note editing/deletion.
-- **Transcript re-ingest on settings change.** When the user edits their name or re-assigns a speaker, offer to regenerate recent transcripts (with the raw WAVs still on disk).
 - **Alternative output formats.** Out of scope per spec today, but worth re-evaluating: plain `.txt`, `.srt`, VTT for video workflows, or a lightweight HTML with anchors.
 - **Configurable date format.** The `YYMMDD_Title.md` filename is fixed. Let power users switch to `YYYY-MM-DD_Title.md`.
 - **Transcript deduplication.** Detect when the same segment text appears from both the app and mic tracks (e.g. speaker bleed) and drop the quieter one.

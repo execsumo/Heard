@@ -153,13 +153,13 @@ public enum AudioClipExtractor {
     /// Each speaker gets up to `clipsPerSpeaker` distinct samples saved to the recordings
     /// directory, ordered best-first.
     public static func extractSpeakerClips(
-        unmatchedSpeakers: [(speakerID: String, temporaryName: String, embedding: [Float])],
+        unmatchedSpeakers: [(speakerID: String, temporaryName: String, embedding: [Float], duration: TimeInterval, words: Int)],
         diarizationSegments: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)],
         sourceAudioURL: URL,
         outputDirectory: URL,
         clipsPerSpeaker: Int = 3
-    ) -> [(temporaryName: String, clipURLs: [URL], embedding: [Float])] {
-        var results: [(temporaryName: String, clipURLs: [URL], embedding: [Float])] = []
+    ) -> [(temporaryName: String, clipURLs: [URL], embedding: [Float], duration: TimeInterval, words: Int)] {
+        var results: [(temporaryName: String, clipURLs: [URL], embedding: [Float], duration: TimeInterval, words: Int)] = []
 
         for speaker in unmatchedSpeakers {
             let regions = bestClipRegions(
@@ -183,7 +183,7 @@ public enum AudioClipExtractor {
                 }
             }
 
-            results.append((speaker.temporaryName, savedURLs, speaker.embedding))
+            results.append((speaker.temporaryName, savedURLs, speaker.embedding, speaker.duration, speaker.words))
         }
 
         return results

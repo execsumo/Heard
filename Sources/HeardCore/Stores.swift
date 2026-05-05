@@ -187,6 +187,13 @@ public final class SpeakerStore: ObservableObject {
         persist()
     }
 
+    public func updateStats(id: UUID, addDuration: TimeInterval, addWords: Int) {
+        guard let index = speakers.firstIndex(where: { $0.id == id }) else { return }
+        speakers[index].totalSpeechDuration += addDuration
+        speakers[index].totalWordCount += addWords
+        persist()
+    }
+
     public func delete(id: UUID) {
         if let clips = speakers.first(where: { $0.id == id })?.audioClipURLs {
             for clipURL in clips {
@@ -210,6 +217,8 @@ public final class SpeakerStore: ObservableObject {
         primary.firstSeen = min(primary.firstSeen, secondary.firstSeen)
         primary.lastSeen = max(primary.lastSeen, secondary.lastSeen)
         primary.meetingCount += secondary.meetingCount
+        primary.totalSpeechDuration += secondary.totalSpeechDuration
+        primary.totalWordCount += secondary.totalWordCount
         speakers[primaryIndex] = primary
         speakers.remove(at: secondaryIndex)
         persist()
