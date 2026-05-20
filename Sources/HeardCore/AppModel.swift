@@ -78,6 +78,9 @@ public final class AppModel: ObservableObject {
             updateChecker: updateChecker
         )
 
+        // Archive speaker profiles inactive beyond the configured retention window
+        speakerStore.archiveInactiveSpeakers(retentionDays: settingsStore.settings.speakerRetentionDays)
+
         // Clean stale recordings (>48h), preserving files referenced by active jobs
         let activeJobPaths = Set(
             queueStore.jobs

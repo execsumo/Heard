@@ -165,6 +165,11 @@ public final class SettingsStore: ObservableObject {
             diarizationClusteringSimilarity = val.doubleValue
         }
 
+        var speakerRetentionDays = base.speakerRetentionDays
+        if let val = defaults.object(forKey: "speakerRetentionDays") as? NSNumber {
+            speakerRetentionDays = val.intValue
+        }
+
         settings = AppSettings(
             userName: defaults.string(forKey: "userName") ?? base.userName,
             launchAtLogin: defaults.object(forKey: "launchAtLogin") as? Bool ?? base.launchAtLogin,
@@ -184,7 +189,8 @@ public final class SettingsStore: ObservableObject {
             enableTeamsDetection: defaults.object(forKey: "enableTeamsDetection") as? Bool ?? base.enableTeamsDetection,
             enableZoomDetection: defaults.object(forKey: "enableZoomDetection") as? Bool ?? base.enableZoomDetection,
             enableWebexDetection: defaults.object(forKey: "enableWebexDetection") as? Bool ?? base.enableWebexDetection,
-            diarizationClusteringSimilarity: diarizationClusteringSimilarity
+            diarizationClusteringSimilarity: diarizationClusteringSimilarity,
+            speakerRetentionDays: speakerRetentionDays
         )
     }
 
@@ -214,6 +220,7 @@ public final class SettingsStore: ObservableObject {
         defaults.set(settings.enableZoomDetection, forKey: "enableZoomDetection")
         defaults.set(settings.enableWebexDetection, forKey: "enableWebexDetection")
         defaults.set(settings.diarizationClusteringSimilarity, forKey: "diarizationClusteringSimilarity")
+        defaults.set(settings.speakerRetentionDays, forKey: "speakerRetentionDays")
     }
 }
 
@@ -266,6 +273,19 @@ public final class SpeakerStore: ObservableObject {
         }
         speakers.removeAll { $0.id == id }
         persist()
+    }
+
+    /// Deletes speakers whose `lastSeen` is older than `retentionDays` days.
+    /// Pass 0 to skip archiving entirely.
+    @discardableResult
+    public func archiveInactiveSpeakers(retentionDays: Int) -> Int {
+        guard retentionDays > 0 else { return 0 }
+        let cutoff = Date().addingTimeInterval(-Double(retentionDays) * 86400)
+        let stale = speakers.filter { $0.lastSeen < cutoff }
+        for speaker in stale {
+            delete(id: speaker.id)
+        }
+        return stale.count
     }
 
     public func merge(primaryID: UUID, secondaryID: UUID) {

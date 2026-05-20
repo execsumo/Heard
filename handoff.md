@@ -144,10 +144,15 @@ The dictation feature captures mic audio, transcribes in real-time, and injects 
 - Run with `swift run HeardTests`
 
 ### Persistence
-- `SettingsStore`: UserDefaults-backed app settings (includes `dictationEnabled`, `dictationHotkey`)
+- `SettingsStore`: UserDefaults-backed app settings (includes `dictationEnabled`, `dictationHotkey`, `speakerRetentionDays`)
 - `SpeakerStore`: JSON file at `~/Library/Application Support/Heard/speakers.json` — `SpeakerProfile` now carries an optional `audioClipURL` pointing into `speaker_clips/`
 - `PipelineQueueStore`: JSON file at `~/Library/Application Support/Heard/queue.json`
 - `~/Library/Application Support/Heard/speaker_clips/`: persistent voice samples for replay (kept beyond the 48-hour `recordings/` cleanup)
+
+### Speaker Archive
+- `SpeakerStore.archiveInactiveSpeakers(retentionDays:)` deletes profiles whose `lastSeen` is older than N days (and their audio clips). Called at app launch via `AppModel.bootstrap()`.
+- Default is 90 days; configurable via `AppSettings.speakerRetentionDays` (0 = never). UI in Advanced → Speaker Archive (Picker: Never / 30 / 60 / 90 / 180 / 365 days).
+- Also fixed a pre-existing extraneous `}` in `Views.swift` that was causing the file to fail to compile (struct `SettingsView` was closing one brace too early, pushing pane-helper functions out of scope).
 
 ## Architecture
 

@@ -1569,6 +1569,34 @@ public struct SettingsView: View {
                 }
             }
 
+            sectionGroup("Speaker Archive") {
+                SettingsCard {
+                    CardRow(isLast: false) {
+                        HStack {
+                            Text("Archive speakers after")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(HeardTheme.Paper.ink)
+                            Spacer()
+                            Picker("", selection: settingsBinding(\.speakerRetentionDays)) {
+                                Text("Never").tag(0)
+                                Text("30 days").tag(30)
+                                Text("60 days").tag(60)
+                                Text("90 days").tag(90)
+                                Text("180 days").tag(180)
+                                Text("1 year").tag(365)
+                            }
+                            .labelsHidden()
+                            .fixedSize()
+                        }
+                    }
+                    CardRow(isLast: true) {
+                        Text("Speaker profiles not seen in any meeting for the selected period are automatically deleted on the next app launch. Their audio clips and embeddings are removed.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(HeardTheme.Paper.mute)
+                    }
+                }
+            }
+
             sectionGroup("Debugging") {
                 SettingsCard {
                     ToggleRow(

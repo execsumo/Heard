@@ -359,6 +359,9 @@ public struct AppSettings: Codable, Equatable {
     /// concurrently, halving peak RAM during the VAD stage (~400 MB instead of ~800 MB).
     /// Useful on machines with 8 GB unified memory under heavy load.
     public var lowMemoryMode: Bool
+    /// How many days of inactivity before a speaker profile is automatically deleted.
+    /// 0 means never delete automatically.
+    public var speakerRetentionDays: Int
 
     public static let `default` = AppSettings(
         userName: "",
@@ -385,7 +388,8 @@ public struct AppSettings: Codable, Equatable {
         enableWebexDetection: true,
         diarizationClusteringSimilarity: 0.65,
         appearance: .system,
-        lowMemoryMode: false
+        lowMemoryMode: false,
+        speakerRetentionDays: 90
     )
 
     public init(
@@ -410,7 +414,8 @@ public struct AppSettings: Codable, Equatable {
         enableWebexDetection: Bool = true,
         diarizationClusteringSimilarity: Double = 0.65,
         appearance: AppAppearance = .system,
-        lowMemoryMode: Bool = false
+        lowMemoryMode: Bool = false,
+        speakerRetentionDays: Int = 90
     ) {
         self.userName = userName
         self.launchAtLogin = launchAtLogin
@@ -434,6 +439,7 @@ public struct AppSettings: Codable, Equatable {
         self.diarizationClusteringSimilarity = diarizationClusteringSimilarity
         self.appearance = appearance
         self.lowMemoryMode = lowMemoryMode
+        self.speakerRetentionDays = speakerRetentionDays
     }
 }
 

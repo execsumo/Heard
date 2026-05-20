@@ -27,7 +27,7 @@ Features that fit the on-device, single-process philosophy but require more code
 ### Speaker management
 - **Manual speaker split.** Inverse of merge — split a speaker profile if the user realizes two voices were collapsed.
 - **Split candidate at naming time.** When the naming prompt's clips reveal that diarization merged two voices into one cluster, let the user split the candidate into multiple `SpeakerProfile`s instead of just discarding it. Today the only options are name (and accept the merged embedding) or discard via "Multiple speakers" (no profile created). A future "Split…" action would let the user assign different names per clip and re-cluster the underlying segments — requires segment-level reassignment and a more involved naming UI.
-- **Bulk-delete / archive old speakers.** Speakers with no meeting activity in N months.
+- ✅ **Bulk-delete / archive old speakers.** Speakers with no meeting activity in N months — implemented as automatic deletion at launch based on `speakerRetentionDays` setting (default 90 days), configurable in Advanced → Speaker Archive. Set to 0 to disable.
 
 ### Pipeline & output
 - **Alternative output formats.** Out of scope per spec today, but worth re-evaluating: plain `.txt`, `.srt`, VTT for video workflows, or a lightweight HTML with anchors.
