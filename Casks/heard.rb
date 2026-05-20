@@ -1,7 +1,7 @@
 cask "heard" do
-  version "0.2.0"
+  version "0.2.1"
   # Run scripts/dmg.sh to build the release DMG, then fill in the SHA256 it prints.
-  sha256 "6feb5d2d1366c760acc420712b36f4e873ff31412d66c390c66d5f95cc938c9f"
+  sha256 "c59e1c41a7e49b46923d7f8e7cf6bb5edbc75f4ef056768ee447b94e172872f6"
 
   url "https://github.com/execsumo/heard/releases/download/v#{version}/Heard-#{version}.dmg"
   name "Heard"
