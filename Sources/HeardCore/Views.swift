@@ -885,7 +885,7 @@ public struct SettingsView: View {
                     Text("Heard")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(HeardTheme.Paper.ink)
-                    Text("0.1.0")
+                    Text(model.updateChecker.currentVersion)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(HeardTheme.Paper.mute)
                 }
@@ -971,14 +971,14 @@ public struct SettingsView: View {
             sectionGroup("Profile") {
                 SettingsCard {
                     CardRow(isLast: true) {
-                        HStack(spacing: HeardTheme.Spacing.sm) {
+                        HStack {
                             Text("Your Name")
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(HeardTheme.Paper.ink)
                             Spacer()
                             TextField("Used as speaker label in transcripts", text: settingsBinding(\.userName))
                                 .textFieldStyle(.roundedBorder)
-                                .frame(maxWidth: 220)
+                                .frame(width: 160)
                         }
                     }
                 }
@@ -999,7 +999,8 @@ public struct SettingsView: View {
                             }
                             .labelsHidden()
                             .controlSize(.small)
-                            .frame(maxWidth: 160)
+                            .frame(maxWidth: .infinity)
+                            .frame(width: 160)
                         }
                     }
                 }
@@ -1055,7 +1056,8 @@ public struct SettingsView: View {
                             }
                             .labelsHidden()
                             .controlSize(.small)
-                            .frame(maxWidth: 260)
+                            .frame(maxWidth: .infinity)
+                            .frame(width: 160)
                         }
                     }
                 }
@@ -1094,7 +1096,8 @@ public struct SettingsView: View {
                             }
                             .labelsHidden()
                             .controlSize(.small)
-                            .frame(maxWidth: 260)
+                            .frame(maxWidth: .infinity)
+                            .frame(width: 160)
                         }
                     }
                 }
@@ -1369,7 +1372,7 @@ public struct SettingsView: View {
                     .padding(.vertical, 5)
                     .background(HeardTheme.Paper.surfaceAlt,
                                 in: RoundedRectangle(cornerRadius: HeardTheme.Radius.inline))
-                    .frame(maxWidth: 260)
+                    .frame(width: 160)
 
                     Spacer()
 
@@ -1435,12 +1438,12 @@ public struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("\(readyCount) of \(totalCount) models ready")
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(HeardTheme.Paper.recordingInk)
+                        .foregroundStyle(Color(hex: "F5EFE4"))
                     Text(model.downloadManager.allBatchModelsReady
                          ? "Ready to transcribe"
                          : "Some models need downloading")
                         .font(.system(size: 11))
-                        .foregroundStyle(HeardTheme.Paper.recordingInk.opacity(0.65))
+                        .foregroundStyle(Color(hex: "F5EFE4").opacity(0.65))
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 6) {
@@ -1613,17 +1616,7 @@ public struct SettingsView: View {
     // MARK: About
 
     private var aboutSection: some View {
-        VStack(spacing: 0) {
-            LinearGradient(
-                colors: [Color(hex: "F0E7D5"), Color(hex: "E8DEC8")],
-                startPoint: .top, endPoint: .bottom
-            )
-            .frame(height: 38)
-            .overlay(alignment: .bottom) {
-                HeardTheme.Paper.border.frame(height: 0.5)
-            }
-
-            ScrollView {
+        ScrollView {
                 VStack(spacing: 0) {
                     Spacer().frame(height: 40)
                     HeardMark(size: 72)
@@ -1685,19 +1678,13 @@ public struct SettingsView: View {
                     }
                     .padding(.top, 16)
 
-                    Text("Powered by FluidAudio · Parakeet TDT · Silero VAD · WeSpeaker")
-                        .font(.system(size: 11))
-                        .foregroundStyle(HeardTheme.Paper.mute)
-                        .padding(.top, 12)
-
                     Spacer().frame(height: 40)
                 }
                 .frame(minWidth: 500, minHeight: 500)
                 .background(HeardTheme.Paper.bg)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(HeardTheme.Paper.bg)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(HeardTheme.Paper.bg)
     }
 
     // MARK: Pane helpers
@@ -2512,6 +2499,46 @@ struct SpeakerVoiceCell: View {
 
 // MARK: - Flow Layout
 
+private struct WrapLayout: Layout {
+    var hSpacing: CGFloat = 8
+    var vSpacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > width && x > 0 {
+                y += rowHeight + vSpacing
+                x = 0
+                rowHeight = 0
+            }
+            x += size.width + hSpacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: width, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > bounds.maxX && x > bounds.minX {
+                y += rowHeight + vSpacing
+                x = bounds.minX
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + hSpacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
+}
+
 struct FlowLayout<Data: RandomAccessCollection, ID: Hashable, Content: View>: View {
     private let data: [Data.Element]
     private let id: KeyPath<Data.Element, ID>
@@ -2524,9 +2551,9 @@ struct FlowLayout<Data: RandomAccessCollection, ID: Hashable, Content: View>: Vi
     }
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), alignment: .leading)],
-                  alignment: .leading, spacing: 8) {
+        WrapLayout(hSpacing: 8, vSpacing: 8) {
             ForEach(data, id: id, content: content)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
