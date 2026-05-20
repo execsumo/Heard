@@ -2003,6 +2003,7 @@ struct TestRunner {
         runRosterReaderTests()
         runRosterReaderAXTests()
         runSegmentDeduplicatorTests()
+        runPermissionCenterTests()
 
         print("\n" + String(repeating: "─", count: 50))
         print("Results: \(passedTests)/\(totalTests) passed")

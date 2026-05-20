@@ -1334,7 +1334,10 @@ public final class PermissionCenter: ObservableObject {
         // which bypasses the per-process cache that CGPreflightScreenCaptureAccess()
         // uses on macOS 15+. The sync check handles the window before the first async
         // result arrives (e.g. permission already granted at app launch).
-        (CGPreflightScreenCaptureAccess() || screenCaptureGrantedLive) ? .granted : .recommended
+        Self.screenCapturePermissionState(
+            syncGranted: CGPreflightScreenCaptureAccess(),
+            liveGranted: screenCaptureGrantedLive
+        )
     }
 
     private func accessibilityState() -> PermissionState {
@@ -1346,7 +1349,24 @@ public final class PermissionCenter: ObservableObject {
         let sysWide = AXUIElementCreateSystemWide()
         var value: AnyObject?
         let err = AXUIElementCopyAttributeValue(sysWide, kAXFocusedApplicationAttribute as CFString, &value)
-        return (err != .apiDisabled && err != .notTrusted) ? .granted : .recommended
+        return Self.accessibilityPermissionState(
+            isTrusted: false,
+            liveGranted: err != .apiDisabled && err != .notTrusted
+        )
+    }
+
+    // MARK: - Testable state helpers
+
+    /// Exposed for unit tests. Screen recording is granted if either the
+    /// (potentially cached) sync check or the live SCShareableContent check confirms it.
+    public static func screenCapturePermissionState(syncGranted: Bool, liveGranted: Bool) -> PermissionState {
+        (syncGranted || liveGranted) ? .granted : .recommended
+    }
+
+    /// Exposed for unit tests. Accessibility is granted if either AXIsProcessTrusted()
+    /// or the live AX API fallback confirms it.
+    public static func accessibilityPermissionState(isTrusted: Bool, liveGranted: Bool) -> PermissionState {
+        (isTrusted || liveGranted) ? .granted : .recommended
     }
 
     private func openSystemSettings(_ urlString: String) {
