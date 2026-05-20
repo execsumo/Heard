@@ -8,6 +8,7 @@ import CoreGraphics
 import FluidAudio
 import Foundation
 import IOKit.pwr_mgt
+import ScreenCaptureKit
 import ServiceManagement
 
 // MARK: - Data Types
@@ -1138,16 +1139,35 @@ public final class PermissionCenter: ObservableObject {
     @Published public private(set) var statuses: [PermissionStatus] = []
 
     private var refreshTask: Task<Void, Never>?
+    // Live result from SCShareableContent — bypasses CGPreflightScreenCaptureAccess() caching
+    private var screenCaptureGrantedLive: Bool = false
 
     public init() {
         refresh()
-        // Periodically re-check permissions (catches grants made in System Settings)
+        // Periodically re-check permissions (catches grants made in System Settings).
+        // Uses async checks to bypass per-process TCC caching in macOS 15+.
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(3))
                 guard let self, !Task.isCancelled else { return }
-                self.refresh()
+                await self.refreshAsync()
             }
+        }
+    }
+
+    // Performs the async screen-capture check then calls the sync refresh.
+    private func refreshAsync() async {
+        screenCaptureGrantedLive = await checkScreenCapturePermission()
+        refresh()
+    }
+
+    // SCShareableContent bypasses CGPreflightScreenCaptureAccess() caching on macOS 15+.
+    private func checkScreenCapturePermission() async -> Bool {
+        do {
+            _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -1185,7 +1205,7 @@ public final class PermissionCenter: ObservableObject {
     }
 
     public var isScreenCaptureGranted: Bool {
-        CGPreflightScreenCaptureAccess()
+        CGPreflightScreenCaptureAccess() || screenCaptureGrantedLive
     }
 
     public func markAudioCaptureGranted() {
@@ -1286,9 +1306,14 @@ public final class PermissionCenter: ObservableObject {
         // CGRequestScreenCaptureAccess() triggers the system prompt on macOS 14;
         // on macOS 15+ it redirects to System Settings. Use it unconditionally.
         CGRequestScreenCaptureAccess()
-        // Re-check after a brief delay — the grant applies asynchronously.
+        // Re-check after a brief delay using the live SCShareableContent path so the
+        // UI flips to "Granted" without waiting for the next 3 s polling tick.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor in
+                guard let self else { return }
+                self.screenCaptureGrantedLive = await self.checkScreenCapturePermission()
+                self.refresh()
+            }
         }
     }
 
@@ -1305,11 +1330,23 @@ public final class PermissionCenter: ObservableObject {
     }
 
     private func screenCaptureState() -> PermissionState {
-        CGPreflightScreenCaptureAccess() ? .granted : .recommended
+        // screenCaptureGrantedLive is updated async every 3 s via SCShareableContent,
+        // which bypasses the per-process cache that CGPreflightScreenCaptureAccess()
+        // uses on macOS 15+. The sync check handles the window before the first async
+        // result arrives (e.g. permission already granted at app launch).
+        (CGPreflightScreenCaptureAccess() || screenCaptureGrantedLive) ? .granted : .recommended
     }
 
     private func accessibilityState() -> PermissionState {
-        AXIsProcessTrusted() ? .granted : .recommended
+        if AXIsProcessTrusted() { return .granted }
+        // AXIsProcessTrusted can return stale TCC data on macOS 15+. Confirm with a
+        // live AX API call: only kAXErrorAPIDisabled / kAXErrorNotTrusted mean "no
+        // permission" — all other results (including kAXErrorNoValue for "no focused
+        // app") mean the process IS trusted.
+        let sysWide = AXUIElementCreateSystemWide()
+        var value: AnyObject?
+        let err = AXUIElementCopyAttributeValue(sysWide, kAXFocusedApplicationAttribute as CFString, &value)
+        return (err != .apiDisabled && err != .notTrusted) ? .granted : .recommended
     }
 
     private func openSystemSettings(_ urlString: String) {
