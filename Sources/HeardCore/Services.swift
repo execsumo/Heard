@@ -1343,15 +1343,16 @@ public final class PermissionCenter: ObservableObject {
     private func accessibilityState() -> PermissionState {
         if AXIsProcessTrusted() { return .granted }
         // AXIsProcessTrusted can return stale TCC data on macOS 15+. Confirm with a
-        // live AX API call: only kAXErrorAPIDisabled / kAXErrorNotTrusted mean "no
-        // permission" — all other results (including kAXErrorNoValue for "no focused
-        // app") mean the process IS trusted.
+        // live AX API call: only kAXErrorAPIDisabled means "no permission" — all other
+        // results (including kAXErrorNoValue for "no focused app") mean the process IS
+        // trusted. Note: AXError has no .notTrusted member; the enum jumps directly
+        // from .apiDisabled to .noValue.
         let sysWide = AXUIElementCreateSystemWide()
         var value: AnyObject?
         let err = AXUIElementCopyAttributeValue(sysWide, kAXFocusedApplicationAttribute as CFString, &value)
         return Self.accessibilityPermissionState(
             isTrusted: false,
-            liveGranted: err != .apiDisabled && err != .notTrusted
+            liveGranted: err != .apiDisabled
         )
     }
 
