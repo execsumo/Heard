@@ -1359,13 +1359,13 @@ public final class PermissionCenter: ObservableObject {
 
     /// Exposed for unit tests. Screen recording is granted if either the
     /// (potentially cached) sync check or the live SCShareableContent check confirms it.
-    public static func screenCapturePermissionState(syncGranted: Bool, liveGranted: Bool) -> PermissionState {
+    public nonisolated static func screenCapturePermissionState(syncGranted: Bool, liveGranted: Bool) -> PermissionState {
         (syncGranted || liveGranted) ? .granted : .recommended
     }
 
     /// Exposed for unit tests. Accessibility is granted if either AXIsProcessTrusted()
     /// or the live AX API fallback confirms it.
-    public static func accessibilityPermissionState(isTrusted: Bool, liveGranted: Bool) -> PermissionState {
+    public nonisolated static func accessibilityPermissionState(isTrusted: Bool, liveGranted: Bool) -> PermissionState {
         (isTrusted || liveGranted) ? .granted : .recommended
     }
 
