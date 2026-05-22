@@ -1063,6 +1063,17 @@ public struct SettingsView: View {
                 }
             }
 
+            sectionGroup("Microphone") {
+                SettingsCard {
+                    CardRow(isLast: true) {
+                        MicrophonePickerRow(
+                            selectedUID: model.settingsStore.settings.selectedInputDeviceUID,
+                            onSelect: { model.setInputDeviceUID($0) }
+                        )
+                    }
+                }
+            }
+
             sectionGroup("Output") {
                 SettingsCard {
                     CardRow {
@@ -1721,6 +1732,65 @@ public struct SettingsView: View {
 }
 
 // MARK: - Model Status Row
+
+// MARK: - Microphone Picker Row
+
+private struct MicrophonePickerRow: View {
+    let selectedUID: String?
+    let onSelect: (String?) -> Void
+
+    @State private var devices: [AudioInputDevice] = []
+    @State private var defaultDevice: AudioInputDevice?
+
+    var body: some View {
+        HStack {
+            Text("Input Device")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(HeardTheme.Paper.ink)
+            Spacer()
+            Picker("", selection: pickerBinding) {
+                Text(systemDefaultLabel).tag(String?.none)
+                ForEach(devices) { device in
+                    Text(device.name).tag(String?.some(device.uid))
+                }
+                // Keep the stored UID selectable even if the device is currently
+                // unplugged, so the user doesn't silently lose their preference.
+                if let uid = selectedUID, devices.first(where: { $0.uid == uid }) == nil {
+                    Text("Unavailable — last used \(shortUID(uid))")
+                        .tag(String?.some(uid))
+                }
+            }
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(maxWidth: .infinity)
+            .frame(width: 220)
+        }
+        .onAppear { refresh() }
+    }
+
+    private var pickerBinding: Binding<String?> {
+        Binding(
+            get: { selectedUID },
+            set: { onSelect($0) }
+        )
+    }
+
+    private var systemDefaultLabel: String {
+        if let name = defaultDevice?.name {
+            return "System Default (\(name))"
+        }
+        return "System Default"
+    }
+
+    private func refresh() {
+        devices = AudioInputDevices.list()
+        defaultDevice = AudioInputDevices.defaultInputDevice()
+    }
+
+    private func shortUID(_ uid: String) -> String {
+        uid.count <= 16 ? uid : String(uid.prefix(13)) + "…"
+    }
+}
 
 private struct ModelStatusRow: View {
     let item: ModelStatusItem

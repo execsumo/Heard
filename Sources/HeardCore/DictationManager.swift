@@ -57,6 +57,10 @@ public final class DictationManager: ObservableObject {
     /// How long to keep the model loaded after dictation stops (seconds).
     public var modelKeepAliveSeconds: TimeInterval = 120
 
+    /// CoreAudio UID of the input device to capture from. nil = follow the
+    /// system default input device.
+    public var inputDeviceUID: String?
+
     /// Full text injected so far in the current session (confirmed deltas only).
     private var injectedText: String = ""
 
@@ -244,13 +248,17 @@ public final class DictationManager: ObservableObject {
 
     private func startMicCapture(mgr: SlidingWindowAsrManager) throws {
         let engine = AVAudioEngine()
+        // Apply the user-selected input device BEFORE querying the input
+        // format — changing the device changes sample rate / channel count.
+        let applied = AudioInputDevices.apply(uid: inputDeviceUID, to: engine)
         let inputNode = engine.inputNode
         let hwFormat = inputNode.outputFormat(forBus: 0)
 
         NSLog(
-            "Heard: Dictation mic format — sampleRate=%.0f channels=%u",
+            "Heard: Dictation mic format — sampleRate=%.0f channels=%u device=%@",
             hwFormat.sampleRate,
-            hwFormat.channelCount
+            hwFormat.channelCount,
+            applied ? (inputDeviceUID ?? "default") : "default"
         )
 
         // Forward tap buffers through an AsyncStream so a single consumer task
