@@ -362,6 +362,9 @@ public struct AppSettings: Codable, Equatable {
     /// How many days of inactivity before a speaker profile is automatically deleted.
     /// 0 means never delete automatically.
     public var speakerRetentionDays: Int
+    /// CoreAudio UID of the user-selected input device for dictation and meeting
+    /// recording. nil means follow the system default input device.
+    public var selectedInputDeviceUID: String?
 
     public static let `default` = AppSettings(
         userName: "",
@@ -389,7 +392,8 @@ public struct AppSettings: Codable, Equatable {
         diarizationClusteringSimilarity: 0.65,
         appearance: .system,
         lowMemoryMode: false,
-        speakerRetentionDays: 90
+        speakerRetentionDays: 90,
+        selectedInputDeviceUID: nil
     )
 
     public init(
@@ -415,7 +419,8 @@ public struct AppSettings: Codable, Equatable {
         diarizationClusteringSimilarity: Double = 0.65,
         appearance: AppAppearance = .system,
         lowMemoryMode: Bool = false,
-        speakerRetentionDays: Int = 90
+        speakerRetentionDays: Int = 90,
+        selectedInputDeviceUID: String? = nil
     ) {
         self.userName = userName
         self.launchAtLogin = launchAtLogin
@@ -440,6 +445,7 @@ public struct AppSettings: Codable, Equatable {
         self.appearance = appearance
         self.lowMemoryMode = lowMemoryMode
         self.speakerRetentionDays = speakerRetentionDays
+        self.selectedInputDeviceUID = selectedInputDeviceUID
     }
 }
 

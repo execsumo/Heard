@@ -66,6 +66,11 @@ public final class AppModel: ObservableObject {
         downloadManager.transcriptionModel = savedVersion
         dictationManager.modelVersion = savedVersion
 
+        // Propagate the user's selected mic to both managers
+        let selectedMicUID = settingsStore.settings.selectedInputDeviceUID
+        dictationManager.inputDeviceUID = selectedMicUID
+        recordingManager.inputDeviceUID = selectedMicUID
+
         let model = AppModel(
             settingsStore: settingsStore,
             speakerStore: speakerStore,
@@ -218,6 +223,7 @@ public final class AppModel: ObservableObject {
                 // Stop dictation before recording starts — mic should not transcribe
                 // remote participants' audio (which the mic picks up from speakers).
                 self.stopDictationIfActive()
+                self.recordingManager.inputDeviceUID = self.settingsStore.settings.selectedInputDeviceUID
                 do {
                     try self.recordingManager.startRecording(
                         title: snapshot.title,
@@ -319,6 +325,7 @@ public var filteredSpeakers: [SpeakerProfile] {
                     dictationManager.formattingCommands = settingsStore.settings.formattingCommands
                     dictationManager.modelVersion = settingsStore.settings.transcriptionModel
                     dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
+                    dictationManager.inputDeviceUID = settingsStore.settings.selectedInputDeviceUID
                     try await dictationManager.start()
                     // Push-to-talk race: if the key was released before loading finished,
                     // stop immediately rather than leaving dictation stuck on.
@@ -468,6 +475,17 @@ public var filteredSpeakers: [SpeakerProfile] {
         objectWillChange.send()
     }
 
+    /// Set the input device used for dictation and meeting mic capture.
+    /// Passing nil reverts to the system default input. The change takes
+    /// effect on the next dictation start / recording start — already-running
+    /// sessions keep their current device until restarted.
+    public func setInputDeviceUID(_ uid: String?) {
+        settingsStore.settings.selectedInputDeviceUID = uid
+        dictationManager.inputDeviceUID = uid
+        recordingManager.inputDeviceUID = uid
+        objectWillChange.send()
+    }
+
     private func setupHotkeyManager() {
         let pushToTalk = settingsStore.settings.pushToTalk
         hotkeyManager = HotkeyManager(
@@ -555,6 +573,7 @@ public var filteredSpeakers: [SpeakerProfile] {
     public func startManualRecording() {
         guard recordingManager.activeSession == nil else { return }
         stopDictationIfActive()
+        recordingManager.inputDeviceUID = settingsStore.settings.selectedInputDeviceUID
         do {
             try recordingManager.startRecording(title: "Manual Recording", meetingPID: nil, rosterNames: [])
             phase = .recording

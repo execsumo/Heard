@@ -10,11 +10,14 @@ public enum DictationState: String {
 
 public enum DictationError: Error, LocalizedError {
     case notIdle(current: DictationState)
+    case microphoneDenied
 
     public var errorDescription: String? {
         switch self {
         case .notIdle(let s):
             return "Cannot start dictation: already \(s.rawValue). Please wait for the current operation to finish."
+        case .microphoneDenied:
+            return "Microphone access is required for dictation. Grant it in System Settings → Privacy & Security → Microphone."
         }
     }
 }
@@ -35,6 +38,9 @@ public final class DictationManager: ObservableObject {
     private var micEngine: AVAudioEngine?
     private var updateConsumerTask: Task<Void, Never>?
     private var unloadTask: Task<Void, Never>?
+    private var micBufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
+    private var micForwardTask: Task<Void, Never>?
+    private var bufferCount = 0
 
     /// Called when new transcribed text is ready for injection.
     public var onUtterance: ((String) -> Void)?
@@ -51,6 +57,10 @@ public final class DictationManager: ObservableObject {
     /// How long to keep the model loaded after dictation stops (seconds).
     public var modelKeepAliveSeconds: TimeInterval = 120
 
+    /// CoreAudio UID of the input device to capture from. nil = follow the
+    /// system default input device.
+    public var inputDeviceUID: String?
+
     /// Full text injected so far in the current session (confirmed deltas only).
     private var injectedText: String = ""
 
@@ -60,6 +70,18 @@ public final class DictationManager: ObservableObject {
 
     public func start() async throws {
         guard state == .idle else { throw DictationError.notIdle(current: state) }
+
+        // Surface mic-permission denial up front rather than letting the user
+        // stare at a silently-failing HUD — without mic access, AVAudioEngine
+        // starts but no tap callbacks fire. Accessibility access is checked
+        // mid-session by AppModel.startAXPolling() rather than here, because
+        // AXIsProcessTrusted() can lag behind a freshly-granted permission
+        // (especially with ad-hoc signed builds) and we'd rather attempt
+        // dictation than reject on a stale check.
+        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        if micStatus == .denied || micStatus == .restricted {
+            throw DictationError.microphoneDenied
+        }
 
         unloadTask?.cancel()
         unloadTask = nil
@@ -226,14 +248,47 @@ public final class DictationManager: ObservableObject {
 
     private func startMicCapture(mgr: SlidingWindowAsrManager) throws {
         let engine = AVAudioEngine()
+        // Apply the user-selected input device BEFORE querying the input
+        // format — changing the device changes sample rate / channel count.
+        let applied = AudioInputDevices.apply(uid: inputDeviceUID, to: engine)
         let inputNode = engine.inputNode
         let hwFormat = inputNode.outputFormat(forBus: 0)
 
-        // SlidingWindowAsrManager handles format conversion internally.
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { [weak mgr] buffer, _ in
-            guard let mgr else { return }
-            // Hop to the actor from the tap thread.
-            Task { await mgr.streamAudio(buffer) }
+        NSLog(
+            "Heard: Dictation mic format — sampleRate=%.0f channels=%u device=%@",
+            hwFormat.sampleRate,
+            hwFormat.channelCount,
+            applied ? (inputDeviceUID ?? "default") : "default"
+        )
+
+        // Forward tap buffers through an AsyncStream so a single consumer task
+        // can feed them to streamAudio() in arrival order. Spawning an
+        // unstructured Task per callback doesn't preserve ordering, and the
+        // tap-provided buffer is only valid for the duration of the callback
+        // (AVAudioEngine reuses the underlying memory), so we deep-copy
+        // synchronously before yielding.
+        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream(
+            bufferingPolicy: .bufferingNewest(64)
+        )
+        micBufferContinuation = continuation
+        bufferCount = 0
+
+        micForwardTask = Task { [weak self, weak mgr] in
+            for await buffer in stream {
+                guard let mgr, !Task.isCancelled else { break }
+                await mgr.streamAudio(buffer)
+                if let self {
+                    await self.tickBufferCount()
+                }
+            }
+        }
+
+        // continuation is a struct; capture by value. Once stopMicCapture()
+        // calls finish(), subsequent yields are no-ops, so we don't need to
+        // null it out from the tap.
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { buffer, _ in
+            guard let copy = buffer.heardDeepCopy() else { return }
+            continuation.yield(copy)
         }
 
         engine.prepare()
@@ -241,10 +296,25 @@ public final class DictationManager: ObservableObject {
         micEngine = engine
     }
 
+    /// Logs progress on the first buffer and every ~5s thereafter (at 48 kHz × 4096
+    /// frames ≈ 11.7 Hz) so silent-mic regressions surface in logs.
+    private func tickBufferCount() {
+        bufferCount += 1
+        if bufferCount == 1 {
+            NSLog("Heard: Dictation received first mic buffer")
+        } else if bufferCount % 60 == 0 {
+            NSLog("Heard: Dictation buffers streamed=%d", bufferCount)
+        }
+    }
+
     private func stopMicCapture() {
         micEngine?.inputNode.removeTap(onBus: 0)
         micEngine?.stop()
         micEngine = nil
+        micBufferContinuation?.finish()
+        micBufferContinuation = nil
+        micForwardTask?.cancel()
+        micForwardTask = nil
     }
 
     // MARK: - Model lifecycle
@@ -263,5 +333,41 @@ public final class DictationManager: ObservableObject {
         asrModels = nil
         loadedModelVersion = nil
         NSLog("Heard: Dictation models unloaded")
+    }
+}
+
+// MARK: - Buffer copy
+
+private extension AVAudioPCMBuffer {
+    /// Allocates a standalone copy of the buffer. The buffer handed to an
+    /// AVAudioEngine tap callback only owns its sample memory for the duration
+    /// of the callback; copying lets us hand it off to a consumer task safely.
+    func heardDeepCopy() -> AVAudioPCMBuffer? {
+        guard let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCapacity) else {
+            return nil
+        }
+        copy.frameLength = frameLength
+        let frames = Int(frameLength)
+        let channels = Int(format.channelCount)
+
+        if let src = floatChannelData, let dst = copy.floatChannelData {
+            for ch in 0..<channels {
+                memcpy(dst[ch], src[ch], frames * MemoryLayout<Float>.size)
+            }
+            return copy
+        }
+        if let src = int16ChannelData, let dst = copy.int16ChannelData {
+            for ch in 0..<channels {
+                memcpy(dst[ch], src[ch], frames * MemoryLayout<Int16>.size)
+            }
+            return copy
+        }
+        if let src = int32ChannelData, let dst = copy.int32ChannelData {
+            for ch in 0..<channels {
+                memcpy(dst[ch], src[ch], frames * MemoryLayout<Int32>.size)
+            }
+            return copy
+        }
+        return nil
     }
 }

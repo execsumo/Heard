@@ -427,6 +427,10 @@ public final class RecordingManager: ObservableObject {
     /// True when the app-audio process tap failed — recording is mic-only.
     @Published public private(set) var appAudioTapFailed: Bool = false
 
+    /// CoreAudio UID of the input device to record the mic track from. nil =
+    /// follow the system default input device. Set by AppModel from settings.
+    public var inputDeviceUID: String?
+
     public init() {}
 
     // Context object shared between the main actor and the IOProc dispatch queue.
@@ -578,6 +582,9 @@ public final class RecordingManager: ObservableObject {
 
     private func setupMicRecording(to url: URL) throws {
         let engine = AVAudioEngine()
+        // Apply user-selected input device BEFORE reading the format. Changing
+        // the device changes its sample rate and channel count.
+        AudioInputDevices.apply(uid: inputDeviceUID, to: engine)
         let inputNode = engine.inputNode
         let hwFormat = inputNode.outputFormat(forBus: 0)
 

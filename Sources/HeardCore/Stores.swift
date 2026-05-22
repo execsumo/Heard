@@ -190,7 +190,8 @@ public final class SettingsStore: ObservableObject {
             enableZoomDetection: defaults.object(forKey: "enableZoomDetection") as? Bool ?? base.enableZoomDetection,
             enableWebexDetection: defaults.object(forKey: "enableWebexDetection") as? Bool ?? base.enableWebexDetection,
             diarizationClusteringSimilarity: diarizationClusteringSimilarity,
-            speakerRetentionDays: speakerRetentionDays
+            speakerRetentionDays: speakerRetentionDays,
+            selectedInputDeviceUID: defaults.string(forKey: "selectedInputDeviceUID")
         )
     }
 
@@ -221,6 +222,11 @@ public final class SettingsStore: ObservableObject {
         defaults.set(settings.enableWebexDetection, forKey: "enableWebexDetection")
         defaults.set(settings.diarizationClusteringSimilarity, forKey: "diarizationClusteringSimilarity")
         defaults.set(settings.speakerRetentionDays, forKey: "speakerRetentionDays")
+        if let uid = settings.selectedInputDeviceUID {
+            defaults.set(uid, forKey: "selectedInputDeviceUID")
+        } else {
+            defaults.removeObject(forKey: "selectedInputDeviceUID")
+        }
     }
 }
 
