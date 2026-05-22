@@ -1,4 +1,3 @@
-import AppKit
 import AVFoundation
 import FluidAudio
 import Foundation
@@ -12,7 +11,6 @@ public enum DictationState: String {
 public enum DictationError: Error, LocalizedError {
     case notIdle(current: DictationState)
     case microphoneDenied
-    case accessibilityDenied
 
     public var errorDescription: String? {
         switch self {
@@ -20,8 +18,6 @@ public enum DictationError: Error, LocalizedError {
             return "Cannot start dictation: already \(s.rawValue). Please wait for the current operation to finish."
         case .microphoneDenied:
             return "Microphone access is required for dictation. Grant it in System Settings → Privacy & Security → Microphone."
-        case .accessibilityDenied:
-            return "Accessibility access is required to type dictated text. Grant it in System Settings → Privacy & Security → Accessibility."
         }
     }
 }
@@ -71,16 +67,16 @@ public final class DictationManager: ObservableObject {
     public func start() async throws {
         guard state == .idle else { throw DictationError.notIdle(current: state) }
 
-        // Surface permission problems up front rather than letting the user
-        // stare at a silently-failing HUD. Without mic access, AVAudioEngine
-        // starts but no tap callbacks fire. Without Accessibility, transcribed
-        // text is silently dropped by TextInjector.
+        // Surface mic-permission denial up front rather than letting the user
+        // stare at a silently-failing HUD — without mic access, AVAudioEngine
+        // starts but no tap callbacks fire. Accessibility access is checked
+        // mid-session by AppModel.startAXPolling() rather than here, because
+        // AXIsProcessTrusted() can lag behind a freshly-granted permission
+        // (especially with ad-hoc signed builds) and we'd rather attempt
+        // dictation than reject on a stale check.
         let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         if micStatus == .denied || micStatus == .restricted {
             throw DictationError.microphoneDenied
-        }
-        if !AXIsProcessTrusted() {
-            throw DictationError.accessibilityDenied
         }
 
         unloadTask?.cancel()

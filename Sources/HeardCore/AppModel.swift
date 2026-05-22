@@ -334,12 +334,6 @@ public var filteredSpeakers: [SpeakerProfile] {
                     // Observe partial transcript and watch for AX revocation
                     observeDictationPartials()
                     startAXPolling()
-                } catch DictationError.accessibilityDenied {
-                    // Surface via the AX-lost banner so the user gets the
-                    // "Re-grant Access…" button rather than a plain error.
-                    isDictating = false
-                    dictationAXLost = true
-                    NSLog("Heard: Dictation start blocked — Accessibility not granted")
                 } catch {
                     isDictating = false
                     dictationError = error.localizedDescription
