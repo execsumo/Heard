@@ -1575,6 +1575,12 @@ public enum TranscriptWriter {
         }
 
         let updated = lines.joined(separator: "\n")
+        // Skip the disk write when nothing changed. The popup save and the
+        // Speakers tab both call this function across every queued transcript
+        // and across every file in the output directory to make sure the
+        // rename actually lands, so on a typical install most invocations are
+        // no-ops; rewriting an unchanged file just adds unnecessary I/O.
+        guard updated != original else { return }
         try? updated.write(to: transcriptURL, atomically: true, encoding: .utf8)
     }
 

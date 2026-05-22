@@ -709,13 +709,12 @@ public var filteredSpeakers: [SpeakerProfile] {
         )
         // Rewrite every transcript that references the placeholder. Speaker
         // numbers are globally unique, so this normally only touches the one
-        // transcript in `candidate.transcriptPath`, but scanning the output
-        // directory keeps the rename complete if the user moved/renamed files
-        // or if the placeholder ever shows up in more than one transcript.
-        let outputDir = URL(fileURLWithPath: settingsStore.settings.outputDirectory, isDirectory: true)
-        TranscriptWriter.renameSpeakerInDirectory(outputDir, from: candidate.temporaryName, to: trimmed)
-        if let transcriptPath = candidate.transcriptPath,
-           transcriptPath.deletingLastPathComponent().standardizedFileURL != outputDir.standardizedFileURL {
+        // transcript in `candidate.transcriptPath`, but the helper also scans
+        // every queued transcript so the rename lands even when the output
+        // directory was changed or a path-comparison quirk would otherwise
+        // have made the directory scan skip the file.
+        rewriteSpeakerAcrossTranscripts(from: candidate.temporaryName, to: trimmed)
+        if let transcriptPath = candidate.transcriptPath {
             TranscriptWriter.renameSpeaker(in: transcriptPath, from: candidate.temporaryName, to: trimmed)
         }
         namingCandidates.removeAll { $0.id == candidate.id }
@@ -767,7 +766,7 @@ public var filteredSpeakers: [SpeakerProfile] {
     public func renameSpeaker(id: UUID, to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        
+
         guard let oldProfile = speakerStore.speakers.first(where: { $0.id == id }) else { return }
         let oldName = oldProfile.name
         guard oldName != trimmed else { return }
@@ -776,8 +775,7 @@ public var filteredSpeakers: [SpeakerProfile] {
 
         // Prompt the user before retroactively renaming
         if askUserToUpdateTranscripts(oldName: oldName, newName: trimmed) {
-            let outputDir = URL(fileURLWithPath: settingsStore.settings.outputDirectory, isDirectory: true)
-            TranscriptWriter.renameSpeakerInDirectory(outputDir, from: oldName, to: trimmed)
+            rewriteSpeakerAcrossTranscripts(from: oldName, to: trimmed)
         }
     }
 
@@ -799,13 +797,29 @@ public var filteredSpeakers: [SpeakerProfile] {
         if let primary = speakerStore.speakers.first(where: { $0.id == primaryID }),
            let secondary = speakerStore.speakers.first(where: { $0.id == secondaryID }) {
             if askUserToUpdateTranscripts(oldName: secondary.name, newName: primary.name) {
-                let outputDir = URL(fileURLWithPath: settingsStore.settings.outputDirectory, isDirectory: true)
-                TranscriptWriter.renameSpeakerInDirectory(outputDir, from: secondary.name, to: primary.name)
+                rewriteSpeakerAcrossTranscripts(from: secondary.name, to: primary.name)
             }
         }
 
         speakerStore.merge(primaryID: primaryID, secondaryID: secondaryID)
         mergeSelection.removeAll()
+    }
+
+    /// Rewrite `oldName` → `newName` in every transcript we can reasonably locate:
+    /// the configured output directory, every path tracked by the pipeline queue,
+    /// and any audit-level fallbacks. `renameSpeaker` is a literal string-replace
+    /// pass that's idempotent for a given file, so the redundant scans are safe
+    /// and just guarantee the rename actually lands even if the user moved the
+    /// output directory between meetings, or a URL-comparison quirk would have
+    /// caused the directory scan to skip the file.
+    private func rewriteSpeakerAcrossTranscripts(from oldName: String, to newName: String) {
+        let outputDir = URL(fileURLWithPath: settingsStore.settings.outputDirectory, isDirectory: true)
+        TranscriptWriter.renameSpeakerInDirectory(outputDir, from: oldName, to: newName)
+        for job in queueStore.jobs {
+            if let path = job.transcriptPath {
+                TranscriptWriter.renameSpeaker(in: path, from: oldName, to: newName)
+            }
+        }
     }
 
     private func askUserToUpdateTranscripts(oldName: String, newName: String) -> Bool {
