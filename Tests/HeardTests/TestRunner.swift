@@ -468,6 +468,102 @@ func runTranscriptWriterTests() {
         try expect(c.contains("**Speaker 8:**"), "C should be untouched")
     }
 
+    test("renameSpeakerInDirectory rewrites the production Speaker_<hex> placeholder") {
+        // Production places `Speaker_<6 hex chars>` in transcripts when a new speaker
+        // is detected and the user hasn't named them yet. The legacy "Speaker 7" test
+        // covers the basic logic; this one pins down the underscore-based format the
+        // pipeline actually emits so any regression there is caught immediately.
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let date = Date()
+        let doc = TranscriptDocument(
+            title: "Roadmap",
+            startTime: date,
+            endTime: date.addingTimeInterval(120),
+            participants: ["Speaker_ABC123", "Speaker_DEF456", "Me"],
+            segments: [
+                TranscriptSegment(speaker: "Speaker_ABC123", startTime: 0, endTime: 30,
+                                  text: "Welcome to the meeting."),
+                TranscriptSegment(speaker: "Speaker_DEF456", startTime: 30, endTime: 60,
+                                  text: "Glad to be here."),
+                TranscriptSegment(speaker: "Me", startTime: 60, endTime: 90, text: "Hi."),
+            ]
+        )
+        let url = try TranscriptWriter.write(document: doc, outputDirectory: tmpDir)
+
+        TranscriptWriter.renameSpeakerInDirectory(tmpDir, from: "Speaker_ABC123", to: "Alice")
+
+        let content = try String(contentsOf: url, encoding: .utf8)
+        try expect(content.contains("**Alice:** Welcome to the meeting."),
+                   "Body line should be rewritten to Alice")
+        try expect(!content.contains("Speaker_ABC123"),
+                   "Placeholder must be fully gone from body and participants header")
+        try expect(content.contains("**Speaker_DEF456:** Glad to be here."),
+                   "Other placeholders must be left untouched")
+        try expect(content.contains("Alice"), "Participants header should include Alice")
+    }
+
+    test("renameSpeaker rewrites a transcript outside the configured output directory") {
+        // Simulates the popup-after-meeting case where `candidate.transcriptPath`
+        // points at a file the directory scan would miss — e.g. because the user
+        // moved their output folder between meetings. The unconditional path-based
+        // pass in `saveSpeakerName` should still rewrite the file.
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let date = Date()
+        let doc = TranscriptDocument(
+            title: "Standup",
+            startTime: date,
+            endTime: date.addingTimeInterval(60),
+            participants: ["Speaker_ABC123", "Me"],
+            segments: [
+                TranscriptSegment(speaker: "Speaker_ABC123", startTime: 0, endTime: 30,
+                                  text: "Morning."),
+            ]
+        )
+        let url = try TranscriptWriter.write(document: doc, outputDirectory: tmpDir)
+
+        TranscriptWriter.renameSpeaker(in: url, from: "Speaker_ABC123", to: "Bob")
+
+        let content = try String(contentsOf: url, encoding: .utf8)
+        try expect(content.contains("**Bob:** Morning."), "Body line should now reference Bob")
+        try expect(!content.contains("Speaker_ABC123"),
+                   "Placeholder should be gone from body and participants header")
+    }
+
+    test("renameSpeaker is idempotent — second pass is a no-op") {
+        // We deliberately invoke `renameSpeaker` multiple times from `saveSpeakerName`
+        // (directory scan + queue scan + explicit path) to make sure the rename actually
+        // lands. This relies on the function being safe to run again after a successful
+        // rename, since after the first pass the placeholder is gone.
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let doc = TranscriptDocument(
+            title: "Standup", startTime: Date(), endTime: Date().addingTimeInterval(60),
+            participants: ["Speaker_1AB23C", "Me"],
+            segments: [TranscriptSegment(speaker: "Speaker_1AB23C", startTime: 0, endTime: 30,
+                                         text: "Hello.")]
+        )
+        let url = try TranscriptWriter.write(document: doc, outputDirectory: tmpDir)
+
+        TranscriptWriter.renameSpeaker(in: url, from: "Speaker_1AB23C", to: "Carol")
+        let afterFirst = try String(contentsOf: url, encoding: .utf8)
+        TranscriptWriter.renameSpeaker(in: url, from: "Speaker_1AB23C", to: "Carol")
+        let afterSecond = try String(contentsOf: url, encoding: .utf8)
+
+        try expect(afterFirst.contains("**Carol:** Hello."), "First pass rewrites Carol")
+        try expectEqual(afterFirst, afterSecond)
+    }
+
     test("renameSpeakerInDirectory ignores non-md files and missing dirs") {
         let tmpDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("HeardTests-\(UUID().uuidString)")
