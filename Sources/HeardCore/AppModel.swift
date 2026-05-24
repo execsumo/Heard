@@ -131,6 +131,11 @@ public final class AppModel: ObservableObject {
         // Activate hotkey if dictation is enabled
         if settingsStore.settings.dictationEnabled {
             model.setupHotkeyManager()
+            // Preload the TDT model so the first hotkey press doesn't pay a
+            // multi-second cold-start cost before the mic starts capturing —
+            // otherwise the user speaks during the load window and loses the
+            // first few words.
+            dictationManager.preloadModelsInBackground()
         }
 
         // Note hotkey is always active — checks recording state when fired
@@ -374,6 +379,7 @@ public var filteredSpeakers: [SpeakerProfile] {
             // Prompt for Accessibility permission (needed for text injection)
             TextInjector.ensureAccessibility()
             setupHotkeyManager()
+            dictationManager.preloadModelsInBackground()
         } else {
             hotkeyManager?.deactivate()
             if isDictating {

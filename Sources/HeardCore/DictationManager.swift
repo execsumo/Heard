@@ -164,6 +164,22 @@ public final class DictationManager: ObservableObject {
 
     // MARK: - Model loading
 
+    /// Kick off a background load of the TDT model so the first hotkey press
+    /// doesn't pay a multi-second cold-start delay before the mic starts.
+    /// Idempotent — repeated calls while already loaded or loading are no-ops.
+    public func preloadModelsInBackground() {
+        guard asrManager == nil || loadedModelVersion != modelVersion else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.ensureAsrManagerLoaded()
+                NSLog("Heard: Dictation TDT model preloaded")
+            } catch {
+                NSLog("Heard: Dictation TDT preload failed: %@", error.localizedDescription)
+            }
+        }
+    }
+
     private func ensureAsrManagerLoaded() async throws {
         if asrManager != nil, loadedModelVersion == modelVersion { return }
 
