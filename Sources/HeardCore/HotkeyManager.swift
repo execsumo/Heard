@@ -228,10 +228,12 @@ public final class HotkeyManager {
     }
 
     func handleHotkeyPressed() {
+        NSLog("Heard: [DICT-DBG] handleHotkeyPressed id=\(id)")
         onPressed?()
     }
 
     func handleHotkeyReleased() {
+        NSLog("Heard: [DICT-DBG] handleHotkeyReleased id=\(id)")
         onReleased?()
     }
 
