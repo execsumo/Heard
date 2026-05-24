@@ -13,9 +13,29 @@ public enum DebugFileLog {
         f.dateFormat = "HH:mm:ss.SSS"
         return f
     }()
+    private static var heartbeatTimer: Timer?
 
     public static var fileURL: URL {
         FileManager.default.heardAppSupportDirectory.appendingPathComponent("dict-debug.log")
+    }
+
+    /// Installs a Timer on the main RunLoop that logs every second. Gaps in
+    /// these heartbeat lines correspond directly to main-thread stalls — if
+    /// you see "heartbeat tick=12" followed by "heartbeat tick=13" 8 seconds
+    /// later, main was unresponsive for those 8 seconds.
+    @MainActor
+    public static func startMainThreadHeartbeat() {
+        guard heartbeatTimer == nil else { return }
+        var tick = 0
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            tick += 1
+            DebugFileLog.log("heartbeat tick=\(tick)")
+        }
+        // Run in common modes so menu tracking / modal panels don't suspend it.
+        if let timer = heartbeatTimer {
+            RunLoop.main.add(timer, forMode: .common)
+        }
+        log("heartbeat installed")
     }
 
     public static func log(_ message: String) {

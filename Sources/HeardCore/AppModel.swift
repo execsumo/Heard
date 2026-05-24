@@ -51,6 +51,7 @@ public final class AppModel: ObservableObject {
         try? FileManager.default.ensureHeardDirectories()
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         DebugFileLog.log("=== bootstrap — Heard v\(version) starting ===")
+        DebugFileLog.startMainThreadHeartbeat()
 
         let settingsStore = SettingsStore()
         let speakerStore = SpeakerStore()
