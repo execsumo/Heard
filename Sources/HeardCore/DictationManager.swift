@@ -278,7 +278,7 @@ public final class DictationManager: ObservableObject {
                 guard let mgr, !Task.isCancelled else { break }
                 await mgr.streamAudio(buffer)
                 if let self {
-                    await self.tickBufferCount()
+                    self.tickBufferCount()
                 }
             }
         }
