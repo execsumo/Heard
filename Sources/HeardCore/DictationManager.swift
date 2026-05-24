@@ -167,7 +167,10 @@ public final class DictationManager: ObservableObject {
     public func stop() async {
         guard state == .listening else { return }
 
-        stopMicCapture()
+        // Drain all buffered mic audio into the ASR before finishing, otherwise
+        // the last few hundred ms (whatever is still sitting in the AsyncStream
+        // buffer) get dropped and finish() produces no text for that tail.
+        await drainAndStopMicCapture()
         updateConsumerTask?.cancel()
         updateConsumerTask = nil
 
@@ -299,9 +302,9 @@ public final class DictationManager: ObservableObject {
             }
         }
 
-        // continuation is a struct; capture by value. Once stopMicCapture()
-        // calls finish(), subsequent yields are no-ops, so we don't need to
-        // null it out from the tap.
+        // continuation is a struct; capture by value. Once the teardown path
+        // calls finish() on it, subsequent yields are no-ops, so we don't need
+        // to null it out from the tap.
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { buffer, _ in
             guard let copy = buffer.heardDeepCopy() else { return }
             continuation.yield(copy)
@@ -323,13 +326,18 @@ public final class DictationManager: ObservableObject {
         }
     }
 
-    private func stopMicCapture() {
+    /// Graceful shutdown that lets buffered mic audio finish reaching the ASR
+    /// before returning. Stops the engine, closes the stream, then awaits the
+    /// forwarder so its `for await` loop drains every queued buffer — without
+    /// this drain, the AsyncStream's buffer (~5s at hardware rate) is lost on
+    /// stop and the tail of the dictation never gets transcribed.
+    private func drainAndStopMicCapture() async {
         micEngine?.inputNode.removeTap(onBus: 0)
         micEngine?.stop()
         micEngine = nil
         micBufferContinuation?.finish()
         micBufferContinuation = nil
-        micForwardTask?.cancel()
+        await micForwardTask?.value
         micForwardTask = nil
     }
 
