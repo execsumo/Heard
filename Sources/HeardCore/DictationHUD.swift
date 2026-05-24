@@ -36,14 +36,12 @@ public final class DictationHUD {
         DebugFileLog.log("HUD.hide entry — panel=\(panel != nil) isVisible=\(panel?.isVisible ?? false) alpha=\(panel?.alphaValue ?? -1)")
         fadeTimer?.invalidate()
         fadeTimer = nil
-        animateAlpha(to: 0, duration: 0.25) { [weak self] in
-            Task { @MainActor in
-                let isVisibleBefore = self?.panel?.isVisible ?? false
-                self?.panel?.orderOut(nil)
-                let isVisibleAfter = self?.panel?.isVisible ?? false
-                DebugFileLog.log("HUD.hide animation completed — orderOut: visibleBefore=\(isVisibleBefore) visibleAfter=\(isVisibleAfter)")
-            }
-        }
+        // Hide synchronously — the user just asked for stop, they want the
+        // indicator gone now. Waiting for a fade animation means main-thread
+        // hiccups can leave the HUD stuck visible even after stop fully runs.
+        panel?.alphaValue = 0
+        panel?.orderOut(nil)
+        DebugFileLog.log("HUD.hide done — isVisible=\(panel?.isVisible ?? false)")
     }
 
     private func animateAlpha(to target: CGFloat, duration: TimeInterval, completion: (@Sendable () -> Void)? = nil) {

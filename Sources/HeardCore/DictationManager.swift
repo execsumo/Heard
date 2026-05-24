@@ -102,8 +102,24 @@ public final class DictationManager: ObservableObject {
         // Create a fresh sliding-window manager for this session.
         // SlidingWindowAsrManager's input stream is single-use (finish() closes it),
         // so a new instance is required each time.
+        //
+        // The library's `.streaming` preset uses chunkSeconds=11 and
+        // minContextForConfirmation=10, which means the user sees nothing for
+        // ~10s and then text arrives in 11s batches — feels broken for live
+        // dictation. Lower both so confirmed text lands every few seconds.
+        // Accuracy trade-off is acceptable here: dictation users want
+        // responsiveness, and they can edit afterwards.
         let tdtConfig = TdtConfig(blankId: modelVersion.blankId)
-        let mgr = SlidingWindowAsrManager(config: .streaming.applying(tdtConfig: tdtConfig))
+        let dictationConfig = SlidingWindowAsrConfig(
+            chunkSeconds: 3.0,
+            hypothesisChunkSeconds: 0.5,
+            leftContextSeconds: 2.0,
+            rightContextSeconds: 1.0,
+            minContextForConfirmation: 2.0,
+            confirmationThreshold: 0.75,
+            tdtConfig: tdtConfig
+        )
+        let mgr = SlidingWindowAsrManager(config: dictationConfig)
         try await mgr.loadModels(asrModels!)
 
         // Restore vocab boosting if terms are configured and CTC models are on disk.
