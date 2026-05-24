@@ -23,7 +23,7 @@ public enum TextInjector {
     /// Inject text into the currently focused app.
     public static func inject(_ text: String) {
         let trusted = AXIsProcessTrusted()
-        NSLog("Heard: [DICT-DBG] TextInjector.inject text=\"\(text)\" (len=\(text.count)) axTrusted=\(trusted)")
+        DebugFileLog.log("TextInjector.inject text=\"\(text)\" (len=\(text.count)) axTrusted=\(trusted)")
         guard trusted else {
             NSLog("Heard: TextInjector cannot inject text — Accessibility not granted")
             return
@@ -31,11 +31,11 @@ public enum TextInjector {
 
         // Get the frontmost app's PID
         guard let frontApp = NSWorkspace.shared.frontmostApplication else {
-            NSLog("Heard: [DICT-DBG] TextInjector aborted — no frontmost application")
+            DebugFileLog.log("TextInjector aborted — no frontmost application")
             return
         }
         let pid = frontApp.processIdentifier
-        NSLog("Heard: [DICT-DBG] TextInjector injecting into frontApp=\(frontApp.localizedName ?? "?") pid=\(pid)")
+        DebugFileLog.log("TextInjector injecting into frontApp=\(frontApp.localizedName ?? "?") pid=\(pid)")
 
         // Try CGEvent unicode insertion to specific PID first
         if insertTextBulk(text, targetPID: pid) {

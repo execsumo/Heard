@@ -49,6 +49,8 @@ public final class AppModel: ObservableObject {
 
     public static func bootstrap() -> AppModel {
         try? FileManager.default.ensureHeardDirectories()
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        DebugFileLog.log("=== bootstrap — Heard v\(version) starting ===")
 
         let settingsStore = SettingsStore()
         let speakerStore = SpeakerStore()
@@ -304,22 +306,22 @@ public var filteredSpeakers: [SpeakerProfile] {
     // MARK: - Dictation
 
     public func toggleDictation() {
-        NSLog("Heard: [DICT-DBG] toggleDictation entered — isDictating=\(isDictating) inFlight=\(dictationToggleInFlight) activeSession=\(recordingManager.activeSession != nil)")
+        DebugFileLog.log("toggleDictation entered — isDictating=\(isDictating) inFlight=\(dictationToggleInFlight) activeSession=\(recordingManager.activeSession != nil)")
         // Drop rapid presses while a start/stop is already in progress.
         guard !dictationToggleInFlight else {
-            NSLog("Heard: [DICT-DBG] toggleDictation dropped — inFlight=true")
+            DebugFileLog.log("toggleDictation dropped — inFlight=true")
             return
         }
         // Don't start dictation while a meeting is being recorded.
         if !isDictating && recordingManager.activeSession != nil {
-            NSLog("Heard: [DICT-DBG] toggleDictation dropped — meeting active and not currently dictating")
+            DebugFileLog.log("toggleDictation dropped — meeting active and not currently dictating")
             return
         }
         dictationToggleInFlight = true
         Task {
             defer { dictationToggleInFlight = false }
             if isDictating {
-                NSLog("Heard: [DICT-DBG] taking STOP branch")
+                DebugFileLog.log("taking STOP branch")
                 // Update UI immediately so the user gets instant feedback — don't
                 // wait for mgr.finish() to return (it flushes remaining audio and
                 // can take several seconds, keeping the HUD up and blocking further
@@ -330,9 +332,9 @@ public var filteredSpeakers: [SpeakerProfile] {
                 if settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
                 dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
                 await dictationManager.stop()
-                NSLog("Heard: [DICT-DBG] STOP branch completed (dictationManager.stop returned)")
+                DebugFileLog.log("STOP branch completed (dictationManager.stop returned)")
             } else {
-                NSLog("Heard: [DICT-DBG] taking START branch")
+                DebugFileLog.log("taking START branch")
                 do {
                     dictationAXLost = false
                     dictationManager.customVocabulary = settingsStore.settings.customVocabulary
