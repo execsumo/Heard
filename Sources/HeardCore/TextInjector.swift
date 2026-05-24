@@ -29,20 +29,14 @@ public enum TextInjector {
 
     /// Inject text into the currently focused app.
     public static func inject(_ text: String) {
-        let trusted = AXIsProcessTrusted()
-        DebugFileLog.log("TextInjector.inject text=\"\(text)\" (len=\(text.count)) axTrusted=\(trusted)")
-        guard trusted else {
+        guard AXIsProcessTrusted() else {
             NSLog("Heard: TextInjector cannot inject text — Accessibility not granted")
             return
         }
 
         // Get the frontmost app's PID
-        guard let frontApp = NSWorkspace.shared.frontmostApplication else {
-            DebugFileLog.log("TextInjector aborted — no frontmost application")
-            return
-        }
+        guard let frontApp = NSWorkspace.shared.frontmostApplication else { return }
         let pid = frontApp.processIdentifier
-        DebugFileLog.log("TextInjector injecting into frontApp=\(frontApp.localizedName ?? "?") pid=\(pid)")
 
         // Long text → clipboard paste (reliable, one Cmd+V instead of dozens of
         // chunked unicode events that rich-text editors drop).

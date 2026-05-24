@@ -49,9 +49,6 @@ public final class AppModel: ObservableObject {
 
     public static func bootstrap() -> AppModel {
         try? FileManager.default.ensureHeardDirectories()
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
-        DebugFileLog.log("=== bootstrap — Heard v\(version) starting ===")
-        DebugFileLog.startMainThreadHeartbeat()
 
         let settingsStore = SettingsStore()
         let speakerStore = SpeakerStore()
@@ -312,22 +309,14 @@ public var filteredSpeakers: [SpeakerProfile] {
     // MARK: - Dictation
 
     public func toggleDictation() {
-        DebugFileLog.log("toggleDictation entered — isDictating=\(isDictating) inFlight=\(dictationToggleInFlight) activeSession=\(recordingManager.activeSession != nil)")
         // Drop rapid presses while a start/stop is already in progress.
-        guard !dictationToggleInFlight else {
-            DebugFileLog.log("toggleDictation dropped — inFlight=true")
-            return
-        }
+        guard !dictationToggleInFlight else { return }
         // Don't start dictation while a meeting is being recorded.
-        if !isDictating && recordingManager.activeSession != nil {
-            DebugFileLog.log("toggleDictation dropped — meeting active and not currently dictating")
-            return
-        }
+        if !isDictating && recordingManager.activeSession != nil { return }
         dictationToggleInFlight = true
         Task {
             defer { dictationToggleInFlight = false }
             if isDictating {
-                DebugFileLog.log("taking STOP branch")
                 // Update UI immediately so the user gets instant feedback — don't
                 // wait for mgr.finish() to return (it flushes remaining audio and
                 // can take several seconds, keeping the HUD up and blocking further
@@ -338,9 +327,7 @@ public var filteredSpeakers: [SpeakerProfile] {
                 if settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
                 dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
                 await dictationManager.stop()
-                DebugFileLog.log("STOP branch completed (dictationManager.stop returned)")
             } else {
-                DebugFileLog.log("taking START branch")
                 do {
                     dictationAXLost = false
                     dictationManager.customVocabulary = settingsStore.settings.customVocabulary
