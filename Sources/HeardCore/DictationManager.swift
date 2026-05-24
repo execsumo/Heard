@@ -113,8 +113,8 @@ public final class DictationManager: ObservableObject {
         let dictationConfig = SlidingWindowAsrConfig(
             chunkSeconds: 3.0,
             hypothesisChunkSeconds: 0.5,
-            leftContextSeconds: 2.0,
-            rightContextSeconds: 1.0,
+            leftContextSeconds: 8.0,
+            rightContextSeconds: 2.0,
             minContextForConfirmation: 2.0,
             confirmationThreshold: 0.75,
             tdtConfig: tdtConfig
