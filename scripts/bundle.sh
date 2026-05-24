@@ -36,6 +36,9 @@ done
 APP_NAME="Heard"
 APP_BUNDLE="$OUTPUT_DIR/$APP_NAME.app"
 
+echo "==> Cleaning previous build artifacts..."
+swift package clean --package-path "$REPO_ROOT"
+
 echo "==> Building $APP_NAME ($BUILD_CONFIG)..."
 if [[ "$BUILD_CONFIG" == "release" ]]; then
     swift build -c release --package-path "$REPO_ROOT"
