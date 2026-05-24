@@ -1,25 +1,21 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build Heard.app from Swift Package Manager output.
-# Usage: ./scripts/bundle.sh [--release] [--sign IDENTITY] [--install] [--reset-tcc]
+# Build Heard.app, install it to /Applications, and relaunch.
+# Usage: ./scripts/bundle.sh [--release] [--sign IDENTITY] [--reset]
 #
 # Options:
 #   --release     Build in release mode (optimized)
 #   --sign ID     Code sign with the given identity (e.g., "Developer ID Application: ...")
-#   --output DIR  Output directory for the .app bundle (default: ./build)
-#   --install     Quit any running Heard, replace /Applications/Heard.app with the
-#                 fresh build, and relaunch it. Installing to a stable path keeps TCC
-#                 grants attached to a single bundle across rebuilds.
+#   --output DIR  Output directory for the staging .app bundle (default: ./build)
 #   --reset       Reset Microphone, Screen Recording, Accessibility, and AudioCapture
-#                 grants for com.execsumo.heard before launch. Implies --install.
+#                 grants for com.execsumo.heard before launch.
 
 BUNDLE_ID="com.execsumo.heard"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_CONFIG="debug"
 SIGN_IDENTITY=""
 OUTPUT_DIR="$REPO_ROOT/build"
-INSTALL=0
 RESET_TCC=0
 
 while [[ $# -gt 0 ]]; do
@@ -27,14 +23,14 @@ while [[ $# -gt 0 ]]; do
         --release)    BUILD_CONFIG="release"; shift ;;
         --sign)       SIGN_IDENTITY="$2"; shift 2 ;;
         --output)     OUTPUT_DIR="$2"; shift 2 ;;
-        --install)    INSTALL=1; shift ;;
-        --reset)      RESET_TCC=1; INSTALL=1; shift ;;
+        --reset)      RESET_TCC=1; shift ;;
         *)            echo "Unknown option: $1"; exit 1 ;;
     esac
 done
 
 APP_NAME="Heard"
 APP_BUNDLE="$OUTPUT_DIR/$APP_NAME.app"
+INSTALLED="/Applications/$APP_NAME.app"
 
 echo "==> Cleaning previous build artifacts..."
 swift package clean --package-path "$REPO_ROOT"
@@ -123,40 +119,28 @@ else
 fi
 
 echo ""
-echo "==> Done! App bundle created at:"
-echo "    $APP_BUNDLE"
+echo "==> Quitting any running $APP_NAME..."
+osascript -e "tell application \"$APP_NAME\" to quit" >/dev/null 2>&1 || true
+pkill -x "$APP_NAME" 2>/dev/null || true
+# Give launchd a moment to release the bundle before we replace it.
+sleep 1
 
-if [[ "$INSTALL" -eq 1 ]]; then
-    INSTALLED="/Applications/$APP_NAME.app"
-
-    echo ""
-    echo "==> Quitting any running $APP_NAME..."
-    osascript -e "tell application \"$APP_NAME\" to quit" >/dev/null 2>&1 || true
-    pkill -x "$APP_NAME" 2>/dev/null || true
-    # Give launchd a moment to release the bundle before we replace it.
-    sleep 1
-
-    if [[ "$RESET_TCC" -eq 1 ]]; then
-        echo "==> Resetting TCC grants for $BUNDLE_ID..."
-        tccutil reset Microphone "$BUNDLE_ID" || true
-        tccutil reset ScreenCapture "$BUNDLE_ID" || true
-        tccutil reset Accessibility "$BUNDLE_ID" || true
-        tccutil reset AudioCapture "$BUNDLE_ID" || true
-    fi
-
-    echo "==> Installing to $INSTALLED..."
-    rm -rf "$INSTALLED"
-    cp -R "$APP_BUNDLE" "$INSTALLED"
-
-    echo "==> Launching $INSTALLED..."
-    open "$INSTALLED"
-
-    echo ""
-    echo "    Grant permissions in System Settings → Privacy & Security, then"
-    echo "    fully quit $APP_NAME from the menu bar and relaunch it — Screen"
-    echo "    Recording grants do not apply to a process that was already running."
-else
-    echo ""
-    echo "    To run:  open $APP_BUNDLE"
-    echo "    To install: ./scripts/bundle.sh --install"
+if [[ "$RESET_TCC" -eq 1 ]]; then
+    echo "==> Resetting TCC grants for $BUNDLE_ID..."
+    tccutil reset Microphone "$BUNDLE_ID" || true
+    tccutil reset ScreenCapture "$BUNDLE_ID" || true
+    tccutil reset Accessibility "$BUNDLE_ID" || true
+    tccutil reset AudioCapture "$BUNDLE_ID" || true
 fi
+
+echo "==> Installing to $INSTALLED..."
+rm -rf "$INSTALLED"
+cp -R "$APP_BUNDLE" "$INSTALLED"
+
+echo "==> Launching $INSTALLED..."
+open "$INSTALLED"
+
+echo ""
+echo "    Grant permissions in System Settings → Privacy & Security, then"
+echo "    fully quit $APP_NAME from the menu bar and relaunch it — Screen"
+echo "    Recording grants do not apply to a process that was already running."

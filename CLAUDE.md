@@ -9,8 +9,7 @@ Heard is a macOS menu bar app that auto-detects Microsoft Teams meetings, record
 ```bash
 swift build                # compile
 swift run Heard            # compile and launch (terminal — mic permission goes to terminal app)
-./scripts/bundle.sh        # build Heard.app bundle (ad-hoc signed)
-open build/Heard.app       # launch as proper app (mic permission goes to Heard)
+./scripts/bundle.sh        # build, install to /Applications, and relaunch (ad-hoc signed)
 swift package clean        # clean build artifacts
 ```
 
