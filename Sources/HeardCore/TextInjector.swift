@@ -20,6 +20,13 @@ public enum TextInjector {
         return true
     }
 
+    /// Above this length, prefer clipboard paste over per-character CGEvent
+    /// unicode insertion. Rich-text apps (Notes, Word, Pages, modern web
+    /// editors) frequently drop events when they arrive in a rapid burst of
+    /// 12+ small chunks, so the "succeeded" CGEvents silently never show up.
+    /// Clipboard paste is a single Cmd+V — much more reliable for paragraphs.
+    private static let clipboardPasteThreshold = 50
+
     /// Inject text into the currently focused app.
     public static func inject(_ text: String) {
         let trusted = AXIsProcessTrusted()
@@ -37,7 +44,14 @@ public enum TextInjector {
         let pid = frontApp.processIdentifier
         DebugFileLog.log("TextInjector injecting into frontApp=\(frontApp.localizedName ?? "?") pid=\(pid)")
 
-        // Try CGEvent unicode insertion to specific PID first
+        // Long text → clipboard paste (reliable, one Cmd+V instead of dozens of
+        // chunked unicode events that rich-text editors drop).
+        if text.count >= clipboardPasteThreshold {
+            insertViaClipboard(text)
+            return
+        }
+
+        // Short text → CGEvent unicode insertion (fast, no clipboard side effect).
         if insertTextBulk(text, targetPID: pid) {
             return
         }
