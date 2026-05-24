@@ -18,10 +18,12 @@ public final class DictationHUD {
     private static let fadeDelay: TimeInterval = 2.5
 
     public func show() {
+        let panelExisted = panel != nil
         if panel == nil { buildPanel() }
         fadeTimer?.invalidate()
         panel?.alphaValue = Self.activeAlpha
         panel?.orderFront(nil)
+        DebugFileLog.log("HUD.show — panelExisted=\(panelExisted) isVisible=\(panel?.isVisible ?? false) alpha=\(panel?.alphaValue ?? -1)")
         // Dim after a delay — stays visible but unobtrusive while recording
         fadeTimer = Timer.scheduledTimer(withTimeInterval: Self.fadeDelay, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -31,11 +33,15 @@ public final class DictationHUD {
     }
 
     public func hide() {
+        DebugFileLog.log("HUD.hide entry — panel=\(panel != nil) isVisible=\(panel?.isVisible ?? false) alpha=\(panel?.alphaValue ?? -1)")
         fadeTimer?.invalidate()
         fadeTimer = nil
         animateAlpha(to: 0, duration: 0.25) { [weak self] in
             Task { @MainActor in
+                let isVisibleBefore = self?.panel?.isVisible ?? false
                 self?.panel?.orderOut(nil)
+                let isVisibleAfter = self?.panel?.isVisible ?? false
+                DebugFileLog.log("HUD.hide animation completed — orderOut: visibleBefore=\(isVisibleBefore) visibleAfter=\(isVisibleAfter)")
             }
         }
     }
