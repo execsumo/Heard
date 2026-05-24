@@ -312,12 +312,16 @@ public var filteredSpeakers: [SpeakerProfile] {
         Task {
             defer { dictationToggleInFlight = false }
             if isDictating {
-                dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
-                await dictationManager.stop()
+                // Update UI immediately so the user gets instant feedback — don't
+                // wait for mgr.finish() to return (it flushes remaining audio and
+                // can take several seconds, keeping the HUD up and blocking further
+                // hotkey presses via dictationToggleInFlight the whole time).
                 isDictating = false
                 partialTranscript = ""
                 dictationError = nil
                 if settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
+                dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
+                await dictationManager.stop()
             } else {
                 do {
                     dictationAXLost = false
@@ -551,13 +555,13 @@ public var filteredSpeakers: [SpeakerProfile] {
     /// (e.g. meeting start) that must succeed regardless of dictationToggleInFlight.
     private func stopDictationIfActive() {
         guard isDictating else { return }
+        isDictating = false
+        partialTranscript = ""
+        dictationError = nil
+        if settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
         Task {
             dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
             await dictationManager.stop()
-            isDictating = false
-            partialTranscript = ""
-            dictationError = nil
-            if settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
             NSLog("Heard: Dictation stopped — meeting recording started")
         }
     }
