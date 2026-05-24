@@ -22,21 +22,22 @@ public enum DictationError: Error, LocalizedError {
     }
 }
 
-/// Manages real-time dictation using FluidAudio's SlidingWindowAsrManager.
-/// Audio is fed as AVAudioPCMBuffer; the manager handles overlapping windows and
-/// stable/volatile split internally. Confirmed text is injected incrementally;
-/// any remaining volatile text is flushed on stop.
+/// Manages real-time dictation using FluidAudio's StreamingEouAsrManager —
+/// a cache-aware streaming ASR engine (parakeet-realtime-eou-120m) designed
+/// for low-latency word-by-word transcription. Audio is appended as it
+/// arrives and decoded in 320ms chunks; partial transcripts are injected
+/// incrementally via the manager's partial-transcript callback.
+///
+/// Note: this is a different engine and model from the meeting-recording
+/// pipeline (which still uses Parakeet TDT 0.6B v2/v3 for accuracy).
 @MainActor
 public final class DictationManager: ObservableObject {
 
     @Published public private(set) var state: DictationState = .idle
     @Published public var partialTranscript: String = ""
 
-    private var slidingWindowMgr: SlidingWindowAsrManager?
-    private var asrModels: AsrModels?
-    private var loadedModelVersion: TranscriptionModel?
+    private var streamingMgr: StreamingEouAsrManager?
     private var micEngine: AVAudioEngine?
-    private var updateConsumerTask: Task<Void, Never>?
     private var unloadTask: Task<Void, Never>?
     private var micBufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
     private var micForwardTask: Task<Void, Never>?
@@ -46,12 +47,18 @@ public final class DictationManager: ObservableObject {
     public var onUtterance: ((String) -> Void)?
 
     /// Custom vocabulary terms for boosting. Set before calling start().
+    /// Currently unused by the streaming-EOU engine — kept for API compatibility
+    /// with the settings UI; will become functional if/when the engine exposes
+    /// a vocabulary-boosting hook.
     public var customVocabulary: [String] = []
 
     /// Custom formatting commands for ITN. Set before calling start().
     public var formattingCommands: [FormattingCommand] = []
 
-    /// Which Parakeet model version to use. Changing mid-session reloads models on the next start.
+    /// Which Parakeet model version the rest of the app uses for the meeting
+    /// pipeline. Dictation does not use this — the streaming-EOU engine has
+    /// its own dedicated model — but the field is retained because callers
+    /// (AppModel) still propagate it on settings changes.
     public var modelVersion: TranscriptionModel = .v2
 
     /// How long to keep the model loaded after dictation stops (seconds).
@@ -88,63 +95,18 @@ public final class DictationManager: ObservableObject {
 
         state = .loading
 
-        let fluidVersion: AsrModelVersion = modelVersion == .v2 ? .v2 : .v3
-
-        // Load models if needed or version changed; otherwise reuse cached models.
-        if asrModels == nil || loadedModelVersion != modelVersion {
-            asrModels = nil
-            loadedModelVersion = nil
-            let models = try await AsrModels.loadFromCache(version: fluidVersion)
-            asrModels = models
-            loadedModelVersion = modelVersion
-        }
-
-        // Create a fresh sliding-window manager for this session.
-        // SlidingWindowAsrManager's input stream is single-use (finish() closes it),
-        // so a new instance is required each time.
-        //
-        // The library's `.streaming` preset uses chunkSeconds=11 and
-        // minContextForConfirmation=10, which means the user sees nothing for
-        // ~10s and then text arrives in 11s batches — feels broken for live
-        // dictation. Lower both so confirmed text lands every few seconds.
-        // Accuracy trade-off is acceptable here: dictation users want
-        // responsiveness, and they can edit afterwards.
-        let tdtConfig = TdtConfig(blankId: modelVersion.blankId)
-        let dictationConfig = SlidingWindowAsrConfig(
-            chunkSeconds: 3.0,
-            hypothesisChunkSeconds: 0.5,
-            leftContextSeconds: 8.0,
-            rightContextSeconds: 2.0,
-            minContextForConfirmation: 2.0,
-            confirmationThreshold: 0.75,
-            tdtConfig: tdtConfig
-        )
-        let mgr = SlidingWindowAsrManager(config: dictationConfig)
-        try await mgr.loadModels(asrModels!)
-
-        // Restore vocab boosting if terms are configured and CTC models are on disk.
-        if !customVocabulary.isEmpty {
-            let ctcDir = CtcModels.defaultCacheDirectory(for: .ctc110m)
-            if CtcModels.modelsExist(at: ctcDir) {
-                do {
-                    let ctcModels = try await CtcModels.downloadAndLoad(variant: .ctc110m)
-                    let ctcTokenizer = try await CtcTokenizer.load(from: ctcDir)
-                    let terms = customVocabulary.map { term -> CustomVocabularyTerm in
-                        let tokenIds = ctcTokenizer.encode(term)
-                        return CustomVocabularyTerm(
-                            text: term, weight: 10.0,
-                            ctcTokenIds: tokenIds.isEmpty ? nil : tokenIds
-                        )
-                    }
-                    try await mgr.configureVocabularyBoosting(
-                        vocabulary: CustomVocabularyContext(terms: terms),
-                        ctcModels: ctcModels
-                    )
-                    NSLog("Heard: Dictation vocab boosting configured (%d terms)", customVocabulary.count)
-                } catch {
-                    NSLog("Heard: Dictation vocab boosting unavailable, continuing without: %@", error.localizedDescription)
-                }
-            }
+        // Reuse the streaming engine across sessions — models stay loaded
+        // for `modelKeepAliveSeconds` so the second-and-subsequent dictation
+        // in a working session start instantly. First-ever start downloads
+        // the model from HuggingFace (~120 MB) and may take a few seconds.
+        let mgr: StreamingEouAsrManager
+        if let existing = streamingMgr {
+            mgr = existing
+            await mgr.reset()
+        } else {
+            mgr = StreamingEouAsrManager(chunkSize: .ms320, eouDebounceMs: 1280)
+            try await mgr.loadModels(to: nil, configuration: nil, progressHandler: nil)
+            streamingMgr = mgr
         }
 
         // Apply custom formatting commands
@@ -153,15 +115,20 @@ public final class DictationManager: ObservableObject {
             TextNormalizer.shared.addRule(spoken: cmd.spoken, written: cmd.written)
         }
 
-        slidingWindowMgr = mgr
         injectedText = ""
         partialTranscript = ""
 
-        try await mgr.startStreaming(source: .microphone)
+        // Hook up the partial-transcript callback BEFORE starting mic capture so
+        // we don't miss the first chunk's output. The callback fires every time
+        // new tokens are decoded (~every 320ms) with the cumulative transcript.
+        await mgr.setPartialTranscriptCallback { [weak self] partial in
+            Task { @MainActor [weak self] in
+                self?.handlePartial(partial)
+            }
+        }
+
         try startMicCapture(mgr: mgr)
         state = .listening
-
-        startUpdateConsumer(mgr: mgr)
     }
 
     public func stop() async {
@@ -169,21 +136,19 @@ public final class DictationManager: ObservableObject {
 
         // Drain all buffered mic audio into the ASR before finishing, otherwise
         // the last few hundred ms (whatever is still sitting in the AsyncStream
-        // buffer) get dropped and finish() produces no text for that tail.
+        // buffer) get dropped and the tail of the dictation never makes it to
+        // the encoder.
         await drainAndStopMicCapture()
-        updateConsumerTask?.cancel()
-        updateConsumerTask = nil
 
-        // Flush remaining audio, inject final text, then clean up fully.
-        // cleanup() closes the transcriptionUpdates AsyncStream so the consumer task can exit,
-        // and releases the internal ASR manager — required before reusing asrModels next session.
-        if let mgr = slidingWindowMgr {
+        // Flush remaining audio and inject any trailing text. We keep the
+        // manager itself (and its loaded models) so the next session can
+        // reuse it via reset() without paying the load cost again. The
+        // keep-alive timer below tears it down after a few idle minutes.
+        if let mgr = streamingMgr {
             let finalText = (try? await mgr.finish()) ?? ""
             injectDelta(to: finalText)
-            await mgr.cleanup()
         }
 
-        slidingWindowMgr = nil
         injectedText = ""
         partialTranscript = ""
         state = .idle
@@ -199,35 +164,14 @@ public final class DictationManager: ObservableObject {
         }
     }
 
-    // MARK: - Update consumption
+    // MARK: - Partial transcript handling
 
-    private func startUpdateConsumer(mgr: SlidingWindowAsrManager) {
-        updateConsumerTask = Task { [weak self] in
-            let updates = await mgr.transcriptionUpdates
-            for await update in updates {
-                guard let self, !Task.isCancelled else { break }
-                await self.handleUpdate(update, mgr: mgr)
-            }
-        }
-    }
-
-    private func handleUpdate(
-        _ update: SlidingWindowTranscriptionUpdate,
-        mgr: SlidingWindowAsrManager
-    ) async {
-        let confirmed = await mgr.confirmedTranscript
-        let volatile = await mgr.volatileTranscript
-
-        // Apply Inverse Text Normalization for the UI display
-        let normConfirmed = TextNormalizer.shared.normalizeSentence(confirmed)
-        let normVolatile = TextNormalizer.shared.normalizeSentence(volatile)
-
-        // Update the display with the full running transcript.
-        partialTranscript = [normConfirmed, normVolatile].filter { !$0.isEmpty }.joined(separator: " ")
-
-        // Inject using the unnormalized transcript to preserve prefix monotonicity,
-        // then normalize the delta right before injecting.
-        injectDelta(to: confirmed)
+    /// Called every ~320ms from the streaming engine with the cumulative
+    /// decoded transcript. Tokens are append-only inside the engine, so this
+    /// string only ever grows — `injectDelta` relies on that.
+    private func handlePartial(_ partial: String) {
+        partialTranscript = TextNormalizer.shared.normalizeSentence(partial)
+        injectDelta(to: partial)
     }
 
     /// Filler words stripped before injection. Matched case-insensitively at word boundaries.
@@ -265,7 +209,7 @@ public final class DictationManager: ObservableObject {
 
     // MARK: - Mic Capture
 
-    private func startMicCapture(mgr: SlidingWindowAsrManager) throws {
+    private func startMicCapture(mgr: StreamingEouAsrManager) throws {
         let engine = AVAudioEngine()
         // Apply the user-selected input device BEFORE querying the input
         // format — changing the device changes sample rate / channel count.
@@ -281,11 +225,11 @@ public final class DictationManager: ObservableObject {
         )
 
         // Forward tap buffers through an AsyncStream so a single consumer task
-        // can feed them to streamAudio() in arrival order. Spawning an
-        // unstructured Task per callback doesn't preserve ordering, and the
-        // tap-provided buffer is only valid for the duration of the callback
-        // (AVAudioEngine reuses the underlying memory), so we deep-copy
-        // synchronously before yielding.
+        // can feed them to the ASR in arrival order. Spawning an unstructured
+        // Task per callback doesn't preserve ordering, and the tap-provided
+        // buffer is only valid for the duration of the callback (AVAudioEngine
+        // reuses the underlying memory), so we deep-copy synchronously before
+        // yielding.
         let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream(
             bufferingPolicy: .bufferingNewest(64)
         )
@@ -295,7 +239,16 @@ public final class DictationManager: ObservableObject {
         micForwardTask = Task { [weak self, weak mgr] in
             for await buffer in stream {
                 guard let mgr, !Task.isCancelled else { break }
-                await mgr.streamAudio(buffer)
+                // Append to the engine's internal buffer, then drive any
+                // complete chunks through the decoder. processBufferedAudio
+                // is a no-op until enough samples for a full 320ms chunk
+                // have accumulated, so this is cheap per-buffer.
+                do {
+                    try await mgr.appendAudio(buffer)
+                    try await mgr.processBufferedAudio()
+                } catch {
+                    NSLog("Heard: Dictation chunk processing failed: %@", error.localizedDescription)
+                }
                 if let self {
                     self.tickBufferCount()
                 }
@@ -354,8 +307,10 @@ public final class DictationManager: ObservableObject {
     public func unloadModels() {
         unloadTask?.cancel()
         unloadTask = nil
-        asrModels = nil
-        loadedModelVersion = nil
+        if let mgr = streamingMgr {
+            Task { await mgr.cleanup() }
+        }
+        streamingMgr = nil
         NSLog("Heard: Dictation models unloaded")
     }
 }
