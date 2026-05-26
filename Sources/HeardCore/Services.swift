@@ -1164,12 +1164,31 @@ public final class PermissionCenter: ObservableObject {
 
     // Performs the async screen-capture check then calls the sync refresh.
     private func refreshAsync() async {
-        screenCaptureGrantedLive = await checkScreenCapturePermission()
+        // Use CGPreflightScreenCaptureAccess() for background polling — it reads the
+        // live TCC database without triggering any permission dialog.
+        //
+        // IMPORTANT: do NOT use SCShareableContent here. Calling
+        // SCShareableContent.excludingDesktopWindows() when screen recording hasn't been
+        // granted yet causes macOS to show the TCC permission dialog. Running that call
+        // every 3 s in this loop was the source of the infinite permission-request loop
+        // seen on fresh installs and non-dev machines.
+        //
+        // On macOS 15+ CGPreflightScreenCaptureAccess() may return a cached value for
+        // the running process. That cache is invalidated by TCC database changes, so a
+        // grant made in System Settings is visible to the background poll within a few
+        // seconds. If the very first poll after launch returns false, the user will see
+        // the "Not Granted" UI and can click "Grant…" to trigger the one-shot live check.
+        screenCaptureGrantedLive = CGPreflightScreenCaptureAccess()
         refresh()
     }
 
-    // SCShareableContent bypasses CGPreflightScreenCaptureAccess() caching on macOS 15+.
-    private func checkScreenCapturePermission() async -> Bool {
+    /// One-shot live permission check via SCShareableContent, which bypasses the
+    /// CGPreflightScreenCaptureAccess() per-process cache on macOS 15+.
+    ///
+    /// WARNING: This call triggers the macOS TCC permission dialog if screen recording
+    /// has not yet been granted. It must ONLY be called in direct response to an explicit
+    /// user action (e.g. the "Grant…" button), never from a background polling loop.
+    private func checkScreenCapturePermissionLive() async -> Bool {
         do {
             _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
             return true
@@ -1313,12 +1332,26 @@ public final class PermissionCenter: ObservableObject {
         // CGRequestScreenCaptureAccess() triggers the system prompt on macOS 14;
         // on macOS 15+ it redirects to System Settings. Use it unconditionally.
         CGRequestScreenCaptureAccess()
-        // Re-check after a brief delay using the live SCShareableContent path so the
-        // UI flips to "Granted" without waiting for the next 3 s polling tick.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+        // After the user interacts with System Settings and returns to the app, do a
+        // one-shot live check so the UI flips to "Granted" promptly rather than waiting
+        // for the next background poll. The 3-second delay gives the user enough time to
+        // finish in System Settings before the check fires.
+        //
+        // This is safe because it is a single call triggered by the user pressing
+        // "Grant…" — it does not loop. The background polling loop (refreshAsync) uses
+        // CGPreflightScreenCaptureAccess() only and never calls this path.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                self.screenCaptureGrantedLive = await self.checkScreenCapturePermission()
+                // Fast path: sync check first (covers most cases and avoids an
+                // unnecessary SCShareableContent call if the grant is already visible).
+                if CGPreflightScreenCaptureAccess() {
+                    self.screenCaptureGrantedLive = true
+                    self.refresh()
+                    return
+                }
+                // Bypass macOS 15+ per-process TCC cache with one-shot live check.
+                self.screenCaptureGrantedLive = await self.checkScreenCapturePermissionLive()
                 self.refresh()
             }
         }
@@ -1337,10 +1370,11 @@ public final class PermissionCenter: ObservableObject {
     }
 
     private func screenCaptureState() -> PermissionState {
-        // screenCaptureGrantedLive is updated async every 3 s via SCShareableContent,
-        // which bypasses the per-process cache that CGPreflightScreenCaptureAccess()
-        // uses on macOS 15+. The sync check handles the window before the first async
-        // result arrives (e.g. permission already granted at app launch).
+        // screenCaptureGrantedLive is updated every 3 s via the background polling task.
+        // Background polling uses CGPreflightScreenCaptureAccess() to avoid triggering
+        // TCC prompts. A one-shot SCShareableContent check (checkScreenCapturePermissionLive)
+        // is used to bypass the macOS 15+ per-process cache, but only when the user
+        // explicitly presses the "Grant…" button — never from the polling loop.
         Self.screenCapturePermissionState(
             syncGranted: CGPreflightScreenCaptureAccess(),
             liveGranted: screenCaptureGrantedLive
