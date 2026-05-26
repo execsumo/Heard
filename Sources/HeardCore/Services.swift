@@ -1146,13 +1146,17 @@ public final class PermissionCenter: ObservableObject {
     @Published public private(set) var statuses: [PermissionStatus] = []
 
     private var refreshTask: Task<Void, Never>?
-    // Live result from SCShareableContent — bypasses CGPreflightScreenCaptureAccess() caching
+    // Once true, never reset to false within a process lifetime: revocations only take
+    // effect after an app restart, so a downgrade within the same session is always stale.
     private var screenCaptureGrantedLive: Bool = false
+    // Set when the user clicks "Grant…" so the System Settings deactivation observer
+    // knows to do a live check when they return.
+    private var pendingScreenCaptureCheck = false
+    private var systemPrefsObserver: (any NSObjectProtocol)?
 
     public init() {
         refresh()
         // Periodically re-check permissions (catches grants made in System Settings).
-        // Uses async checks to bypass per-process TCC caching in macOS 15+.
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(3))
@@ -1164,21 +1168,18 @@ public final class PermissionCenter: ObservableObject {
 
     // Performs the async screen-capture check then calls the sync refresh.
     private func refreshAsync() async {
-        // Use CGPreflightScreenCaptureAccess() for background polling — it reads the
-        // live TCC database without triggering any permission dialog.
+        // Background polling uses CGPreflightScreenCaptureAccess() — it reads the live
+        // TCC database without triggering any permission dialog. On macOS 15+ the return
+        // value may be cached to the process's initial state and won't flip to true after
+        // a mid-session grant; the one-shot SCShareableContent check (fired when System
+        // Settings deactivates after a user-initiated "Grant…") handles that case.
         //
-        // IMPORTANT: do NOT use SCShareableContent here. Calling
-        // SCShareableContent.excludingDesktopWindows() when screen recording hasn't been
-        // granted yet causes macOS to show the TCC permission dialog. Running that call
-        // every 3 s in this loop was the source of the infinite permission-request loop
-        // seen on fresh installs and non-dev machines.
-        //
-        // On macOS 15+ CGPreflightScreenCaptureAccess() may return a cached value for
-        // the running process. That cache is invalidated by TCC database changes, so a
-        // grant made in System Settings is visible to the background poll within a few
-        // seconds. If the very first poll after launch returns false, the user will see
-        // the "Not Granted" UI and can click "Grant…" to trigger the one-shot live check.
-        screenCaptureGrantedLive = CGPreflightScreenCaptureAccess()
+        // NEVER overwrite a confirmed true with a potentially stale false: permission
+        // revocations only take effect after an app restart, so if screenCaptureGrantedLive
+        // is already true, preserve it — the poll result can only be wrong in that direction.
+        if !screenCaptureGrantedLive {
+            screenCaptureGrantedLive = CGPreflightScreenCaptureAccess()
+        }
         refresh()
     }
 
@@ -1332,25 +1333,47 @@ public final class PermissionCenter: ObservableObject {
         // CGRequestScreenCaptureAccess() triggers the system prompt on macOS 14;
         // on macOS 15+ it redirects to System Settings. Use it unconditionally.
         CGRequestScreenCaptureAccess()
-        // After the user interacts with System Settings and returns to the app, do a
-        // one-shot live check so the UI flips to "Granted" promptly rather than waiting
-        // for the next background poll. The 3-second delay gives the user enough time to
-        // finish in System Settings before the check fires.
-        //
-        // This is safe because it is a single call triggered by the user pressing
-        // "Grant…" — it does not loop. The background polling loop (refreshAsync) uses
-        // CGPreflightScreenCaptureAccess() only and never calls this path.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-            Task { @MainActor in
+
+        // Already confirmed — nothing more to do.
+        guard !screenCaptureGrantedLive else { return }
+
+        // Watch for System Settings to deactivate: that's the signal that the user has
+        // finished with the privacy page (granted or dismissed) and returned to another
+        // app. We do the one-shot live SCShareableContent check at that moment rather
+        // than after an arbitrary delay, so it always fires AFTER the user interaction
+        // rather than mid-interaction (which would re-trigger the TCC prompt).
+        pendingScreenCaptureCheck = true
+        guard systemPrefsObserver == nil else { return }
+        systemPrefsObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didDeactivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  self.pendingScreenCaptureCheck,
+                  let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  // macOS 13+: "System Settings"; earlier: "System Preferences" — both share this bundle ID
+                  app.bundleIdentifier == "com.apple.systempreferences"
+            else { return }
+
+            // One-shot: remove the observer and clear the flag immediately.
+            self.pendingScreenCaptureCheck = false
+            if let obs = self.systemPrefsObserver {
+                NSWorkspace.shared.notificationCenter.removeObserver(obs)
+                self.systemPrefsObserver = nil
+            }
+
+            Task { @MainActor [weak self] in
                 guard let self else { return }
-                // Fast path: sync check first (covers most cases and avoids an
-                // unnecessary SCShareableContent call if the grant is already visible).
+                // Fast path: sync check (works on macOS < 15 and after any restart).
                 if CGPreflightScreenCaptureAccess() {
                     self.screenCaptureGrantedLive = true
                     self.refresh()
                     return
                 }
-                // Bypass macOS 15+ per-process TCC cache with one-shot live check.
+                // Bypass macOS 15+ per-process TCC cache with one-shot SCShareableContent.
+                // Safe here: this is user-initiated and fires exactly once per "Grant…" click,
+                // only after the user has left System Settings.
                 self.screenCaptureGrantedLive = await self.checkScreenCapturePermissionLive()
                 self.refresh()
             }
