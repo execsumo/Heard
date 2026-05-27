@@ -404,6 +404,14 @@ public struct MenuBarView: View {
                     ) {
                         model.toggleDictation()
                     }
+                } else if settingsStore.settings.dictationEnabled && model.isDictating {
+                    MenuBarRow(
+                        title: "Stop Dictation",
+                        icon: "mic.slash",
+                        hotkey: settingsStore.settings.dictationHotkey.displayString
+                    ) {
+                        model.toggleDictation()
+                    }
                 }
 
                 MenuBarRow(title: "Open Transcripts", icon: "folder") {
