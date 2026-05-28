@@ -18,10 +18,12 @@ public final class DictationHUD {
     private static let fadeDelay: TimeInterval = 2.5
 
     public func show() {
+        let panelExisted = panel != nil
         if panel == nil { buildPanel() }
         fadeTimer?.invalidate()
         panel?.alphaValue = Self.activeAlpha
         panel?.orderFront(nil)
+        DebugFileLog.log("HUD.show — panelExisted=\(panelExisted) isVisible=\(panel?.isVisible ?? false) alpha=\(panel?.alphaValue ?? -1)")
         // Dim after a delay — stays visible but unobtrusive while recording
         fadeTimer = Timer.scheduledTimer(withTimeInterval: Self.fadeDelay, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -31,6 +33,7 @@ public final class DictationHUD {
     }
 
     public func hide() {
+        DebugFileLog.log("HUD.hide entry — panel=\(panel != nil) isVisible=\(panel?.isVisible ?? false) alpha=\(panel?.alphaValue ?? -1)")
         fadeTimer?.invalidate()
         fadeTimer = nil
         // Hide synchronously — the user just asked for stop, they want the
@@ -38,6 +41,7 @@ public final class DictationHUD {
         // hiccups can leave the HUD stuck visible even after stop fully runs.
         panel?.alphaValue = 0
         panel?.orderOut(nil)
+        DebugFileLog.log("HUD.hide done — isVisible=\(panel?.isVisible ?? false)")
     }
 
     private func animateAlpha(to target: CGFloat, duration: TimeInterval, completion: (@Sendable () -> Void)? = nil) {
