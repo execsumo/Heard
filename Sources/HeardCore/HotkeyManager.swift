@@ -228,10 +228,12 @@ public final class HotkeyManager {
     }
 
     func handleHotkeyPressed() {
+        DebugFileLog.log("handleHotkeyPressed id=\(id)")
         onPressed?()
     }
 
     func handleHotkeyReleased() {
+        DebugFileLog.log("handleHotkeyReleased id=\(id)")
         onReleased?()
     }
 

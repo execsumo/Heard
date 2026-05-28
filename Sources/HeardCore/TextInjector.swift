@@ -4,9 +4,6 @@ import Foundation
 /// Injects text into the focused text field of any app using CGEvent unicode insertion.
 public enum TextInjector {
 
-    /// Maximum UTF-16 units per CGEvent (macOS limit).
-    private static let cgEventUnicodeLimit = 20
-
     /// Check and prompt for Accessibility permission (needed for text injection).
     /// Call this when enabling dictation so the user gets the prompt early.
     @discardableResult
@@ -20,107 +17,30 @@ public enum TextInjector {
         return true
     }
 
-    /// Above this length, prefer clipboard paste over per-character CGEvent
-    /// unicode insertion. Rich-text apps (Notes, Word, Pages, modern web
-    /// editors) frequently drop events when they arrive in a rapid burst of
-    /// 12+ small chunks, so the "succeeded" CGEvents silently never show up.
-    /// Clipboard paste is a single Cmd+V — much more reliable for paragraphs.
-    private static let clipboardPasteThreshold = 50
-
-    /// Inject text into the currently focused app.
+    /// Inject text into the currently focused app via clipboard paste.
+    ///
+    /// We previously had a "short text < 50 chars uses CGEvent unicode insertion"
+    /// fast path to avoid touching the clipboard, but observed it dropping events
+    /// silently for short transcripts in Code/Electron apps even at 1–2 chunks.
+    /// CGEvent.postToPid returned success and the events never landed. Clipboard
+    /// paste is one Cmd+V regardless of length and works reliably; the original
+    /// pasteboard contents are restored after a short delay.
     public static func inject(_ text: String) {
-        guard AXIsProcessTrusted() else {
+        let trusted = AXIsProcessTrusted()
+        DebugFileLog.log("TextInjector.inject text=\"\(text)\" (len=\(text.count)) axTrusted=\(trusted)")
+        guard trusted else {
             NSLog("Heard: TextInjector cannot inject text — Accessibility not granted")
             return
         }
 
-        // Get the frontmost app's PID
-        guard let frontApp = NSWorkspace.shared.frontmostApplication else { return }
-        let pid = frontApp.processIdentifier
-
-        // Long text → clipboard paste (reliable, one Cmd+V instead of dozens of
-        // chunked unicode events that rich-text editors drop).
-        if text.count >= clipboardPasteThreshold {
-            insertViaClipboard(text)
-            return
+        if let frontApp = NSWorkspace.shared.frontmostApplication {
+            DebugFileLog.log("TextInjector injecting into frontApp=\(frontApp.localizedName ?? "?") pid=\(frontApp.processIdentifier)")
         }
 
-        // Short text → CGEvent unicode insertion (fast, no clipboard side effect).
-        if insertTextBulk(text, targetPID: pid) {
-            return
-        }
-
-        // Fallback: try HID tap (no PID targeting)
-        if insertTextBulkHID(text) {
-            return
-        }
-
-        // Last resort: clipboard paste
         insertViaClipboard(text)
     }
 
-    // MARK: - CGEvent Unicode Insertion
-
-    /// Send text as unicode keyboard events to a specific PID.
-    private static func insertTextBulk(_ text: String, targetPID: pid_t) -> Bool {
-        let utf16Array = Array(text.utf16)
-
-        // Split into chunks if needed
-        var offset = 0
-        while offset < utf16Array.count {
-            let end = min(offset + cgEventUnicodeLimit, utf16Array.count)
-            let chunk = Array(utf16Array[offset..<end])
-
-            guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
-                  let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
-            else {
-                return false
-            }
-
-            keyDown.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
-            keyUp.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
-
-            keyDown.postToPid(targetPID)
-            usleep(2000)
-            keyUp.postToPid(targetPID)
-            usleep(2000)
-
-            offset = end
-        }
-
-        return true
-    }
-
-    /// Send text as unicode keyboard events via HID (no PID targeting).
-    private static func insertTextBulkHID(_ text: String) -> Bool {
-        let utf16Array = Array(text.utf16)
-
-        var offset = 0
-        while offset < utf16Array.count {
-            let end = min(offset + cgEventUnicodeLimit, utf16Array.count)
-            let chunk = Array(utf16Array[offset..<end])
-
-            guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
-                  let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
-            else {
-                return false
-            }
-
-            keyDown.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
-            keyUp.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
-
-            keyDown.post(tap: .cghidEventTap)
-            usleep(2000)
-            keyUp.post(tap: .cghidEventTap)
-            usleep(2000)
-
-            offset = end
-        }
-
-        return true
-    }
-
-    // MARK: - Clipboard Fallback
+    // MARK: - Clipboard Paste
 
     private static func insertViaClipboard(_ text: String) {
         let pasteboard = NSPasteboard.general

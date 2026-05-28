@@ -80,13 +80,19 @@ public final class DictationManager: ObservableObject {
     // MARK: - Public API
 
     public func start() async throws {
-        guard state == .idle else { throw DictationError.notIdle(current: state) }
+        DebugFileLog.log("DictationManager.start entry — state=\(state.rawValue) asrLoaded=\(asrManager != nil) inputUID=\(inputDeviceUID ?? "default")")
+        guard state == .idle else {
+            DebugFileLog.log("DictationManager.start refused — not idle (state=\(state.rawValue))")
+            throw DictationError.notIdle(current: state)
+        }
 
         // Surface mic-permission denial up front rather than letting the user
         // stare at a silently-failing HUD — without mic access, AVAudioEngine
         // starts but no tap callbacks fire.
         let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        DebugFileLog.log("DictationManager.start mic auth status=\(micStatus.rawValue)")
         if micStatus == .denied || micStatus == .restricted {
+            DebugFileLog.log("DictationManager.start throwing microphoneDenied")
             throw DictationError.microphoneDenied
         }
 
@@ -99,6 +105,7 @@ public final class DictationManager: ObservableObject {
         // can start immediately instead of paying a cold-start cost while the
         // user waits for text to appear.
         try await ensureAsrManagerLoaded()
+        DebugFileLog.log("DictationManager.start ASR loaded ok")
 
         // Apply custom formatting commands
         TextNormalizer.shared.clearRules()
@@ -111,18 +118,25 @@ public final class DictationManager: ObservableObject {
 
         try startMicCapture()
         state = .listening
+        DebugFileLog.log("DictationManager.start success — state=listening")
     }
 
     public func stop() async {
-        guard state == .listening else { return }
+        DebugFileLog.log("DictationManager.stop entry — state=\(state.rawValue) bufferCount=\(bufferCount) sampleCount=\(audioBuffer.count)")
+        guard state == .listening else {
+            DebugFileLog.log("DictationManager.stop refused — not listening (state=\(state.rawValue))")
+            return
+        }
 
         // Drain mic — see drainAndStopMicCapture for why awaiting matters.
         await drainAndStopMicCapture()
+        DebugFileLog.log("DictationManager.stop drain complete — sampleCount=\(audioBuffer.count)")
 
         state = .transcribing
         defer {
             state = .idle
             scheduleModelUnload()
+            DebugFileLog.log("DictationManager.stop exit — back to idle")
         }
 
         // Snapshot and clear the buffer so a fast next-start doesn't see
@@ -134,23 +148,35 @@ public final class DictationManager: ObservableObject {
         let minSamples = 16_000
         guard samples.count >= minSamples else {
             NSLog("Heard: Dictation audio too short to transcribe (%d samples)", samples.count)
+            DebugFileLog.log("DictationManager.stop short audio — sampleCount=\(samples.count) < \(minSamples)")
             return
         }
 
-        guard let mgr = asrManager else { return }
+        guard let mgr = asrManager else {
+            DebugFileLog.log("DictationManager.stop no asrManager — skipping transcription")
+            return
+        }
 
         do {
             var decoderState = TdtDecoderState.make()
+            DebugFileLog.log("DictationManager.stop calling transcribe — samples=\(samples.count)")
             let result = try await mgr.transcribe(
                 samples, decoderState: &decoderState, language: .english
             )
+            DebugFileLog.log("DictationManager.stop transcribe returned — rawText=\"\(result.text)\" (len=\(result.text.count))")
             let boosted = await rescoreWithVocabulary(result: result, samples: samples)
             let normalized = TextNormalizer.shared.normalize(result: boosted).text
             let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
+            DebugFileLog.log("DictationManager.stop final text=\"\(trimmed)\" (len=\(trimmed.count))")
+            guard !trimmed.isEmpty else {
+                DebugFileLog.log("DictationManager.stop empty after normalize — skipping inject")
+                return
+            }
+            DebugFileLog.log("DictationManager.stop firing onUtterance")
             onUtterance?(trimmed)
         } catch {
             NSLog("Heard: Dictation transcription failed: %@", error.localizedDescription)
+            DebugFileLog.log("DictationManager.stop transcribe threw: \(error)")
         }
     }
 
@@ -260,6 +286,7 @@ public final class DictationManager: ObservableObject {
     // MARK: - Mic Capture
 
     private func startMicCapture() throws {
+        DebugFileLog.log("startMicCapture entry — requestedUID=\(inputDeviceUID ?? "default")")
         let engine = AVAudioEngine()
         let applied = AudioInputDevices.apply(uid: inputDeviceUID, to: engine)
         let inputNode = engine.inputNode
@@ -271,6 +298,7 @@ public final class DictationManager: ObservableObject {
             hwFormat.channelCount,
             applied ? (inputDeviceUID ?? "default") : "default"
         )
+        DebugFileLog.log("startMicCapture mic format — sr=\(hwFormat.sampleRate) ch=\(hwFormat.channelCount) deviceApplied=\(applied)")
 
         // Buffers from the tap callback are only valid for the duration of the
         // callback (AVAudioEngine reuses the underlying memory), so we
@@ -302,7 +330,13 @@ public final class DictationManager: ObservableObject {
         }
 
         engine.prepare()
-        try engine.start()
+        do {
+            try engine.start()
+            DebugFileLog.log("startMicCapture engine.start ok — running=\(engine.isRunning)")
+        } catch {
+            DebugFileLog.log("startMicCapture engine.start threw: \(error)")
+            throw error
+        }
         micEngine = engine
     }
 
@@ -311,8 +345,10 @@ public final class DictationManager: ObservableObject {
         bufferCount += 1
         if bufferCount == 1 {
             NSLog("Heard: Dictation received first mic buffer")
+            DebugFileLog.log("appendSamples first buffer received — samples=\(samples.count)")
         } else if bufferCount % 60 == 0 {
             NSLog("Heard: Dictation buffers streamed=%d totalSamples=%d", bufferCount, audioBuffer.count)
+            DebugFileLog.log("appendSamples buffers=\(bufferCount) totalSamples=\(audioBuffer.count)")
         }
     }
 
