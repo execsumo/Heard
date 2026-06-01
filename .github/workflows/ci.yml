@@ -138,4 +138,4 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Casks/heard.rb
           git commit -m "Update heard to v${VERSION}"
-          git push origin HEAD:refs/heads/master
+          git push origin HEAD:refs/heads/main

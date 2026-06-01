@@ -1,0 +1,44 @@
+name: Update Homebrew Tap
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 0.2.2)'
+        required: true
+        default: '0.2.2'
+      sha256:
+        description: 'SHA256 of the release DMG'
+        required: true
+        default: '65a620aa747a55121c4d82cfeab598bfc5f0796c4f402cebed7b91a0c6f906b3'
+
+jobs:
+  update-tap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update local cask
+        run: |
+          VERSION="${{ inputs.version }}"
+          SHA256="${{ inputs.sha256 }}"
+          sed -i \
+            -e "s/version \"[^\"]*\"/version \"${VERSION}\"/" \
+            -e "s/sha256 \"[^\"]*\"/sha256 \"${SHA256}\"/" \
+            Casks/heard.rb
+
+      - name: Push cask to Homebrew tap
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          git clone "https://execsumo:${GH_PAT}@github.com/execsumo/homebrew-heard.git" homebrew-tap
+          mkdir -p homebrew-tap/Casks
+          cp Casks/heard.rb homebrew-tap/Casks/heard.rb
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/heard.rb
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "Update heard to v${VERSION}"
+          git push origin HEAD:refs/heads/main
