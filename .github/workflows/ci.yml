@@ -109,7 +109,7 @@ jobs:
             -e "s/sha256 \"[^\"]*\"/sha256 \"${SHA256}\"/" \
             Casks/heard.rb
 
-      # Push the cask update back to master. The release commit is already at master HEAD
+      # Push the cask update back to main. The release commit is already at main HEAD
       # (release.sh pushed it before the tag), so this is always a fast-forward.
       # [skip ci] prevents this commit from re-triggering the workflow.
       - name: Commit and push cask update
@@ -121,7 +121,7 @@ jobs:
           git add Casks/heard.rb
           git commit -m "Update Homebrew cask to v${{ steps.meta.outputs.version }} [skip ci]"
           git remote set-url origin "https://execsumo:${GH_PAT}@github.com/execsumo/Heard.git"
-          git push origin HEAD:refs/heads/master
+          git push origin HEAD:refs/heads/main
 
       # Clone the Homebrew tap repo, copy the updated cask, and push so that
       # `brew upgrade --cask heard` picks up the new version automatically.
