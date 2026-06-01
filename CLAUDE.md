@@ -29,7 +29,7 @@ No Xcode project — this is a Swift Package Manager executable. macOS 15.0+ req
 - `Heard.entitlements` — Entitlements (audio input only, no sandbox)
 - `scripts/bundle.sh` — Build script for .app bundle
 - `scripts/dmg.sh` — Distribution pipeline: release build → sign → notarize → staple → DMG → SHA256 (called by CI, not directly)
-- `scripts/release.sh` — **Use this to ship a release.** Bumps `Info.plist` version, commits, tags `v<version>`, and pushes — triggering the CI release pipeline. Usage: `./scripts/release.sh 0.3.0`. Requires being on `master` with a clean tree. Notarization in CI needs `APPLE_ID`, `APPLE_APP_PASSWORD`, `APPLE_TEAM_ID` secrets set in GitHub Actions.
+- `scripts/release.sh` — **Use this to ship a release.** Bumps `Info.plist` version, commits, tags `v<version>`, and pushes — triggering the CI release pipeline. Usage: `./scripts/release.sh 0.3.0`. Requires being on `main` with a clean tree. Notarization in CI needs `APPLE_ID`, `APPLE_APP_PASSWORD`, `APPLE_TEAM_ID` secrets set in GitHub Actions.
 - `.github/workflows/ci.yml` — CI: build + test on all pushes; release bundle + GitHub Release upload on tag push
 
 ## Working Rules

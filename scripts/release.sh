@@ -21,10 +21,10 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     exit 1
 fi
 
-# Preflight: must be on master
+# Preflight: must be on main
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
-if [[ "$BRANCH" != "master" ]]; then
-    echo "ERROR: Must be on master branch (currently on '$BRANCH')"
+if [[ "$BRANCH" != "main" ]]; then
+    echo "ERROR: Must be on main branch (currently on '$BRANCH')"
     exit 1
 fi
 
@@ -78,7 +78,7 @@ git commit -m "Release v${VERSION}"
 git tag "v${VERSION}"
 
 echo "==> Pushing commit and tag to origin..."
-git push origin master
+git push origin main
 git push origin "v${VERSION}"
 
 echo ""
