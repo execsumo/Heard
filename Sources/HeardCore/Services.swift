@@ -1158,6 +1158,10 @@ public final class PermissionCenter: ObservableObject {
         refresh()
         // Periodically re-check permissions (catches grants made in System Settings).
         refreshTask = Task { [weak self] in
+            // Run an immediate authoritative check so an already-granted permission is
+            // reflected at launch rather than after the first 3 s tick — this is what
+            // makes a grant from a previous session stick after an app restart.
+            await self?.refreshAsync()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(3))
                 guard let self, !Task.isCancelled else { return }
@@ -1177,10 +1181,41 @@ public final class PermissionCenter: ObservableObject {
         // NEVER overwrite a confirmed true with a potentially stale false: permission
         // revocations only take effect after an app restart, so if screenCaptureGrantedLive
         // is already true, preserve it — the poll result can only be wrong in that direction.
+        //
+        // CGPreflightScreenCaptureAccess() can also return a stale false on a FRESH launch
+        // on macOS 15+ (notably for ad-hoc signed builds), which leaves a previously-granted
+        // permission showing as "Not Granted" after an app restart. Fall back to a
+        // non-prompting window-list probe, which reads the live grant without ever
+        // triggering the TCC dialog (so it is safe in this background loop).
         if !screenCaptureGrantedLive {
             screenCaptureGrantedLive = CGPreflightScreenCaptureAccess()
+                || Self.screenRecordingGrantedViaWindowList()
         }
         refresh()
+    }
+
+    /// Authoritative, non-prompting Screen Recording check used by the background poll.
+    ///
+    /// Reading the window *title* (`kCGWindowName`) of a window owned by another process
+    /// requires Screen Recording permission on macOS 10.15+. If any such title is
+    /// readable, the permission is granted. Unlike `SCShareableContent`, this never shows
+    /// the TCC prompt when permission is missing, so it is safe to call repeatedly.
+    /// It can yield a transient false negative if no other app currently has a titled
+    /// on-screen window, but the poll retries every 3 s and never downgrades a confirmed
+    /// grant, so the result converges to the correct value.
+    private nonisolated static func screenRecordingGrantedViaWindowList() -> Bool {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+        let ourPID = Int(ProcessInfo.processInfo.processIdentifier)
+        for window in windows {
+            guard let pid = window[kCGWindowOwnerPID as String] as? Int, pid != ourPID else { continue }
+            if let name = window[kCGWindowName as String] as? String, !name.isEmpty {
+                return true
+            }
+        }
+        return false
     }
 
     /// One-shot live permission check via SCShareableContent, which bypasses the
