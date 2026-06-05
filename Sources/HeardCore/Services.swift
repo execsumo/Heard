@@ -654,10 +654,6 @@ public final class RecordingManager: ObservableObject {
         }
 
         // ── Step 2: Create the process tap ────────────────────────────────────
-        // Screen Recording permission is required for AudioHardwareCreateProcessTap.
-        if !CGPreflightScreenCaptureAccess() {
-            NSLog("Heard: Screen Recording permission not granted — process tap will likely fail")
-        }
         let tapDesc = CATapDescription(stereoMixdownOfProcesses: processObjectIDs)
         tapDesc.uuid = UUID()
         tapDesc.name = "Heard Tap"
