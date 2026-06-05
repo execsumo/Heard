@@ -57,7 +57,9 @@ public enum RosterReader {
     /// Attempt to read participant names from the Teams roster.
     /// Returns an empty array if Accessibility isn't granted or the roster isn't visible.
     public static func readRoster(pid teamsPID: pid_t?) -> [String] {
-        guard AXIsProcessTrusted() else { return [] }
+        // Skip the AXIsProcessTrusted() pre-check: it returns a stale cached false on
+        // macOS 15+ even when access is granted. AX API calls return .apiDisabled on
+        // their own when genuinely denied, so the result is the same either way.
         guard let pid = teamsPID else { return parseWindowTitle() }
 
         let app = AXUIElementNode(AXUIElementCreateApplication(pid))
@@ -185,8 +187,6 @@ public enum RosterReader {
     }
 
     private static func parseWindowTitle() -> [String] {
-        guard AXIsProcessTrusted() else { return [] }
-
         let teamsNames: Set<String> = [
             "Microsoft Teams",
             "Microsoft Teams (work or school)",
