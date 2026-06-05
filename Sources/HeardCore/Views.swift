@@ -1125,8 +1125,8 @@ public struct SettingsView: View {
             sectionGroup("Permissions") {
                 SettingsCard {
                     let perms = model.permissionCenter.statuses
-                    ForEach(Array(perms.enumerated()), id: \.offset) { index, perm in
-                        CardRow(isLast: index == perms.count - 1) {
+                    ForEach(Array(perms.enumerated()), id: \.offset) { _, perm in
+                        CardRow(isLast: true) {
                             PermissionRow(permission: perm, model: model)
                         }
                     }
