@@ -8,13 +8,16 @@ public enum TextInjector {
     /// Call this when enabling dictation so the user gets the prompt early.
     @discardableResult
     public static func ensureAccessibility() -> Bool {
-        let trusted = AXIsProcessTrusted()
-        if !trusted {
-            // Prompt the user with the system dialog
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-            return AXIsProcessTrustedWithOptions(options)
-        }
-        return true
+        if AXIsProcessTrusted() { return true }
+        // Live fallback: AXIsProcessTrusted() can return a stale false on macOS 15+.
+        // Confirm with a real AX API call before showing the permission prompt.
+        let sysWide = AXUIElementCreateSystemWide()
+        var value: AnyObject?
+        let err = AXUIElementCopyAttributeValue(sysWide, kAXFocusedApplicationAttribute as CFString, &value)
+        if err != .apiDisabled { return true }
+        // Genuinely not granted — show the system prompt.
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
     }
 
     /// Inject text into the currently focused app via clipboard paste.
@@ -26,7 +29,15 @@ public enum TextInjector {
     /// paste is one Cmd+V regardless of length and works reliably; the original
     /// pasteboard contents are restored after a short delay.
     public static func inject(_ text: String) {
-        let trusted = AXIsProcessTrusted()
+        var trusted = AXIsProcessTrusted()
+        if !trusted {
+            // Live fallback: AXIsProcessTrusted() returns a stale cached false on macOS 15+
+            // even when Accessibility IS granted. A real AX API call returns .apiDisabled only
+            // when genuinely denied — if it returns any other error (or success), access is live.
+            let sysWide = AXUIElementCreateSystemWide()
+            var value: AnyObject?
+            trusted = AXUIElementCopyAttributeValue(sysWide, kAXFocusedApplicationAttribute as CFString, &value) != .apiDisabled
+        }
         DebugFileLog.log("TextInjector.inject text=\"\(text)\" (len=\(text.count)) axTrusted=\(trusted)")
         guard trusted else {
             NSLog("Heard: TextInjector cannot inject text — Accessibility not granted")

@@ -342,7 +342,11 @@ public final class MeetingDetector: ObservableObject {
     /// Strips the trailing app-name suffix (` | Microsoft Teams`, ` - Zoom`, etc.).
     /// Returns nil if AX is denied, no window matches, or the title is just a placeholder.
     private static func extractMeetingTitle(pid: pid_t?, source: MeetingApp) -> String? {
-        guard AXIsProcessTrusted(), let pid else { return nil }
+        // Do not pre-check AXIsProcessTrusted() — it can return a stale cached false on
+        // macOS 15+ even when Accessibility IS granted. AXUIElementCopyAttributeValue
+        // returns .apiDisabled on its own when access is genuinely denied, so the guard
+        // below handles the not-granted case correctly without the pre-check.
+        guard let pid else { return nil }
 
         let app = AXUIElementCreateApplication(pid)
         var windowsRef: AnyObject?
@@ -650,10 +654,6 @@ public final class RecordingManager: ObservableObject {
         }
 
         // ── Step 2: Create the process tap ────────────────────────────────────
-        // Screen Recording permission is required for AudioHardwareCreateProcessTap.
-        if !CGPreflightScreenCaptureAccess() {
-            NSLog("Heard: Screen Recording permission not granted — process tap will likely fail")
-        }
         let tapDesc = CATapDescription(stereoMixdownOfProcesses: processObjectIDs)
         tapDesc.uuid = UUID()
         tapDesc.name = "Heard Tap"
@@ -1148,7 +1148,15 @@ public final class PermissionCenter: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     // Once true, never reset to false within a process lifetime: revocations only take
     // effect after an app restart, so a downgrade within the same session is always stale.
-    private var screenCaptureGrantedLive: Bool = false
+    // Initialized from UserDefaults so a grant from a previous session is reflected on the
+    // next launch — CGPreflightScreenCaptureAccess() returns a stale false on macOS 15+.
+    private var screenCaptureGrantedLive: Bool = UserDefaults.standard.bool(forKey: "screenCaptureTCCGranted") {
+        didSet {
+            if screenCaptureGrantedLive && !oldValue {
+                UserDefaults.standard.set(true, forKey: "screenCaptureTCCGranted")
+            }
+        }
+    }
     // Set when the user clicks "Grant…" so the System Settings deactivation observer
     // knows to do a live check when they return.
     private var pendingScreenCaptureCheck = false
@@ -1263,7 +1271,13 @@ public final class PermissionCenter: ObservableObject {
     }
 
     public var isAccessibilityGranted: Bool {
-        AXIsProcessTrusted()
+        if AXIsProcessTrusted() { return true }
+        // AXIsProcessTrusted can return a stale false on macOS 15+. Fall back to a live
+        // AX API call: only kAXErrorAPIDisabled means "no permission".
+        let sysWide = AXUIElementCreateSystemWide()
+        var value: AnyObject?
+        let err = AXUIElementCopyAttributeValue(sysWide, kAXFocusedApplicationAttribute as CFString, &value)
+        return err != .apiDisabled
     }
 
     public var isScreenCaptureGranted: Bool {

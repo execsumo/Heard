@@ -131,6 +131,11 @@ if [[ "$RESET_TCC" -eq 1 ]]; then
     tccutil reset ScreenCapture "$BUNDLE_ID" || true
     tccutil reset Accessibility "$BUNDLE_ID" || true
     tccutil reset AudioCapture "$BUNDLE_ID" || true
+    # Also clear the UserDefaults keys that persist confirmed-granted state across
+    # app restarts — without this, the app would still show permissions as Granted
+    # after a --reset, because the cached UserDefaults values survive tccutil.
+    defaults delete "$BUNDLE_ID" screenCaptureTCCGranted 2>/dev/null || true
+    defaults delete "$BUNDLE_ID" audioCaptureTCCGranted 2>/dev/null || true
 fi
 
 echo "==> Installing to $INSTALLED..."
