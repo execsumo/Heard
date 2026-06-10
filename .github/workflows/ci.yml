@@ -5,6 +5,14 @@ on:
     branches: ['**']
     tags: ['v*']
   pull_request:
+  # Manual release: runs the full release pipeline from main HEAD. The version must
+  # already be bumped in Info.plist (release.sh does this). The tag is created by
+  # action-gh-release using GITHUB_TOKEN, which does not re-trigger this workflow.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.2.3) — must match Info.plist'
+        required: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -32,13 +40,34 @@ jobs:
 
   release:
     runs-on: macos-15
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: build-and-test
     permissions:
       contents: write
 
     steps:
       - uses: actions/checkout@v4
+
+      # Validate the release version before the expensive build/notarize steps.
+      # On tag push the version comes from the tag; on manual dispatch from the input.
+      - name: Resolve release version
+        id: version
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+            if git ls-remote --tags origin "refs/tags/v${VERSION}" | grep -q .; then
+              echo "ERROR: tag v${VERSION} already exists — bump Info.plist and pass a new version"
+              exit 1
+            fi
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          PLIST_VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Info.plist)
+          if [[ "$VERSION" != "$PLIST_VERSION" ]]; then
+            echo "ERROR: release version ${VERSION} does not match Info.plist CFBundleShortVersionString (${PLIST_VERSION})"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Cache SPM dependencies
         uses: actions/cache@v4
@@ -86,16 +115,19 @@ jobs:
       - name: Collect release metadata
         id: meta
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ steps.version.outputs.version }}"
           DMG="dist/Heard-${VERSION}.dmg"
           SHA256=$(shasum -a 256 "$DMG" | awk '{print $1}')
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
           echo "dmg=${DMG}" >> "$GITHUB_OUTPUT"
 
+      # tag_name makes this work for workflow_dispatch too: the action creates the
+      # tag at the built commit if it doesn't exist yet (no-op on tag-push runs).
       - name: Upload DMG to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.meta.outputs.version }}
           files: ${{ steps.meta.outputs.dmg }}
           generate_release_notes: true
           token: ${{ secrets.GITHUB_TOKEN }}

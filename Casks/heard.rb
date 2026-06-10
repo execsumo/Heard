@@ -13,8 +13,18 @@ cask "heard" do
 
   app "Heard.app"
 
+  # Quit the running menu bar app before uninstalling so the bundle isn't replaced
+  # under a live process (stale TCC/permission state otherwise survives the swap).
+  uninstall quit: "com.execsumo.heard"
+
+  # `brew uninstall --zap heard` removes all app data. Note: a plain `brew uninstall`
+  # intentionally keeps these so settings/speaker profiles survive an upgrade.
   zap trash: [
+    "~/Library/Application Support/FluidAudio", # on-device ML model cache (can be several GB)
     "~/Library/Application Support/Heard",
-    "~/Library/Preferences/com.execsumo.heard.plist",
+    "~/Library/Caches/com.execsumo.heard",
+    "~/Library/HTTPStorages/com.execsumo.heard",
+    "~/Library/Preferences/com.execsumo.heard.plist", # UserDefaults incl. cached TCC-granted flags
+    "~/Library/Saved Application State/com.execsumo.heard.savedState",
   ]
 end
