@@ -95,12 +95,26 @@ final class JSONStore {
     func load<T: Decodable>(_ type: T.Type, from url: URL, defaultValue: @autoclosure () -> T) -> T {
         guard
             FileManager.default.fileExists(atPath: url.path),
-            let data = try? Data(contentsOf: url),
-            let value = try? decoder.decode(type, from: data)
+            let data = try? Data(contentsOf: url)
         else {
             return defaultValue()
         }
-        return value
+        do {
+            return try decoder.decode(type, from: data)
+        } catch {
+            Self.quarantine(url, decodeError: error)
+            return defaultValue()
+        }
+    }
+
+    /// A store file exists but can't be decoded — don't silently reset over it.
+    /// Move it aside so the data stays recoverable and the decode bug debuggable.
+    static func quarantine(_ url: URL, decodeError: Error) {
+        let backup = url.appendingPathExtension("corrupt")
+        try? FileManager.default.removeItem(at: backup)
+        try? FileManager.default.moveItem(at: url, to: backup)
+        NSLog("Heard: Failed to decode %@ (%@) — moved aside to %@ and starting fresh",
+              url.lastPathComponent, decodeError.localizedDescription, backup.lastPathComponent)
     }
 
     func save<T: Encodable>(_ value: T, to url: URL) throws {
@@ -268,10 +282,20 @@ public final class SpeakerStore: ObservableObject {
     }
 
     public func updateStats(id: UUID, addDuration: TimeInterval, addWords: Int) {
-        guard let index = speakers.firstIndex(where: { $0.id == id }) else { return }
-        speakers[index].totalMeetingDuration += addDuration
-        speakers[index].totalWordCount += addWords
-        persist()
+        updateStats([(id: id, addDuration: addDuration, addWords: addWords)])
+    }
+
+    /// Batched variant: one disk write for the whole meeting's stat updates
+    /// instead of a full JSON rewrite per speaker.
+    public func updateStats(_ updates: [(id: UUID, addDuration: TimeInterval, addWords: Int)]) {
+        var changed = false
+        for update in updates {
+            guard let index = speakers.firstIndex(where: { $0.id == update.id }) else { continue }
+            speakers[index].totalMeetingDuration += update.addDuration
+            speakers[index].totalWordCount += update.addWords
+            changed = true
+        }
+        if changed { persist() }
     }
 
     public func delete(id: UUID) {
@@ -291,9 +315,17 @@ public final class SpeakerStore: ObservableObject {
         guard retentionDays > 0 else { return 0 }
         let cutoff = Date().addingTimeInterval(-Double(retentionDays) * 86400)
         let stale = speakers.filter { $0.lastSeen < cutoff }
+        guard !stale.isEmpty else { return 0 }
+        // Batched: delete clips per speaker but rewrite the JSON file once,
+        // not once per archived profile.
+        let staleIDs = Set(stale.map(\.id))
         for speaker in stale {
-            delete(id: speaker.id)
+            for clipURL in speaker.audioClipURLs {
+                try? FileManager.default.removeItem(at: clipURL)
+            }
         }
+        speakers.removeAll { staleIDs.contains($0.id) }
+        persist()
         return stale.count
     }
 
@@ -335,10 +367,14 @@ public final class SpeakerStore: ObservableObject {
             return contents.speakers
         }
         // Legacy format: bare [SpeakerProfile].
-        if let speakers = try? decoder.decode([SpeakerProfile].self, from: data) {
-            return speakers
+        do {
+            return try decoder.decode([SpeakerProfile].self, from: data)
+        } catch {
+            // The speaker database is the one store whose silent loss really
+            // hurts (voice embeddings accumulate over months) — quarantine it.
+            JSONStore.quarantine(url, decodeError: error)
+            return []
         }
-        return []
     }
 }
 

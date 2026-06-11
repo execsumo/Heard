@@ -337,6 +337,9 @@ public struct MenuBarView: View {
             if recordingManager.appAudioTapFailed && recordingManager.activeSession != nil {
                 tapFailedBanner
             }
+            if recordingManager.micCaptureFailed && recordingManager.activeSession != nil {
+                micFailedBanner
+            }
 
             statusHeader
                 .padding(.horizontal, 10)
@@ -485,13 +488,16 @@ public struct MenuBarView: View {
     private var statusHeader: some View {
         if let session = recordingManager.activeSession {
             let tapFailed = recordingManager.appAudioTapFailed
+            let micFailed = recordingManager.micCaptureFailed
             StatusHeaderCard(
                 dotColor: HeardTheme.Paper.bad,
                 pulsing: true,
-                title: tapFailed ? "Recording (mic only)" : "Recording",
+                title: tapFailed ? "Recording (mic only)" : (micFailed ? "Recording (no mic)" : "Recording"),
                 subtitle: tapFailed
                     ? "No system audio — check Screen Recording"
-                    : (session.title.isEmpty ? "Meeting" : session.title),
+                    : micFailed
+                        ? "Mic capture failed — check input device"
+                        : (session.title.isEmpty ? "Meeting" : session.title),
                 dark: true,
                 trailing: AnyView(
                     RecordingTimerView(startTime: session.startTime)
@@ -623,6 +629,28 @@ public struct MenuBarView: View {
                     .foregroundStyle(HeardTheme.Paper.ink)
                     .lineLimit(3)
                 Text("Verify Screen Recording permission in System Settings.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(HeardTheme.Paper.mute)
+            }
+            Spacer(minLength: 4)
+        }
+        .padding(10)
+        .background(HeardTheme.Paper.warnSoft, in: RoundedRectangle(cornerRadius: HeardTheme.Radius.inline))
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
+    }
+
+    private var micFailedBanner: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(HeardTheme.Paper.warn)
+                .font(.caption)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Mic capture failed. Recording only the other participants.")
+                    .font(.caption)
+                    .foregroundStyle(HeardTheme.Paper.ink)
+                    .lineLimit(3)
+                Text("Check the input device in Settings → General and the Microphone permission.")
                     .font(.system(size: 10))
                     .foregroundStyle(HeardTheme.Paper.mute)
             }

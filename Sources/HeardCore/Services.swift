@@ -473,6 +473,8 @@ public final class RecordingManager: ObservableObject {
     @Published public private(set) var activeSession: RecordingSession?
     /// True when the app-audio process tap failed — recording is mic-only.
     @Published public private(set) var appAudioTapFailed: Bool = false
+    /// True when the mic engine failed to start — recording is app-audio-only.
+    @Published public private(set) var micCaptureFailed: Bool = false
 
     /// CoreAudio UID of the input device to record the mic track from. nil =
     /// follow the system default input device. Set by AppModel from settings.
@@ -543,20 +545,40 @@ public final class RecordingManager: ObservableObject {
         let appPath = base.appendingPathComponent("\(stamp)_app.wav")
         let micPath = base.appendingPathComponent("\(stamp)_mic.wav")
 
-        // Set up mic recording first
-        try setupMicRecording(to: micPath)
+        // Mic is best-effort, like the app tap: a broken or vanished input
+        // device shouldn't lose the whole meeting. If the mic fails but the
+        // app tap comes up, record app-audio-only and surface the degraded
+        // state in the menu bar.
+        micCaptureFailed = false
+        var micError: Error?
+        do {
+            try setupMicRecording(to: micPath)
+        } catch {
+            micError = error
+            micCaptureFailed = true
+            NSLog("Heard: Mic capture failed (recording app audio only): \(error.localizedDescription)")
+        }
 
         // Set up app audio recording if we have a meeting-app PID
         appAudioTapFailed = false
         currentSource = source
+        var appAudioRunning = false
         if let pid = meetingPID {
             do {
                 try setupAppAudioRecording(pid: pid, to: appPath)
+                appAudioRunning = true
             } catch {
                 // App audio is best-effort — continue with mic-only if tap fails
                 appAudioTapFailed = true
                 NSLog("Heard: App audio tap failed (recording mic-only): \(error.localizedDescription)")
             }
+        }
+
+        // Neither track is capturing — there is nothing to record.
+        if let micError, !appAudioRunning {
+            micCaptureFailed = false
+            appAudioTapFailed = false
+            throw micError
         }
 
         let micDelay: TimeInterval
@@ -623,6 +645,7 @@ public final class RecordingManager: ObservableObject {
         appStartTime = nil
 
         appAudioTapFailed = false
+        micCaptureFailed = false
         defer { activeSession = nil }
         return activeSession
     }
@@ -662,9 +685,20 @@ public final class RecordingManager: ObservableObject {
             interleaved: false
         )
 
+        // Log-once flag for write failures; the tap fires ~10×/s so logging
+        // every failure would flood the log. Torn read at worst logs twice.
+        final class WriteFailureFlag: @unchecked Sendable { var logged = false }
+        let writeFailure = WriteFailureFlag()
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: monoFormat) {
             [weak self] buffer, _ in
-            try? file.write(from: buffer)
+            do {
+                try file.write(from: buffer)
+            } catch {
+                if !writeFailure.logged {
+                    writeFailure.logged = true
+                    NSLog("Heard: Mic WAV write failed (disk full?): \(error.localizedDescription)")
+                }
+            }
             self?.micBufferContinuation?.yield(buffer)
         }
 
@@ -868,7 +902,18 @@ public final class RecordingManager: ObservableObject {
                 ctx.firstAudioAt = CACurrentMediaTime()
             }
 
-            try? ctx.file.write(from: buf)
+            do {
+                try ctx.file.write(from: buf)
+            } catch {
+                // Surface write failures (disk full, volume gone) instead of
+                // silently producing an empty WAV. Counted into the periodic
+                // stats line; logged in full once.
+                ctx.renderErrorCount &+= 1
+                ctx.lastRenderError = OSStatus(truncatingIfNeeded: (error as NSError).code)
+                if ctx.renderErrorCount == 1 {
+                    NSLog("Heard: App audio WAV write failed (disk full?): %@", error.localizedDescription)
+                }
+            }
         }
         guard ioErr == noErr, let validProc = ioProc else {
             NSLog("Heard: AudioDeviceCreateIOProcIDWithBlock failed (%d)", ioErr)
@@ -2836,13 +2881,11 @@ public final class PipelineProcessor: ObservableObject {
             wordsPerSpeaker[segment.speaker, default: 0] += words
         }
 
-        // Apply to existing known speakers
-        for profile in speakerStore.speakers {
-            if segmentSpeakers.contains(profile.name) {
-                let words = wordsPerSpeaker[profile.name] ?? 0
-                speakerStore.updateStats(id: profile.id, addDuration: meetingDuration, addWords: words)
-            }
-        }
+        // Apply to existing known speakers (batched — one disk write)
+        let statUpdates = speakerStore.speakers
+            .filter { segmentSpeakers.contains($0.name) }
+            .map { (id: $0.id, addDuration: meetingDuration, addWords: wordsPerSpeaker[$0.name] ?? 0) }
+        speakerStore.updateStats(statUpdates)
 
         // Apply to unmatched speakers
         for i in unmatchedSpeakerInfo.indices {
