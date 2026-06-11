@@ -62,7 +62,11 @@ public enum RosterReader {
         // their own when genuinely denied, so the result is the same either way.
         guard let pid = teamsPID else { return parseWindowTitle() }
 
-        let app = AXUIElementNode(AXUIElementCreateApplication(pid))
+        let element = AXUIElementCreateApplication(pid)
+        // Bound each AX round-trip so a busy/hung Teams can't stall the caller
+        // for the system default timeout on every node of the tree walk.
+        AXUIElementSetMessagingTimeout(element, 1.0)
+        let app = AXUIElementNode(element)
         let names = readRosterFromNode(app)
         return names.isEmpty ? parseWindowTitle() : names
     }

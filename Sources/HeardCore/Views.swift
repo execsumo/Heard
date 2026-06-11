@@ -527,7 +527,7 @@ public struct MenuBarView: View {
                 dotColor: HeardTheme.Paper.bad,
                 pulsing: true,
                 title: "Dictating",
-                subtitle: model.partialTranscript.isEmpty ? "Listening…" : String(model.partialTranscript.suffix(60)),
+                subtitle: "Listening…",
                 dark: true,
                 trailing: nil
             )
@@ -1319,21 +1319,12 @@ public struct SettingsView: View {
             if model.isDictating {
                 sectionGroup("Status") {
                     SettingsCard {
-                        CardRow(isLast: model.partialTranscript.isEmpty) {
+                        CardRow(isLast: true) {
                             HStack(spacing: 8) {
                                 StatusDot(color: HeardTheme.Paper.bad, pulsing: true)
                                 Text("Dictating…")
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(HeardTheme.Paper.ink)
-                            }
-                        }
-                        if !model.partialTranscript.isEmpty {
-                            CardRow(isLast: true) {
-                                Text(model.partialTranscript)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(HeardTheme.Paper.mute)
-                                    .lineLimit(3)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                     }

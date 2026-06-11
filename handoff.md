@@ -12,6 +12,18 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15
 
 **FluidAudio upgraded to 0.15.2** (from 0.14.7). Brings Parakeet v3 ASR throughput gains for free and exposes per-chunk speaker embeddings. Speaker assignment now builds a **duration-weighted, outlier-trimmed centroid per speaker** from `DiarizationResult.chunkEmbeddings` instead of the previous "first segment per speaker" embedding — more stable cross-meeting identity. The aggregation lives in pure, unit-tested code (`SpeakerEmbeddingAggregator` in `SpeakerAssignment.swift`); the diarizer is configured with `exposeChunkEmbeddings = true` in `runDiarization`, and `buildSpeakerEmbeddings(from:)` in `Services.swift` falls back to the legacy per-segment path when chunk embeddings are unavailable (very short audio / older model builds).
 
+**Robustness/efficiency hardening pass (post-v0.2.3):**
+- `DebugFileLog` is now gated behind Developer Mode (off by default), rotates at 5 MB, and never logs transcript content (lengths only) — previously it logged every dictated utterance to an unbounded plaintext file and ran a 1 Hz heartbeat in every install.
+- Meeting-start title/roster AX scraping and the 15 s roster poll now run on detached background tasks with a 1 s `AXUIElementSetMessagingTimeout`, so a busy/hung Teams can no longer stall Heard's main thread. The meeting (and recording) starts when the scrape completes; if the meeting ends mid-scrape, the detection state machine prevents an orphaned start.
+- App-audio process collection is now per-app (`MeetingApp.isProcessFamilyMember`) instead of hard-coded to Teams — Zoom/Webex helper processes are tapped too. `RecordingManager.startRecording` takes a `source:` parameter.
+- `skipNaming` uses `processingJob` (not `activeJob`) so a stale failed job can't pin the phase at `.processing` after "Skip All".
+- Removed the dead `partialTranscript` plumbing (the batch dictation engine never produced partials) and its 10 Hz polling loop in `AppModel`.
+- Dictation buffer is capped at 4 hours (matches the recording max); further audio is dropped with a one-shot log line.
+- `PreprocessedTrack` stores its duration and supports `releasingSamples()`; the pipeline frees the mic track's sample buffer after transcription and the app track's after diarization, cutting late-stage peak memory.
+- The cached System Audio grant (`audioCaptureTCCGranted`) is validated once per launch with a momentary tap, so a revoked permission no longer shows "Granted" forever. (Edge case: after `tccutil reset` with the flag still set, this validation tap triggers the TCC prompt at launch.)
+
+Skipped-for-now items from the same review (watchdog zombie task, rebuild invalidating `micDelaySeconds`, PermissionCenter republishing) are tracked in `ROADMAP.md`.
+
 ## What's Working
 
 ### Meeting Detection

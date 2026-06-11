@@ -63,15 +63,29 @@ public struct PreprocessedTrack {
     public let samples: [Float]
     public let sampleRate: Double // always 16000
     public let vadMap: VadSegmentMap
+    /// Captured at init so it stays valid after `releasingSamples()`.
+    public let duration: TimeInterval
 
     public init(samples: [Float], sampleRate: Double, vadMap: VadSegmentMap) {
         self.samples = samples
         self.sampleRate = sampleRate
         self.vadMap = vadMap
+        self.duration = Double(samples.count) / sampleRate
     }
 
-    public var duration: TimeInterval {
-        Double(samples.count) / sampleRate
+    private init(sampleRate: Double, vadMap: VadSegmentMap, duration: TimeInterval) {
+        self.samples = []
+        self.sampleRate = sampleRate
+        self.vadMap = vadMap
+        self.duration = duration
+    }
+
+    /// Copy with the sample buffer freed. The 16 kHz buffer for a multi-hour
+    /// meeting runs to hundreds of MB; later pipeline stages only need the
+    /// vadMap and duration, so callers drop the samples once the last
+    /// audio-consuming stage has finished.
+    public func releasingSamples() -> PreprocessedTrack {
+        PreprocessedTrack(sampleRate: sampleRate, vadMap: vadMap, duration: duration)
     }
 }
 

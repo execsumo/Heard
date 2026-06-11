@@ -16,7 +16,6 @@ public final class AppModel: ObservableObject {
 
     // Dictation state (separate from phase — can coexist with meeting recording)
     @Published public var isDictating = false
-    @Published public var partialTranscript = ""
     @Published public var dictationError: String?
     /// Set when AX permission is revoked while dictation is active. Cleared on dismiss or next start.
     @Published public var dictationAXLost = false
@@ -50,11 +49,13 @@ public final class AppModel: ObservableObject {
     public static func bootstrap() -> AppModel {
         try? FileManager.default.ensureHeardDirectories()
 
+        let settingsStore = SettingsStore()
+        DebugFileLog.isEnabled = settingsStore.settings.developerMode
+
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         DebugFileLog.log("=== bootstrap — Heard v\(version) starting ===")
         DebugFileLog.startMainThreadHeartbeat()
 
-        let settingsStore = SettingsStore()
         let speakerStore = SpeakerStore()
         let queueStore = PipelineQueueStore()
         let modelCatalog = ModelCatalog()
@@ -237,6 +238,7 @@ public final class AppModel: ObservableObject {
                     try self.recordingManager.startRecording(
                         title: snapshot.title,
                         meetingPID: snapshot.meetingPID,
+                        source: snapshot.source,
                         rosterNames: snapshot.rosterNames
                     )
                     self.phase = .recording
@@ -337,7 +339,6 @@ public var filteredSpeakers: [SpeakerProfile] {
                 // can take several seconds, keeping the HUD up and blocking further
                 // hotkey presses via dictationToggleInFlight the whole time).
                 isDictating = false
-                partialTranscript = ""
                 dictationError = nil
                 if settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
                 dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
@@ -364,8 +365,7 @@ public var filteredSpeakers: [SpeakerProfile] {
                     isDictating = true
                     dictationError = nil
                     if settingsStore.settings.showDictationHUD { DictationHUD.shared.show() }
-                    // Observe partial transcript and watch for AX revocation
-                    observeDictationPartials()
+                    // Watch for AX revocation while dictation is active
                     startAXPolling()
                     DebugFileLog.log("START branch completed — isDictating=true")
                 } catch {
@@ -542,17 +542,6 @@ public var filteredSpeakers: [SpeakerProfile] {
         hotkeyManager.activate()
     }
 
-    private func observeDictationPartials() {
-        Task { [weak self] in
-            guard let self else { return }
-            // Poll the dictation manager's partial transcript (lightweight since it's @Published)
-            while self.isDictating {
-                self.partialTranscript = self.dictationManager.partialTranscript
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-        }
-    }
-
     /// Polls AXIsProcessTrusted() while dictation is active. If access is revoked mid-session,
     /// stops dictation and raises dictationAXLost so the menu bar can show a re-grant banner.
     private func startAXPolling() {
@@ -581,7 +570,6 @@ public var filteredSpeakers: [SpeakerProfile] {
     private func stopDictationIfActive() {
         guard isDictating else { return }
         isDictating = false
-        partialTranscript = ""
         dictationError = nil
         if settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
         Task {
@@ -789,7 +777,9 @@ public var filteredSpeakers: [SpeakerProfile] {
         }
         namingCandidates.removeAll()
         showNamingPrompt = false
-        phase = queueStore.activeJob == nil ? .dormant : .processing
+        // processingJob (not activeJob) — a stale .failed job in the queue must
+        // not pin the phase at .processing after the prompt closes.
+        phase = queueStore.processingJob == nil ? .dormant : .processing
     }
 
     public func renameSpeaker(id: UUID, to name: String) {

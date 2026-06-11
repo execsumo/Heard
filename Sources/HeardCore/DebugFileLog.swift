@@ -4,9 +4,20 @@ import Foundation
 /// NSLog/unified-log diagnostics aren't reaching `log stream` reliably and
 /// we need a guaranteed observation channel for live debugging.
 ///
+/// Disabled unless the user turns on Developer Mode (Settings → General).
+/// Never log transcript or note content here — only metadata such as lengths.
+///
 /// Tail it with:
 ///   tail -F ~/Library/Application\ Support/Heard/dict-debug.log
 public enum DebugFileLog {
+    /// Mirrors `AppSettings.developerMode`. Set at bootstrap and whenever
+    /// settings persist. Plain bool read from multiple threads; a torn read
+    /// at worst drops or emits one extra line.
+    nonisolated(unsafe) public static var isEnabled = false
+
+    /// Rotate (truncate) the log once it exceeds this size.
+    private static let maxFileBytes: UInt64 = 5_000_000
+
     private static let queue = DispatchQueue(label: "com.execsumo.heard.debuglog")
     private static let formatter: DateFormatter = {
         let f = DateFormatter()
@@ -25,7 +36,7 @@ public enum DebugFileLog {
     /// later, main was unresponsive for those 8 seconds.
     @MainActor
     public static func startMainThreadHeartbeat() {
-        guard heartbeatTimer == nil else { return }
+        guard isEnabled, heartbeatTimer == nil else { return }
         var tick = 0
         heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
             tick += 1
@@ -38,6 +49,7 @@ public enum DebugFileLog {
     }
 
     public static func log(_ message: String) {
+        guard isEnabled else { return }
         let ts = formatter.string(from: Date())
         let line = "[\(ts)] \(message)\n"
         NSLog("Heard: [DICT-DBG] \(message)")
@@ -46,9 +58,15 @@ public enum DebugFileLog {
             let data = Data(line.utf8)
             if FileManager.default.fileExists(atPath: url.path) {
                 if let handle = try? FileHandle(forWritingTo: url) {
-                    defer { try? handle.close() }
-                    _ = try? handle.seekToEnd()
-                    try? handle.write(contentsOf: data)
+                    let size = (try? handle.seekToEnd()) ?? 0
+                    if size > maxFileBytes {
+                        try? handle.close()
+                        try? FileManager.default.removeItem(at: url)
+                        try? data.write(to: url)
+                    } else {
+                        try? handle.write(contentsOf: data)
+                        try? handle.close()
+                    }
                 }
             } else {
                 try? FileManager.default.createDirectory(

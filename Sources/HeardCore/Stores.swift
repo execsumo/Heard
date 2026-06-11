@@ -196,6 +196,9 @@ public final class SettingsStore: ObservableObject {
     }
 
     private func persist() {
+        // Keep the debug logger's gate in sync — it has no other way to
+        // observe the Developer Mode toggle flipping at runtime.
+        DebugFileLog.isEnabled = settings.developerMode
         defaults.set(settings.userName, forKey: "userName")
         defaults.set(settings.launchAtLogin, forKey: "launchAtLogin")
         defaults.set(settings.autoWatch, forKey: "autoWatch")

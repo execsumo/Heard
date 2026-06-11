@@ -38,7 +38,7 @@ public enum TextInjector {
             var value: AnyObject?
             trusted = AXUIElementCopyAttributeValue(sysWide, kAXFocusedApplicationAttribute as CFString, &value) != .apiDisabled
         }
-        DebugFileLog.log("TextInjector.inject text=\"\(text)\" (len=\(text.count)) axTrusted=\(trusted)")
+        DebugFileLog.log("TextInjector.inject len=\(text.count) axTrusted=\(trusted)")
         guard trusted else {
             NSLog("Heard: TextInjector cannot inject text — Accessibility not granted")
             return

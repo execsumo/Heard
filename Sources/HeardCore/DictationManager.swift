@@ -37,9 +37,6 @@ public enum DictationError: Error, LocalizedError {
 public final class DictationManager: ObservableObject {
 
     @Published public private(set) var state: DictationState = .idle
-    /// Unused by the batch engine — kept @Published so existing UI bindings
-    /// continue to compile. Always empty.
-    @Published public var partialTranscript: String = ""
 
     private var asrManager: AsrManager?
     private var asrModels: AsrModels?
@@ -52,6 +49,13 @@ public final class DictationManager: ObservableObject {
     private var micBufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
     private var micForwardTask: Task<Void, Never>?
     private var bufferCount = 0
+    private var bufferCapWarned = false
+
+    /// Hard cap on buffered audio: 4 hours at 16 kHz (matches the recording
+    /// manager's max duration). A dictation session left running accumulates
+    /// ~230 MB/hour; past the cap further audio is dropped rather than letting
+    /// memory grow without bound.
+    private static let maxBufferSamples = 4 * 3600 * 16_000
 
     /// Called when transcription completes for a session with the final text.
     public var onUtterance: ((String) -> Void)?
@@ -114,7 +118,7 @@ public final class DictationManager: ObservableObject {
         }
 
         audioBuffer.removeAll(keepingCapacity: true)
-        partialTranscript = ""
+        bufferCapWarned = false
 
         try startMicCapture()
         state = .listening
@@ -163,11 +167,11 @@ public final class DictationManager: ObservableObject {
             let result = try await mgr.transcribe(
                 samples, decoderState: &decoderState, language: .english
             )
-            DebugFileLog.log("DictationManager.stop transcribe returned — rawText=\"\(result.text)\" (len=\(result.text.count))")
+            DebugFileLog.log("DictationManager.stop transcribe returned — rawLen=\(result.text.count)")
             let boosted = await rescoreWithVocabulary(result: result, samples: samples)
             let normalized = TextNormalizer.shared.normalize(result: boosted).text
             let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
-            DebugFileLog.log("DictationManager.stop final text=\"\(trimmed)\" (len=\(trimmed.count))")
+            DebugFileLog.log("DictationManager.stop final len=\(trimmed.count)")
             guard !trimmed.isEmpty else {
                 DebugFileLog.log("DictationManager.stop empty after normalize — skipping inject")
                 return
@@ -341,6 +345,13 @@ public final class DictationManager: ObservableObject {
     }
 
     private func appendSamples(_ samples: [Float]) {
+        guard audioBuffer.count < Self.maxBufferSamples else {
+            if !bufferCapWarned {
+                bufferCapWarned = true
+                NSLog("Heard: Dictation buffer hit the 4-hour cap — dropping further audio until stop")
+            }
+            return
+        }
         audioBuffer.append(contentsOf: samples)
         bufferCount += 1
         if bufferCount == 1 {

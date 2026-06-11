@@ -68,6 +68,28 @@ public enum MeetingApp: String, CaseIterable, Codable, Sendable {
         case .webex: return "Webex"
         }
     }
+
+    /// True if the process belongs to this meeting app's process family —
+    /// main app *or* helpers. Used to collect every process worth tapping for
+    /// audio: Electron-based clients (Teams, Webex) render call audio in
+    /// renderer/GPU helper processes, not the main process that holds the
+    /// power assertion.
+    public func isProcessFamilyMember(bundleID: String?, localizedName: String?) -> Bool {
+        let bundle = bundleID?.lowercased() ?? ""
+        let name = localizedName?.lowercased() ?? ""
+        switch self {
+        case .teams:
+            return bundle.hasPrefix("com.microsoft.teams")
+                || (name.hasPrefix("microsoft teams") && !bundle.isEmpty)
+        case .zoom:
+            return bundle.hasPrefix("us.zoom.")
+                || (name.hasPrefix("zoom") && !bundle.isEmpty)
+        case .webex:
+            return bundle.hasPrefix("cisco-systems.spark")
+                || bundle.hasPrefix("com.cisco.webex")
+                || (name.contains("webex") && !bundle.isEmpty)
+        }
+    }
 }
 
 public struct MeetingSnapshot {
@@ -270,20 +292,32 @@ public final class MeetingDetector: ObservableObject {
             return
         case .startMeeting:
             guard let result else { return }
-            let title = Self.extractMeetingTitle(pid: result.pid, source: result.source) ?? ""
-            let rosterNames: [String] = result.source == .teams
-                ? RosterReader.readRoster(pid: result.pid)
-                : []
-            let snapshot = MeetingSnapshot(
-                title: title,
-                startedAt: Date(),
-                source: result.source,
-                meetingPID: result.pid,
-                rosterNames: rosterNames
-            )
-            activeSnapshot = snapshot
-            if result.source == .teams { startRosterPolling() }
-            onMeetingStarted(snapshot)
+            let pid = result.pid
+            let source = result.source
+            // Title/roster scraping does blocking AX IPC into the meeting app —
+            // which is busy joining a call and can stall for seconds. Run it off
+            // the main thread, then start the meeting once the data is in hand.
+            Task { [weak self] in
+                let (title, rosterNames) = await Task.detached(priority: .userInitiated) {
+                    let title = Self.extractMeetingTitle(pid: pid, source: source) ?? ""
+                    let roster: [String] = source == .teams ? RosterReader.readRoster(pid: pid) : []
+                    return (title, roster)
+                }.value
+                guard let self else { return }
+                // The meeting may have ended (or watching been toggled off) while
+                // we were scraping — the detection state machine is the source of truth.
+                guard self.detectionState.hasActiveSnapshot, self.activeSnapshot == nil else { return }
+                let snapshot = MeetingSnapshot(
+                    title: title,
+                    startedAt: Date(),
+                    source: source,
+                    meetingPID: pid,
+                    rosterNames: rosterNames
+                )
+                self.activeSnapshot = snapshot
+                if source == .teams { self.startRosterPolling() }
+                self.onMeetingStarted(snapshot)
+            }
         case .endMeeting:
             guard let snapshot = activeSnapshot else { return }
             stopRosterPolling()
@@ -341,7 +375,9 @@ public final class MeetingDetector: ObservableObject {
     /// Extract the meeting title from a meeting-app window via Accessibility API.
     /// Strips the trailing app-name suffix (` | Microsoft Teams`, ` - Zoom`, etc.).
     /// Returns nil if AX is denied, no window matches, or the title is just a placeholder.
-    private static func extractMeetingTitle(pid: pid_t?, source: MeetingApp) -> String? {
+    /// Nonisolated: called from a detached task so the blocking AX IPC never
+    /// runs on the main thread.
+    nonisolated private static func extractMeetingTitle(pid: pid_t?, source: MeetingApp) -> String? {
         // Do not pre-check AXIsProcessTrusted() — it can return a stale cached false on
         // macOS 15+ even when Accessibility IS granted. AXUIElementCopyAttributeValue
         // returns .apiDisabled on its own when access is genuinely denied, so the guard
@@ -349,6 +385,8 @@ public final class MeetingDetector: ObservableObject {
         guard let pid else { return nil }
 
         let app = AXUIElementCreateApplication(pid)
+        // Bound each AX round-trip so a hung meeting app can't hang us.
+        AXUIElementSetMessagingTimeout(app, 1.0)
         var windowsRef: AnyObject?
         guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
               let windows = windowsRef as? [AXUIElement]
@@ -389,7 +427,12 @@ public final class MeetingDetector: ObservableObject {
                       let snapshot = self.activeSnapshot,
                       snapshot.source == .teams
                 else { break }
-                let names = RosterReader.readRoster(pid: snapshot.meetingPID)
+                // The roster walk is a deep recursive AX scrape of Teams'
+                // Electron tree — keep it off the main thread.
+                let pid = snapshot.meetingPID
+                let names = await Task.detached(priority: .utility) {
+                    RosterReader.readRoster(pid: pid)
+                }.value
                 if !names.isEmpty {
                     let existing = Set(self.activeSnapshot?.rosterNames ?? [])
                     let newNames = names.filter { !existing.contains($0) }
@@ -483,12 +526,13 @@ public final class RecordingManager: ObservableObject {
     /// Called once when the self-test confirms non-zero app audio is flowing.
     public var onAppAudioCaptureConfirmed: (() -> Void)?
 
-    /// The meeting-app PID, title, and roster for the current recording (needed for re-start on split).
+    /// The meeting-app PID, source, title, and roster for the current recording (needed for re-start on split).
     private var currentMeetingPID: pid_t?
+    private var currentSource: MeetingApp = .teams
     private var currentTitle: String = ""
     private var currentRosterNames: [String] = []
 
-    public func startRecording(title: String, meetingPID: pid_t?, rosterNames: [String] = []) throws {
+    public func startRecording(title: String, meetingPID: pid_t?, source: MeetingApp = .teams, rosterNames: [String] = []) throws {
         guard activeSession == nil else { return }
 
         let stamp = Formatting.recordingFileFormatter.string(from: Date())
@@ -504,6 +548,7 @@ public final class RecordingManager: ObservableObject {
 
         // Set up app audio recording if we have a meeting-app PID
         appAudioTapFailed = false
+        currentSource = source
         if let pid = meetingPID {
             do {
                 try setupAppAudioRecording(pid: pid, to: appPath)
@@ -639,18 +684,19 @@ public final class RecordingManager: ObservableObject {
     // MARK: - App Audio Recording (CATapDescription + Process Tap + Raw AUHAL)
 
     private func setupAppAudioRecording(pid: pid_t, to url: URL, allowSelfTestRebuild: Bool = true) throws {
-        // ── Step 1: Collect ALL Teams-related process object IDs ──────────────
-        // Teams (Electron/Chromium) renders audio in renderer / GPU sub-processes,
-        // not necessarily the main process that holds the power assertion. Tapping
-        // only the reported PID misses audio from those child processes.
-        let processObjectIDs = collectTeamsProcessObjectIDs(requiredPID: pid)
+        // ── Step 1: Collect ALL meeting-app process object IDs ────────────────
+        // Electron/Chromium clients (Teams, Webex) render audio in renderer / GPU
+        // sub-processes, not necessarily the main process that holds the power
+        // assertion. Tapping only the reported PID misses audio from those children.
+        let appName = currentSource.displayName
+        let processObjectIDs = collectMeetingProcessObjectIDs(for: currentSource, requiredPID: pid)
         guard !processObjectIDs.isEmpty else {
-            NSLog("Heard: No CoreAudio process objects found for Teams (pid=%d). The Teams process(es) haven't opened audio yet — translate-PID returns 0 until they do.", pid)
+            NSLog("Heard: No CoreAudio process objects found for %@ (pid=%d). The process(es) haven't opened audio yet — translate-PID returns 0 until they do.", appName, pid)
             throw RecordingError.processTapFailed(kAudioHardwareBadObjectError)
         }
-        NSLog("Heard: Creating process tap for %d Teams process(es)", processObjectIDs.count)
+        NSLog("Heard: Creating process tap for %d %@ process(es)", processObjectIDs.count, appName)
         if processObjectIDs.count == 1 {
-            NSLog("Heard: WARNING — only ONE Teams audio process found. Teams 2.0 typically renders call audio in helper processes; if the captured WAV is silent, the wrong process is being tapped.")
+            NSLog("Heard: WARNING — only ONE %@ audio process found. Electron-based clients typically render call audio in helper processes; if the captured WAV is silent, the wrong process is being tapped.", appName)
         }
 
         // ── Step 2: Create the process tap ────────────────────────────────────
@@ -852,19 +898,17 @@ public final class RecordingManager: ObservableObject {
         startAppAudioMonitor(context: ctx, pid: pid, appPath: url, allowRebuild: allowSelfTestRebuild)
     }
 
-    /// Find CoreAudio process object IDs for all running Microsoft Teams processes.
-    /// Teams (Electron/Chromium) can render audio from the main process OR helper
-    /// processes (Teams Helper, Teams Helper (GPU), etc.). We tap all of them so that
-    /// audio from any subprocess is captured regardless of which one is active.
-    private func collectTeamsProcessObjectIDs(requiredPID: pid_t) -> [AudioObjectID] {
-        let teamsApps = NSWorkspace.shared.runningApplications.filter { app in
-            let bundle = app.bundleIdentifier?.lowercased() ?? ""
-            let name   = app.localizedName?.lowercased() ?? ""
-            return bundle.hasPrefix("com.microsoft.teams") ||
-                   (name.hasPrefix("microsoft teams") && !bundle.isEmpty)
+    /// Find CoreAudio process object IDs for all running processes in the meeting
+    /// app's family. Electron clients can render audio from the main process OR
+    /// helper processes (Teams Helper, Teams Helper (GPU), etc.). We tap all of
+    /// them so that audio from any subprocess is captured regardless of which
+    /// one is active.
+    private func collectMeetingProcessObjectIDs(for source: MeetingApp, requiredPID: pid_t) -> [AudioObjectID] {
+        let meetingApps = NSWorkspace.shared.runningApplications.filter { app in
+            source.isProcessFamilyMember(bundleID: app.bundleIdentifier, localizedName: app.localizedName)
         }
 
-        var pids = teamsApps.map(\.processIdentifier)
+        var pids = meetingApps.map(\.processIdentifier)
         if !pids.contains(requiredPID) { pids.insert(requiredPID, at: 0) }
 
         var seen = Set<pid_t>()
@@ -884,8 +928,9 @@ public final class RecordingManager: ObservableObject {
             )
             if err == noErr && objID != 0 {
                 result.append(objID)
-                NSLog("Heard: Tapping Teams process pid=%d objectID=%u (%@)",
-                      pid, objID, teamsApps.first(where: { $0.processIdentifier == pid })?.localizedName ?? "?")
+                NSLog("Heard: Tapping %@ process pid=%d objectID=%u (%@)",
+                      source.displayName, pid, objID,
+                      meetingApps.first(where: { $0.processIdentifier == pid })?.localizedName ?? "?")
             }
         }
         return result
@@ -1089,11 +1134,12 @@ public final class RecordingManager: ObservableObject {
 
         // Restart recording if we had a meeting-app PID (meeting still active)
         let pid = currentMeetingPID
+        let source = currentSource
         let title = currentTitle
         let roster = currentRosterNames
         if pid != nil {
             do {
-                try startRecording(title: title + " (cont.)", meetingPID: pid, rosterNames: roster)
+                try startRecording(title: title + " (cont.)", meetingPID: pid, source: source, rosterNames: roster)
             } catch {
                 NSLog("Heard: Failed to restart recording after max duration: \(error)")
             }
@@ -1164,6 +1210,13 @@ public final class PermissionCenter: ObservableObject {
 
     public init() {
         refresh()
+        // The System Audio grant is cached in UserDefaults (there's no query API
+        // for kTCCServiceAudioCapture). Validate it once per launch so a revoked
+        // permission doesn't show "Granted" forever — TCC revocations only take
+        // effect after an app restart, so once per launch is exactly enough.
+        if UserDefaults.standard.bool(forKey: "audioCaptureTCCGranted") {
+            validateCachedAudioCaptureGrant()
+        }
         // Periodically re-check permissions (catches grants made in System Settings).
         refreshTask = Task { [weak self] in
             // Run an immediate authoritative check so an already-granted permission is
@@ -1175,6 +1228,29 @@ public final class PermissionCenter: ObservableObject {
                 guard let self, !Task.isCancelled else { return }
                 await self.refreshAsync()
             }
+        }
+    }
+
+    /// Re-verify the cached System Audio grant with a momentary process tap.
+    /// Only called when the cached flag is true: in that state the permission is
+    /// either still granted (tap succeeds silently) or was revoked/denied (tap
+    /// fails without prompting — macOS doesn't re-prompt a denied service).
+    /// Skipped when no process has opened audio yet; the cached value stands
+    /// until the next launch that can verify it.
+    private func validateCachedAudioCaptureGrant() {
+        guard let target = anyAudioProcessObjectID() else { return }
+        let desc = CATapDescription(stereoMixdownOfProcesses: [target])
+        desc.uuid = UUID()
+        desc.name = "Heard Permission Validation"
+        desc.isPrivate = true
+        desc.muteBehavior = .unmuted
+        var tapID: AudioObjectID = 0
+        if AudioHardwareCreateProcessTap(desc, &tapID) == noErr {
+            AudioHardwareDestroyProcessTap(tapID)
+        } else {
+            NSLog("Heard: Cached System Audio grant failed validation — marking as not granted")
+            UserDefaults.standard.set(false, forKey: "audioCaptureTCCGranted")
+            refresh()
         }
     }
 
@@ -2142,6 +2218,10 @@ public final class PipelineProcessor: ObservableObject {
             modelCatalog.markDownloading(.diarization)
             try await runDiarization(job)
             modelCatalog.markReady(.diarization)
+            // Diarization was the last consumer of the app track's raw audio —
+            // speaker assignment and clip extraction only need the vadMap (clips
+            // are cut from the original WAV on disk). Free the buffer.
+            appTrack = appTrack?.releasingSamples()
         }
 
         // Stage 4: Speaker Assignment + Output
@@ -2337,6 +2417,11 @@ public final class PipelineProcessor: ObservableObject {
         if let result = micTranscription {
             micTranscription = TextNormalizer.shared.normalize(result: result)
         }
+
+        // The mic track is never diarized — transcription (incl. vocab boosting)
+        // was its last audio consumer, so free the sample buffer now. Done only
+        // on the success path so a within-session retry still has the samples.
+        micTrack = micTrack?.releasingSamples()
 
         // Models stay cached for keep-alive; unloaded by clearJobState() or forceUnload()
     }
