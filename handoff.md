@@ -24,13 +24,14 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15
 
 - The pipeline is **generation-fenced** against the watchdog-abort race: `runGeneration` is bumped when a run starts and when `abortAndFailCurrentJob` fires; every post-await resumption point calls `ensureCurrent(generation)` (and the retry driver's `onUpdate` is guarded) before touching shared per-job state. A stuck FluidAudio call that ignores cancellation and returns minutes later now exits at its next checkpoint instead of corrupting the job that replaced it. The abort also re-kicks `runNextIfNeeded()`.
 - `attemptAppAudioRebuild` recalibrates `micDelaySeconds` (`mic.start − app.start` against the post-rebuild `appStartTime`), so the ~2–4 s rebuild gap no longer skews `SegmentDeduplicator.dropMicBleed`.
+- `PermissionCenter.refresh()` publishes only when the statuses actually changed, so the 3 s permission poll no longer re-renders every observing view on identical state. The 1 s meeting-detection poll is per spec (2 consecutive polls = ~2 s start latency); the stale "every 3 seconds" doc references were corrected.
 
-Remaining skipped item from the same review (PermissionCenter republishing identical state every 3 s) is tracked in `ROADMAP.md`.
+All items from the post-v0.2.2 robustness review are now resolved (see `ROADMAP.md` → Completed Technical Debt & Polish).
 
 ## What's Working
 
 ### Meeting Detection
-- Polls `IOPMCopyAssertionsByProcess()` every 3 seconds for Teams power assertions
+- Polls `IOPMCopyAssertionsByProcess()` every second for meeting-app power assertions (2 consecutive hits = ~2 s start latency, per spec)
 - Extracts meeting title from Teams window via Accessibility API (`AXUIElement`)
 - Debounce/cooldown logic lives in the pure `MeetingDetectionState` value type — 2 consecutive detections to start, 5s cooldown after end — so the state machine is driven by tests without IOKit
 - Simulation mode available for testing without a real Teams call (with `isSimulated` flag to prevent polling interference)

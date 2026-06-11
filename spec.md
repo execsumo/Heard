@@ -63,7 +63,7 @@ RAM:     ~80 MB          ~80 MB               ~80 MB         ~800 MB peak    ~80
 
 ### Detection Strategy
 
-**Power assertion monitoring** is the sole detection method. Poll `IOPMCopyAssertionsByProcess()` every 3 seconds. Look for `PreventUserIdleDisplaySleep` assertions from any of the supported meeting apps:
+**Power assertion monitoring** is the sole detection method. Poll `IOPMCopyAssertionsByProcess()` every second. Look for `PreventUserIdleDisplaySleep` assertions from any of the supported meeting apps:
 
 - **Microsoft Teams** — bundle IDs `com.microsoft.teams` (classic), `com.microsoft.teams2` (new Teams)
 - **Zoom** — bundle ID `us.zoom.xos`

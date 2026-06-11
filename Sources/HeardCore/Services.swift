@@ -1328,7 +1328,7 @@ public final class PermissionCenter: ObservableObject {
     }
 
     public func refresh() {
-        statuses = [
+        let updated = [
             PermissionStatus(
                 id: "microphone",
                 title: "Microphone",
@@ -1354,6 +1354,12 @@ public final class PermissionCenter: ObservableObject {
                 state: accessibilityState()
             ),
         ]
+        // Publish only when something actually changed. This runs on a 3 s poll
+        // for the app's lifetime — assigning an identical array would still fire
+        // objectWillChange and re-render every observing view on every tick.
+        if updated != statuses {
+            statuses = updated
+        }
     }
 
     public var isAccessibilityGranted: Bool {

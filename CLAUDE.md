@@ -51,7 +51,7 @@ No Xcode project — this is a Swift Package Manager executable. macOS 15.0+ req
 - Library target `HeardCore` + executable `Heard` + test executable `HeardTests`
 - All persistence is JSON files in `~/Library/Application Support/Heard/`
 - Pipeline stages run sequentially on a background task, one job at a time
-- Meeting detection polls every 3 seconds via `IOPMCopyAssertionsByProcess()`
+- Meeting detection polls every second via `IOPMCopyAssertionsByProcess()` (2 consecutive hits to start)
 - Audio capture uses `CATapDescription` (app tap) + `AVAudioEngine` (mic)
 
 ## Testing
