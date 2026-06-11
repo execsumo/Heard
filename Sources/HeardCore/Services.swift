@@ -1036,6 +1036,16 @@ public final class RecordingManager: ObservableObject {
         teardownAppAudioChainOnly()
         do {
             try setupAppAudioRecording(pid: pid, to: appPath, allowSelfTestRebuild: false)
+            // The rebuild truncated and restarted the app WAV, so the app
+            // track's t=0 moved to the new appStartTime. Recompute the
+            // mic/app alignment offset (mic.start − app.start, same formula
+            // as startRecording) — otherwise bleed dedup and interleaving
+            // run with a delay that's stale by the rebuild gap (~2–4 s).
+            if let mic = micStartTime, let app = appStartTime {
+                let delay = mic.timeIntervalSince(app)
+                activeSession?.micDelaySeconds = delay
+                NSLog("Heard: Rebuild moved app-track start — mic delay recalibrated to %.2fs", delay)
+            }
             NSLog("Heard: App-audio chain rebuilt successfully — self-test will re-run at +2s")
         } catch {
             NSLog("Heard: App-audio rebuild failed: %@", error.localizedDescription)
@@ -1923,6 +1933,21 @@ public final class PipelineProcessor: ObservableObject {
     private var modelUnloadTask: Task<Void, Never>?
     /// The currently-running pipeline task. Stored so the watchdog can cancel it.
     private var pipelineTask: Task<Void, Never>?
+    /// Monotonic token identifying the current pipeline run. Bumped when a new
+    /// run starts and when the watchdog aborts one. Task cancellation alone is
+    /// not enough to stop a run: FluidAudio calls may not honour the signal, so
+    /// a cancelled task can wake from its await minutes later and keep
+    /// executing. Every resumption point compares its captured generation
+    /// against this value before touching shared per-job state — a superseded
+    /// run dies at its next checkpoint instead of corrupting the job that
+    /// replaced it.
+    private var runGeneration = 0
+
+    /// Throws `CancellationError` when the captured generation has been
+    /// superseded. Called after every await before writing shared state.
+    private func ensureCurrent(_ generation: Int) throws {
+        guard generation == runGeneration else { throw CancellationError() }
+    }
 
     private static let retryDelays: [TimeInterval] = [5, 30, 300]
     private static let maxRetries = 3
@@ -2022,10 +2047,16 @@ public final class PipelineProcessor: ObservableObject {
             return
         }
         isProcessing = true
+        runGeneration += 1
+        let generation = runGeneration
         pipelineTask = Task {
-            await processWithRetry(next)
+            await processWithRetry(next, generation: generation)
             await MainActor.run { [weak self] in
-                guard let self, self.isProcessing else { return }
+                // Generation check (not isProcessing): if the watchdog aborted
+                // this run and a new one is already in flight, isProcessing is
+                // true again — clearing it here would clobber the new run's
+                // task reference and kick off a duplicate concurrent run.
+                guard let self, generation == self.runGeneration else { return }
                 self.pipelineTask = nil
                 self.isProcessing = false
                 self.clearJobState()
@@ -2060,8 +2091,12 @@ public final class PipelineProcessor: ObservableObject {
     /// Called by the watchdog when a pipeline stage has been running too long.
     /// Cancels the current task (best-effort — FluidAudio may not honour the signal
     /// immediately) and immediately marks the stuck job as failed so the UI clears.
+    /// Bumping `runGeneration` is the real kill switch: even if the stuck call
+    /// eventually returns, the run fails its next generation checkpoint and exits
+    /// without touching state that now belongs to a newer run.
     public func abortAndFailCurrentJob() {
         guard isProcessing else { return }
+        runGeneration += 1
         pipelineTask?.cancel()
         pipelineTask = nil
         if var job = queueStore.processingJob {
@@ -2072,7 +2107,10 @@ public final class PipelineProcessor: ObservableObject {
         }
         isProcessing = false
         clearJobState()
-        onPipelineIdle()
+        // Safe now that stale runs are generation-fenced: pick up the next
+        // queued job (or fire onPipelineIdle if there is none) instead of
+        // leaving the rest of the queue stalled until the next enqueue.
+        runNextIfNeeded()
     }
 
     private func clearJobState() {
@@ -2115,7 +2153,7 @@ public final class PipelineProcessor: ObservableObject {
 
     // MARK: - Retry Logic
 
-    private func processWithRetry(_ job: PipelineJob) async {
+    private func processWithRetry(_ job: PipelineJob, generation: Int) async {
         var working = job
         await Self.executeWithRetry(
             job: &working,
@@ -2123,11 +2161,19 @@ public final class PipelineProcessor: ObservableObject {
             lifetimeRetryLimit: Self.lifetimeRetryLimit,
             retryDelays: Self.retryDelays,
             isNonRetryable: { ($0 as? PipelineError)?.isNonRetryable ?? false },
-            onUpdate: { [weak self] updated in self?.queueStore.update(updated) },
+            // Generation-guarded: a superseded run must not persist queue
+            // updates — e.g. its stuck call finally throws and the retry
+            // driver's error path would otherwise overwrite the .failed state
+            // the watchdog already wrote (or worse, the replacement run's state).
+            onUpdate: { [weak self] updated in
+                guard let self, generation == self.runGeneration else { return }
+                self.queueStore.update(updated)
+            },
             sleep: { seconds in try await Task.sleep(for: .seconds(seconds)) },
             process: { [weak self] job in
                 guard let self else { throw CancellationError() }
-                try await self.process(&job)
+                try self.ensureCurrent(generation)
+                try await self.process(&job, generation: generation)
             }
         )
     }
@@ -2194,13 +2240,14 @@ public final class PipelineProcessor: ObservableObject {
 
     // MARK: - Pipeline Stages
 
-    private func process(_ job: inout PipelineJob) async throws {
+    private func process(_ job: inout PipelineJob, generation: Int) async throws {
 
         // Stage 1: Preprocessing — load WAV, resample to 16kHz mono, Silero VAD trim
         if job.stage == .queued || job.stage == .preprocessing {
             try await advanceTo(&job, stage: .preprocessing)
             modelCatalog.markDownloading(.batchVad)
-            try await runPreprocessing(job)
+            try await runPreprocessing(job, generation: generation)
+            try ensureCurrent(generation)
             modelCatalog.markReady(.batchVad)
         }
 
@@ -2208,7 +2255,8 @@ public final class PipelineProcessor: ObservableObject {
         if job.stage == .preprocessing || job.stage == .transcribing {
             try await advanceTo(&job, stage: .transcribing)
             modelCatalog.markDownloading(.batchParakeet)
-            try await runTranscription(job)
+            try await runTranscription(job, generation: generation)
+            try ensureCurrent(generation)
             modelCatalog.markReady(.batchParakeet)
         }
 
@@ -2216,7 +2264,8 @@ public final class PipelineProcessor: ObservableObject {
         if job.stage == .transcribing || job.stage == .diarizing {
             try await advanceTo(&job, stage: .diarizing)
             modelCatalog.markDownloading(.diarization)
-            try await runDiarization(job)
+            try await runDiarization(job, generation: generation)
+            try ensureCurrent(generation)
             modelCatalog.markReady(.diarization)
             // Diarization was the last consumer of the app track's raw audio —
             // speaker assignment and clip extraction only need the vadMap (clips
@@ -2291,7 +2340,7 @@ public final class PipelineProcessor: ObservableObject {
 
     // MARK: - Stage 1: Preprocessing (AudioConverter + Silero VAD)
 
-    private func runPreprocessing(_ job: PipelineJob) async throws {
+    private func runPreprocessing(_ job: PipelineJob, generation: Int) async throws {
         let fm = FileManager.default
         let appExists = fm.fileExists(atPath: job.appAudioPath.path)
         let micExists = fm.fileExists(atPath: job.micAudioPath.path)
@@ -2306,8 +2355,16 @@ public final class PipelineProcessor: ObservableObject {
 
         if settingsStore.settings.lowMemoryMode {
             // Serialize preprocessing to halve peak RAM (~400 MB instead of ~800 MB)
-            if appUsable { appTrack = try await AudioPreprocessor.preprocess(wavURL: job.appAudioPath) }
-            if micUsable { micTrack = try await AudioPreprocessor.preprocess(wavURL: job.micAudioPath) }
+            if appUsable {
+                let track = try await AudioPreprocessor.preprocess(wavURL: job.appAudioPath)
+                try ensureCurrent(generation)
+                appTrack = track
+            }
+            if micUsable {
+                let track = try await AudioPreprocessor.preprocess(wavURL: job.micAudioPath)
+                try ensureCurrent(generation)
+                micTrack = track
+            }
         } else {
             // Preprocess both tracks concurrently on background threads
             try await withThrowingTaskGroup(of: (String, PreprocessedTrack).self) { group in
@@ -2324,6 +2381,7 @@ public final class PipelineProcessor: ObservableObject {
                     }
                 }
                 for try await (label, track) in group {
+                    try ensureCurrent(generation)
                     if label == "app" { appTrack = track }
                     else { micTrack = track }
                 }
@@ -2333,7 +2391,7 @@ public final class PipelineProcessor: ObservableObject {
 
     // MARK: - Stage 2: Transcription
 
-    private func runTranscription(_ job: PipelineJob) async throws {
+    private func runTranscription(_ job: PipelineJob, generation: Int) async throws {
         // Cancel any pending unload — we're using the models now
         modelUnloadTask?.cancel()
         modelUnloadTask = nil
@@ -2360,6 +2418,7 @@ public final class PipelineProcessor: ObservableObject {
             )
             let manager = AsrManager(config: asrConfig)
             try await manager.loadModels(models)
+            try ensureCurrent(generation)
             asrManager = manager
             cachedAsrModels = models
             cachedAsrManager = manager
@@ -2382,9 +2441,11 @@ public final class PipelineProcessor: ObservableObject {
         // Transcribe app track (remote participants) with a fresh decoder state.
         if let track = appTrack, track.samples.count >= minSamples {
             var decoderState = TdtDecoderState.make()
-            appTranscription = try await asrManager.transcribe(
+            let result = try await asrManager.transcribe(
                 track.samples, decoderState: &decoderState, language: language
             )
+            try ensureCurrent(generation)
+            appTranscription = result
             if totalTranscribeSamples > 0 {
                 transcriptionProgress = Double(appCount) / Double(totalTranscribeSamples)
             }
@@ -2393,16 +2454,19 @@ public final class PipelineProcessor: ObservableObject {
         // Transcribe mic track (local user) with its own fresh decoder state.
         if let track = micTrack, track.samples.count >= minSamples {
             var decoderState = TdtDecoderState.make()
-            micTranscription = try await asrManager.transcribe(
+            let result = try await asrManager.transcribe(
                 track.samples, decoderState: &decoderState, language: language
             )
+            try ensureCurrent(generation)
+            micTranscription = result
         }
 
         transcriptionProgress = nil  // clear before vocabulary boosting / next stage
 
         // Apply CTC-based custom vocabulary boosting as post-processing. Best-effort —
         // never fails the job; original transcripts are kept on any error.
-        await applyVocabularyBoosting()
+        await applyVocabularyBoosting(generation: generation)
+        try ensureCurrent(generation)
 
         // Apply custom formatting commands
         TextNormalizer.shared.clearRules()
@@ -2433,7 +2497,7 @@ public final class PipelineProcessor: ObservableObject {
     /// log-probs, then asks `VocabularyRescorer.ctcTokenRescore` to rewrite low-confidence
     /// words against the user's vocabulary. Skipped silently when the user has no terms
     /// or the CTC 110M model isn't downloaded — the Models tab gates that download.
-    private func applyVocabularyBoosting() async {
+    private func applyVocabularyBoosting(generation: Int) async {
         let terms = settingsStore.settings.customVocabulary
         guard !terms.isEmpty else { return }
 
@@ -2463,16 +2527,20 @@ public final class PipelineProcessor: ObservableObject {
             )
 
             if let track = appTrack, let result = appTranscription {
-                appTranscription = await rescore(
+                let rescored = await rescore(
                     result: result, samples: track.samples,
                     vocabulary: context, spotter: spotter, rescorer: rescorer
                 )
+                guard generation == runGeneration else { return }
+                appTranscription = rescored
             }
             if let track = micTrack, let result = micTranscription {
-                micTranscription = await rescore(
+                let rescored = await rescore(
                     result: result, samples: track.samples,
                     vocabulary: context, spotter: spotter, rescorer: rescorer
                 )
+                guard generation == runGeneration else { return }
+                micTranscription = rescored
             }
         } catch {
             NSLog("Heard: Vocab boost setup failed — keeping original transcript: %@", error.localizedDescription)
@@ -2521,7 +2589,7 @@ public final class PipelineProcessor: ObservableObject {
     // To adopt it: run Sortformer for segmentation, then extract WeSpeaker embeddings on each
     // segment, and convert to DiarizationResult before passing downstream.
 
-    private func runDiarization(_ job: PipelineJob) async throws {
+    private func runDiarization(_ job: PipelineJob, generation: Int) async throws {
         // Diarization only applies to the app track (remote speakers).
         // The mic track is a single known speaker (the local user) so diarization adds no value.
         let minSamples = 16_000 * 2 // 2 seconds at 16kHz
@@ -2544,7 +2612,9 @@ public final class PipelineProcessor: ObservableObject {
         config.exposeChunkEmbeddings = true
         let diarizer = OfflineDiarizerManager(config: config)
         try await diarizer.prepareModels()
-        appDiarization = try await diarizer.process(audio: track.samples)
+        let result = try await diarizer.process(audio: track.samples)
+        try ensureCurrent(generation)
+        appDiarization = result
 
         // Models are released when diarizer goes out of scope
     }

@@ -22,7 +22,10 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15
 - `PreprocessedTrack` stores its duration and supports `releasingSamples()`; the pipeline frees the mic track's sample buffer after transcription and the app track's after diarization, cutting late-stage peak memory.
 - The cached System Audio grant (`audioCaptureTCCGranted`) is validated once per launch with a momentary tap, so a revoked permission no longer shows "Granted" forever. (Edge case: after `tccutil reset` with the flag still set, this validation tap triggers the TCC prompt at launch.)
 
-Skipped-for-now items from the same review (watchdog zombie task, rebuild invalidating `micDelaySeconds`, PermissionCenter republishing) are tracked in `ROADMAP.md`.
+- The pipeline is **generation-fenced** against the watchdog-abort race: `runGeneration` is bumped when a run starts and when `abortAndFailCurrentJob` fires; every post-await resumption point calls `ensureCurrent(generation)` (and the retry driver's `onUpdate` is guarded) before touching shared per-job state. A stuck FluidAudio call that ignores cancellation and returns minutes later now exits at its next checkpoint instead of corrupting the job that replaced it. The abort also re-kicks `runNextIfNeeded()`.
+- `attemptAppAudioRebuild` recalibrates `micDelaySeconds` (`mic.start − app.start` against the post-rebuild `appStartTime`), so the ~2–4 s rebuild gap no longer skews `SegmentDeduplicator.dropMicBleed`.
+
+Remaining skipped item from the same review (PermissionCenter republishing identical state every 3 s) is tracked in `ROADMAP.md`.
 
 ## What's Working
 
