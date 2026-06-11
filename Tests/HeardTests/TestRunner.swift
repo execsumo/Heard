@@ -49,6 +49,13 @@ func expectClose(_ a: Double, _ b: Double, tolerance: Double = 0.001) throws {
     }
 }
 
+func unwrap<T>(_ value: T?, _ message: String = "", file: String = #file, line: Int = #line) throws -> T {
+    guard let value else {
+        throw TestFailure(message.isEmpty ? "Expected non-nil value at \(file):\(line)" : message)
+    }
+    return value
+}
+
 struct TestFailure: Error, CustomStringConvertible {
     let description: String
     init(_ description: String) { self.description = description }
@@ -2076,6 +2083,118 @@ func runSegmentDeduplicatorTests() {
     }
 }
 
+// MARK: - SpeakerEmbeddingAggregator Tests
+
+func runSpeakerEmbeddingAggregatorTests() {
+    print("\n🧮 Speaker Embedding Aggregator Tests")
+
+    typealias Chunk = SpeakerEmbeddingAggregator.Chunk
+
+    test("Single chunk returns its normalized direction") {
+        // 3-4-0 has norm 5 → normalizes to 0.6, 0.8, 0.
+        let c = SpeakerEmbeddingAggregator.centroid(of: [Chunk(vector: [3, 4, 0], weight: 1)])
+        let centroid = try unwrap(c)
+        try expectClose(Double(centroid[0]), 0.6)
+        try expectClose(Double(centroid[1]), 0.8)
+        try expectClose(Double(centroid[2]), 0.0)
+    }
+
+    test("Centroid result is L2-normalized") {
+        let c = try unwrap(SpeakerEmbeddingAggregator.centroid(of: [
+            Chunk(vector: [1, 1, 1, 1], weight: 1),
+            Chunk(vector: [1, 0, 1, 0], weight: 1),
+        ]))
+        let norm = sqrt(c.reduce(Float(0)) { $0 + $1 * $1 })
+        try expectClose(Double(norm), 1.0)
+    }
+
+    test("Duration weight pulls centroid toward the longer chunk") {
+        // Heavy chunk points +x, light chunk points +y. Result should lean +x.
+        let c = try unwrap(SpeakerEmbeddingAggregator.centroid(of: [
+            Chunk(vector: [1, 0], weight: 9),
+            Chunk(vector: [0, 1], weight: 1),
+        ]))
+        try expect(c[0] > c[1], "expected x-component (\(c[0])) > y-component (\(c[1]))")
+        // 9:1 weighting → atan2(1,9); x ≈ 0.994, y ≈ 0.110.
+        try expectClose(Double(c[0]), 0.9938, tolerance: 0.01)
+    }
+
+    test("Outlier chunk is trimmed from the centroid") {
+        // Three tight +x chunks plus one opposing -x chunk. The opposing chunk sits
+        // beyond the 0.50 distance threshold from the provisional mean and is dropped,
+        // so the refined centroid stays essentially +x.
+        let c = try unwrap(SpeakerEmbeddingAggregator.centroid(of: [
+            Chunk(vector: [1, 0], weight: 1),
+            Chunk(vector: [1, 0], weight: 1),
+            Chunk(vector: [0.98, 0.2], weight: 1),
+            Chunk(vector: [-1, 0], weight: 1), // outlier (cosine distance 2.0)
+        ]))
+        try expect(c[0] > 0.9, "expected centroid to stay near +x, got \(c)")
+    }
+
+    test("Two equal orthogonal chunks yield a symmetric centroid") {
+        // Provisional mean is the 45° bisector; both chunks sit 0.29 from it (inside the
+        // 0.50 keep threshold), so neither is trimmed and the result stays symmetric.
+        let centroid = try unwrap(SpeakerEmbeddingAggregator.centroid(of: [
+            Chunk(vector: [1, 0], weight: 1),
+            Chunk(vector: [0, 1], weight: 1),
+        ]))
+        try expectClose(Double(centroid[0]), Double(centroid[1]))
+    }
+
+    test("Empty vectors and non-positive weights are ignored") {
+        let c = try unwrap(SpeakerEmbeddingAggregator.centroid(of: [
+            Chunk(vector: [], weight: 5),
+            Chunk(vector: [1, 0], weight: 0),   // zero weight skipped
+            Chunk(vector: [3, 4], weight: 2),
+        ]))
+        try expectClose(Double(c[0]), 0.6)
+        try expectClose(Double(c[1]), 0.8)
+    }
+
+    test("Mismatched dimensionality chunks are dropped defensively") {
+        let c = try unwrap(SpeakerEmbeddingAggregator.centroid(of: [
+            Chunk(vector: [1, 0], weight: 1),
+            Chunk(vector: [1, 0, 0], weight: 1), // wrong dim vs first usable → dropped
+        ]))
+        try expectEqual(c.count, 2)
+    }
+
+    test("No usable chunks yields nil") {
+        try expect(SpeakerEmbeddingAggregator.centroid(of: []) == nil)
+        try expect(SpeakerEmbeddingAggregator.centroid(of: [Chunk(vector: [], weight: 1)]) == nil)
+    }
+
+    test("centroids(perSpeaker:) builds one vector per speaker, omitting empties") {
+        let out = SpeakerEmbeddingAggregator.centroids(perSpeaker: [
+            "R_1": [Chunk(vector: [3, 4], weight: 1)],
+            "R_2": [Chunk(vector: [1, 0], weight: 2), Chunk(vector: [1, 0], weight: 2)],
+            "R_3": [Chunk(vector: [], weight: 1)], // no usable chunk → omitted
+        ])
+        try expectEqual(out.count, 2)
+        try expect(out["R_1"] != nil && out["R_2"] != nil)
+        try expect(out["R_3"] == nil)
+    }
+
+    test("l2Normalized leaves a zero vector unchanged") {
+        try expectEqual(l2Normalized([0, 0, 0]), [0, 0, 0])
+        try expectEqual(l2Normalized([]), [])
+    }
+
+    test("Centroid stays a confident match for the same speaker's stored profile") {
+        // Simulate a stored profile embedding and noisy windows of the same speaker.
+        let stored: [Float] = [1, 0, 0, 0]
+        let centroid = try unwrap(SpeakerEmbeddingAggregator.centroid(of: [
+            Chunk(vector: [0.9, 0.1, 0.1, 0], weight: 3),
+            Chunk(vector: [0.95, 0.05, 0, 0.1], weight: 4),
+            Chunk(vector: [0.88, 0, 0.15, 0.05], weight: 2),
+        ]))
+        // Distance well under SpeakerMatcher.matchThreshold (0.30).
+        try expect(cosineDistance(centroid, stored) < 0.30,
+                   "distance \(cosineDistance(centroid, stored)) should be < 0.30")
+    }
+}
+
 @main
 struct TestRunner {
     @MainActor static func main() async {
@@ -2096,6 +2215,7 @@ struct TestRunner {
         await runRetryExecutorTests()
         await runLifetimeRetryCapTests()
         runSpeakerMatcherEdgeTests()
+        runSpeakerEmbeddingAggregatorTests()
         runRosterReaderTests()
         runRosterReaderAXTests()
         runSegmentDeduplicatorTests()

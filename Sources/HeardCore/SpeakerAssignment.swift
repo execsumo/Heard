@@ -342,6 +342,106 @@ public enum SegmentMerger {
 
 // MARK: - Cosine Distance
 
+// MARK: - Per-Chunk Embedding Aggregation
+
+/// Builds one robust speaker embedding from many per-chunk embeddings.
+///
+/// FluidAudio's offline diarizer (0.14.8+) can surface a `ChunkEmbedding` for every
+/// (speaker, chunk) pair via `DiarizationResult.chunkEmbeddings`. Each carries an
+/// L2-normalized 256-d WeSpeaker vector covering a short window. Any single window is
+/// noisy — short, possibly overlapped with another speaker — so deriving cross-meeting
+/// identity from one arbitrary window (the old "first segment per speaker" behavior)
+/// is fragile and produces both false "new speaker" prompts and occasional mismatches.
+///
+/// This aggregates all of a speaker's windows into a duration-weighted centroid with a
+/// single outlier-rejection pass, which is substantially more stable for matching
+/// against the persistent speaker database than any individual window.
+public enum SpeakerEmbeddingAggregator {
+
+    /// One per-chunk embedding for a single speaker.
+    public struct Chunk {
+        public let vector: [Float]
+        /// Relative weight in the centroid — typically the chunk's duration in seconds,
+        /// so longer (more reliable) windows dominate.
+        public let weight: Float
+
+        public init(vector: [Float], weight: Float) {
+            self.vector = vector
+            self.weight = weight
+        }
+    }
+
+    /// Cosine distance beyond which a chunk is treated as an outlier — overlapped speech
+    /// or a mis-clustered window — and dropped before the final centroid is computed.
+    /// 0.50 (≈ 0.5 cosine similarity) is loose enough to keep genuine intra-speaker
+    /// variation while rejecting clearly foreign windows. The trim never removes every
+    /// chunk, so a speaker always yields a centroid.
+    public static let outlierDistanceThreshold: Float = 0.50
+
+    /// Build one L2-normalized centroid per speaker from grouped chunk embeddings.
+    /// Keys are opaque speaker IDs; speakers with no usable chunk are omitted.
+    public static func centroids(perSpeaker chunks: [String: [Chunk]]) -> [String: [Float]] {
+        var result: [String: [Float]] = [:]
+        for (speakerID, speakerChunks) in chunks {
+            if let centroid = centroid(of: speakerChunks) {
+                result[speakerID] = centroid
+            }
+        }
+        return result
+    }
+
+    /// Duration-weighted centroid of one speaker's chunks, with a single outlier-trim
+    /// pass. Returns `nil` only when there is no usable chunk at all.
+    public static func centroid(of chunks: [Chunk]) -> [Float]? {
+        // Keep only non-empty vectors with positive weight, sharing one dimensionality.
+        let usable = chunks.filter { !$0.vector.isEmpty && $0.weight > 0 }
+        guard let dim = usable.first?.vector.count, dim > 0 else { return nil }
+        let clean = usable.filter { $0.vector.count == dim }
+        guard !clean.isEmpty else { return nil }
+
+        // First pass: weighted mean over every chunk.
+        guard let provisional = weightedMean(clean, dim: dim) else { return nil }
+
+        // Second pass: drop chunks too far from the provisional centroid, then recompute.
+        // Never trim to empty — fall back to the full set if everything looks like an
+        // outlier (which happens for a lone, internally-inconsistent speaker).
+        let kept = clean.filter { cosineDistance($0.vector, provisional) <= outlierDistanceThreshold }
+        let basis = kept.isEmpty ? clean : kept
+        return weightedMean(basis, dim: dim) ?? provisional
+    }
+
+    /// Weighted mean of equal-length vectors, L2-normalized. Caller guarantees a shared
+    /// `dim` and at least one element.
+    private static func weightedMean(_ chunks: [Chunk], dim: Int) -> [Float]? {
+        var acc = [Float](repeating: 0, count: dim)
+        var totalWeight: Float = 0
+        for chunk in chunks {
+            let w = chunk.weight
+            for i in 0..<dim {
+                acc[i] += w * chunk.vector[i]
+            }
+            totalWeight += w
+        }
+        guard totalWeight > 0 else { return nil }
+        return l2Normalized(acc)
+    }
+}
+
+/// Returns the L2-normalized copy of `v`, or `v` unchanged when its norm is ~0.
+/// Cosine distance is already scale-invariant, but normalizing keeps every embedding we
+/// persist on a unit sphere so stored profiles stay uniform across versions.
+public func l2Normalized(_ v: [Float]) -> [Float] {
+    guard !v.isEmpty else { return v }
+    var norm: Float = 0
+    vDSP_dotpr(v, 1, v, 1, &norm, vDSP_Length(v.count))
+    norm = sqrt(norm)
+    guard norm > 0 else { return v }
+    var out = [Float](repeating: 0, count: v.count)
+    var inv = 1 / norm
+    vDSP_vsmul(v, 1, &inv, &out, 1, vDSP_Length(v.count))
+    return out
+}
+
 /// Cosine distance between two vectors: 1 - cosine_similarity.
 /// Returns 0 for identical vectors, 2 for opposite vectors.
 public func cosineDistance(_ a: [Float], _ b: [Float]) -> Float {

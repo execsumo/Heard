@@ -2452,12 +2452,57 @@ public final class PipelineProcessor: ObservableObject {
         // supports merging, but recovering from a merged embedding is harder,
         // so we default to stricter than FluidAudio's 0.6.
         let similarity = settingsStore.settings.diarizationClusteringSimilarity
-        let config = OfflineDiarizerConfig(clusteringThreshold: similarity)
+        var config = OfflineDiarizerConfig(clusteringThreshold: similarity)
+        // Surface per-chunk speaker embeddings so speaker assignment can build a robust
+        // duration-weighted centroid per speaker instead of relying on one arbitrary
+        // segment. Off by default in FluidAudio (~1–2 MB/hour of audio); negligible here.
+        config.exposeChunkEmbeddings = true
         let diarizer = OfflineDiarizerManager(config: config)
         try await diarizer.prepareModels()
         appDiarization = try await diarizer.process(audio: track.samples)
 
         // Models are released when diarizer goes out of scope
+    }
+
+    /// One embedding per remote speaker, used for matching against the persistent
+    /// speaker database and for any profiles created this meeting.
+    ///
+    /// Prefers a duration-weighted centroid over every per-chunk embedding
+    /// (`DiarizationResult.chunkEmbeddings`, FluidAudio 0.14.8+), which is far more
+    /// stable than any single window. Falls back to the legacy "first segment per
+    /// speaker" embedding when chunk embeddings are unavailable — e.g. very short audio
+    /// or a model build that doesn't surface them. Results are sorted by speaker ID so
+    /// greedy matching in `SpeakerMatcher` stays deterministic.
+    private func buildSpeakerEmbeddings(from result: DiarizationResult) -> [SpeakerEmbedding] {
+        if let chunks = result.chunkEmbeddings, !chunks.isEmpty {
+            var grouped: [String: [SpeakerEmbeddingAggregator.Chunk]] = [:]
+            for chunk in chunks where !chunk.embedding256.isEmpty {
+                let seconds = Float(chunk.endTimeSeconds - chunk.startTimeSeconds)
+                let weight = seconds > 0 ? seconds : 1  // guard zero-length windows
+                grouped["R_\(chunk.speakerId)", default: []].append(
+                    .init(vector: chunk.embedding256, weight: weight)
+                )
+            }
+            let centroids = SpeakerEmbeddingAggregator.centroids(perSpeaker: grouped)
+            if !centroids.isEmpty {
+                NSLog("Heard: built \(centroids.count) speaker centroid(s) from \(chunks.count) chunk embedding(s)")
+                return centroids
+                    .sorted { $0.key < $1.key }
+                    .map { SpeakerEmbedding(speakerID: $0.key, vector: $0.value) }
+            }
+        }
+
+        // Fallback: first per-segment embedding per speaker (pre-0.15 behavior).
+        NSLog("Heard: chunk embeddings unavailable — using per-segment embeddings")
+        var seen = Set<String>()
+        var fallback: [SpeakerEmbedding] = []
+        for seg in result.segments where !seg.embedding.isEmpty {
+            let id = "R_\(seg.speakerId)"
+            if seen.insert(id).inserted {
+                fallback.append(SpeakerEmbedding(speakerID: id, vector: seg.embedding))
+            }
+        }
+        return fallback
     }
 
     // MARK: - Stage 4: Speaker Assignment
@@ -2522,14 +2567,8 @@ public final class PipelineProcessor: ObservableObject {
                 )
             }
 
-            // Build speaker name map from embeddings
-            let embeddings: [SpeakerEmbedding] = appDiar.segments.compactMap { seg in
-                guard !seg.embedding.isEmpty else { return nil }
-                return SpeakerEmbedding(speakerID: "R_\(seg.speakerId)", vector: seg.embedding)
-            }
-            // Deduplicate by speakerID
-            var seenIDs = Set<String>()
-            let uniqueEmbeddings = embeddings.filter { seenIDs.insert($0.speakerID).inserted }
+            // One robust embedding per speaker for cross-meeting identity.
+            let uniqueEmbeddings = buildSpeakerEmbeddings(from: appDiar)
 
             let matches = SpeakerMatcher.matchSpeakers(
                 embeddings: uniqueEmbeddings,

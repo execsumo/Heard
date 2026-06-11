@@ -10,6 +10,8 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15
 
 **In-meeting notes are fully functional** — global hotkey (Ctrl+Shift+N by default) opens a focused composer panel during recording; notes interleave chronologically into the rendered transcript as italicized `**Note from <userName>:**` lines. See "In-Meeting Notes" below.
 
+**FluidAudio upgraded to 0.15.2** (from 0.14.7). Brings Parakeet v3 ASR throughput gains for free and exposes per-chunk speaker embeddings. Speaker assignment now builds a **duration-weighted, outlier-trimmed centroid per speaker** from `DiarizationResult.chunkEmbeddings` instead of the previous "first segment per speaker" embedding — more stable cross-meeting identity. The aggregation lives in pure, unit-tested code (`SpeakerEmbeddingAggregator` in `SpeakerAssignment.swift`); the diarizer is configured with `exposeChunkEmbeddings = true` in `runDiarization`, and `buildSpeakerEmbeddings(from:)` in `Services.swift` falls back to the legacy per-segment path when chunk embeddings are unavailable (very short audio / older model builds).
+
 ## What's Working
 
 ### Meeting Detection
