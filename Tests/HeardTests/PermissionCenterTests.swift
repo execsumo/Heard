@@ -88,4 +88,90 @@ func runPermissionCenterTests() {
         let state = PermissionCenter.accessibilityPermissionState(isTrusted: false, liveGranted: true)
         try expectEqual(state, .granted)
     }
+
+    // MARK: Screen Recording grant cache (revocation while app not running)
+
+    test("Grant cache: cached grant from previous session is trusted at launch") {
+        let cache = ScreenCaptureGrantCache(cachedFromPreviousSession: true)
+        try expect(cache.isGranted, "cached grant should show as granted during reconfirmation")
+        try expect(!cache.confirmedThisSession)
+    }
+
+    test("Grant cache: no cache and failed probes → never granted, no persist action") {
+        var cache = ScreenCaptureGrantCache(cachedFromPreviousSession: false, reconfirmBudget: 3)
+        for _ in 0..<10 {
+            try expectEqual(cache.recordProbe(granted: false), nil)
+        }
+        try expect(!cache.isGranted)
+    }
+
+    test("Grant cache: successful probe confirms, persists once, and is sticky") {
+        var cache = ScreenCaptureGrantCache(cachedFromPreviousSession: false)
+        try expectEqual(cache.recordProbe(granted: true), .markGranted)
+        try expect(cache.isGranted)
+        // Later stale-false probes within the session must not downgrade or re-persist.
+        try expectEqual(cache.recordProbe(granted: false), nil)
+        try expectEqual(cache.recordProbe(granted: true), nil)
+        try expect(cache.isGranted)
+    }
+
+    test("Grant cache: cached grant clears once the reconfirmation budget is exhausted") {
+        // The revocation-while-not-running case: user revoked in System Settings, then
+        // relaunched Heard. Every probe fails; after the budget runs out the cache must
+        // clear (and persist false) so the UI stops showing a stale "Granted".
+        var cache = ScreenCaptureGrantCache(cachedFromPreviousSession: true, reconfirmBudget: 3)
+        try expectEqual(cache.recordProbe(granted: false), nil)
+        try expect(cache.isGranted, "still within the reconfirmation grace window")
+        try expectEqual(cache.recordProbe(granted: false), nil)
+        try expectEqual(cache.recordProbe(granted: false), .clearGrant)
+        try expect(!cache.isGranted)
+        // Further failed probes are quiet — no repeated UserDefaults writes.
+        try expectEqual(cache.recordProbe(granted: false), nil)
+    }
+
+    test("Grant cache: probe success within the budget confirms and stops the countdown") {
+        var cache = ScreenCaptureGrantCache(cachedFromPreviousSession: true, reconfirmBudget: 3)
+        try expectEqual(cache.recordProbe(granted: false), nil)
+        try expectEqual(cache.recordProbe(granted: true), .markGranted)
+        try expect(cache.confirmedThisSession)
+        // Sticky for the rest of the session even if later probes go stale-false.
+        for _ in 0..<10 {
+            try expectEqual(cache.recordProbe(granted: false), nil)
+        }
+        try expect(cache.isGranted)
+    }
+
+    test("Grant cache: re-grant after downgrade re-confirms and re-persists") {
+        // False negatives outlasted the budget (e.g. no titled windows on screen for the
+        // whole grace window). The next successful probe must recover the granted state.
+        var cache = ScreenCaptureGrantCache(cachedFromPreviousSession: true, reconfirmBudget: 1)
+        try expectEqual(cache.recordProbe(granted: false), .clearGrant)
+        try expect(!cache.isGranted)
+        try expectEqual(cache.recordProbe(granted: true), .markGranted)
+        try expect(cache.isGranted)
+    }
+
+    test("Grant cache: authoritative false clears the cached grant immediately") {
+        // SCShareableContent reads the live TCC database, so its false is definitive —
+        // no reason to wait out the remaining budget.
+        var cache = ScreenCaptureGrantCache(cachedFromPreviousSession: true, reconfirmBudget: 10)
+        try expectEqual(cache.recordAuthoritativeProbe(granted: false), .clearGrant)
+        try expect(!cache.isGranted)
+    }
+
+    test("Grant cache: authoritative false never downgrades a session-confirmed grant") {
+        // Revocations only take effect after restart, so a grant confirmed this session
+        // outranks even an authoritative false (which can only be a mid-session revoke
+        // that won't apply until relaunch).
+        var cache = ScreenCaptureGrantCache(cachedFromPreviousSession: false)
+        try expectEqual(cache.recordProbe(granted: true), .markGranted)
+        try expectEqual(cache.recordAuthoritativeProbe(granted: false), nil)
+        try expect(cache.isGranted)
+    }
+
+    test("Grant cache: authoritative true confirms like a normal probe") {
+        var cache = ScreenCaptureGrantCache(cachedFromPreviousSession: true, reconfirmBudget: 3)
+        try expectEqual(cache.recordAuthoritativeProbe(granted: true), .markGranted)
+        try expect(cache.confirmedThisSession)
+    }
 }
