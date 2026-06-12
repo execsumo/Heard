@@ -1141,22 +1141,79 @@ public final class ModelCatalog: ObservableObject {
 
 // MARK: - Permission Center
 
+/// Pure state machine for the cached Screen Recording grant. Exposed for unit tests.
+///
+/// macOS only applies a Screen Recording revocation after the app restarts, so:
+/// - a grant confirmed by a live probe this session is sticky for the rest of the
+///   process lifetime (a downgrade within the same session is always stale), but
+/// - a grant cached from a previous session may have been revoked while the app was
+///   not running, so it is only trusted until `reconfirmBudget` consecutive failed
+///   probes have elapsed (~30 s at the 3 s poll interval — enough to ride out the
+///   window-list probe's transient false negatives), after which it is cleared and
+///   the permission reports Not Granted.
+/// If a probe succeeds after the budget ran out (the false negatives outlasted it),
+/// the grant re-confirms and re-persists on that poll tick.
+public struct ScreenCaptureGrantCache: Equatable {
+    /// What the caller must write to the persisted flag after a probe (nil = no change).
+    public enum PersistAction: Equatable {
+        case markGranted
+        case clearGrant
+    }
+
+    public private(set) var confirmedThisSession = false
+    public private(set) var cachedFromPreviousSession: Bool
+    public private(set) var reconfirmBudget: Int
+
+    public init(cachedFromPreviousSession: Bool, reconfirmBudget: Int = 10) {
+        self.cachedFromPreviousSession = cachedFromPreviousSession
+        self.reconfirmBudget = reconfirmBudget
+    }
+
+    /// Whether the permission should currently be treated as granted.
+    public var isGranted: Bool { confirmedThisSession || cachedFromPreviousSession }
+
+    /// Feed one probe result from the 3 s background poll. A `false` may be a transient
+    /// false negative (stale CGPreflight cache, no titled windows on screen), so it only
+    /// chips away at the reconfirmation budget rather than downgrading immediately.
+    public mutating func recordProbe(granted: Bool) -> PersistAction? {
+        if granted {
+            let firstConfirmation = !confirmedThisSession
+            confirmedThisSession = true
+            return firstConfirmation ? .markGranted : nil
+        }
+        guard !confirmedThisSession, cachedFromPreviousSession else { return nil }
+        reconfirmBudget -= 1
+        if reconfirmBudget <= 0 {
+            cachedFromPreviousSession = false
+            return .clearGrant
+        }
+        return nil
+    }
+
+    /// Feed an authoritative probe result (SCShareableContent reads the live TCC
+    /// database). A `false` here is definitive, so the cached grant clears immediately
+    /// instead of waiting out the reconfirmation budget.
+    public mutating func recordAuthoritativeProbe(granted: Bool) -> PersistAction? {
+        if granted { return recordProbe(granted: true) }
+        guard !confirmedThisSession, cachedFromPreviousSession else { return nil }
+        cachedFromPreviousSession = false
+        reconfirmBudget = 0
+        return .clearGrant
+    }
+}
+
 @MainActor
 public final class PermissionCenter: ObservableObject {
     @Published public private(set) var statuses: [PermissionStatus] = []
 
     private var refreshTask: Task<Void, Never>?
-    // Once true, never reset to false within a process lifetime: revocations only take
-    // effect after an app restart, so a downgrade within the same session is always stale.
-    // Initialized from UserDefaults so a grant from a previous session is reflected on the
-    // next launch — CGPreflightScreenCaptureAccess() returns a stale false on macOS 15+.
-    private var screenCaptureGrantedLive: Bool = UserDefaults.standard.bool(forKey: "screenCaptureTCCGranted") {
-        didSet {
-            if screenCaptureGrantedLive && !oldValue {
-                UserDefaults.standard.set(true, forKey: "screenCaptureTCCGranted")
-            }
-        }
-    }
+    // Tracks the Screen Recording grant across sessions. A grant confirmed live this
+    // session is sticky for the process lifetime; a grant cached from a previous session
+    // (UserDefaults) is reconfirmed after launch and cleared if the user revoked the
+    // permission while Heard wasn't running. See ScreenCaptureGrantCache.
+    private var screenCaptureGrant = ScreenCaptureGrantCache(
+        cachedFromPreviousSession: UserDefaults.standard.bool(forKey: "screenCaptureTCCGranted")
+    )
     // Set when the user clicks "Grant…" so the System Settings deactivation observer
     // knows to do a live check when they return.
     private var pendingScreenCaptureCheck = false
@@ -1186,20 +1243,38 @@ public final class PermissionCenter: ObservableObject {
         // a mid-session grant; the one-shot SCShareableContent check (fired when System
         // Settings deactivates after a user-initiated "Grant…") handles that case.
         //
-        // NEVER overwrite a confirmed true with a potentially stale false: permission
-        // revocations only take effect after an app restart, so if screenCaptureGrantedLive
-        // is already true, preserve it — the poll result can only be wrong in that direction.
+        // A grant confirmed this session is never downgraded: revocations only take
+        // effect after an app restart, so within a session a false probe can only be
+        // stale. A grant cached from a PREVIOUS session is different — the user may have
+        // revoked it while Heard wasn't running — so it must be reconfirmed after launch
+        // and is cleared if probes keep failing (see ScreenCaptureGrantCache).
         //
         // CGPreflightScreenCaptureAccess() can also return a stale false on a FRESH launch
-        // on macOS 15+ (notably for ad-hoc signed builds), which leaves a previously-granted
-        // permission showing as "Not Granted" after an app restart. Fall back to a
+        // on macOS 15+ (notably for ad-hoc signed builds), which would leave a previously-
+        // granted permission showing as "Not Granted" after an app restart. Fall back to a
         // non-prompting window-list probe, which reads the live grant without ever
         // triggering the TCC dialog (so it is safe in this background loop).
-        if !screenCaptureGrantedLive {
-            screenCaptureGrantedLive = CGPreflightScreenCaptureAccess()
-                || Self.screenRecordingGrantedViaWindowList()
+        if !screenCaptureGrant.confirmedThisSession {
+            applyScreenCaptureProbe(
+                CGPreflightScreenCaptureAccess() || Self.screenRecordingGrantedViaWindowList()
+            )
         }
         refresh()
+    }
+
+    /// Feed a probe result into the grant cache and persist any resulting state change.
+    private func applyScreenCaptureProbe(_ granted: Bool, authoritative: Bool = false) {
+        let action = authoritative
+            ? screenCaptureGrant.recordAuthoritativeProbe(granted: granted)
+            : screenCaptureGrant.recordProbe(granted: granted)
+        switch action {
+        case .markGranted:
+            UserDefaults.standard.set(true, forKey: "screenCaptureTCCGranted")
+        case .clearGrant:
+            UserDefaults.standard.set(false, forKey: "screenCaptureTCCGranted")
+        case nil:
+            break
+        }
     }
 
     /// Authoritative, non-prompting Screen Recording check used by the background poll.
@@ -1281,7 +1356,7 @@ public final class PermissionCenter: ObservableObject {
     }
 
     public var isScreenCaptureGranted: Bool {
-        CGPreflightScreenCaptureAccess() || screenCaptureGrantedLive
+        CGPreflightScreenCaptureAccess() || screenCaptureGrant.isGranted
     }
 
     public func markAudioCaptureGranted() {
@@ -1383,8 +1458,10 @@ public final class PermissionCenter: ObservableObject {
         // on macOS 15+ it redirects to System Settings. Use it unconditionally.
         CGRequestScreenCaptureAccess()
 
-        // Already confirmed — nothing more to do.
-        guard !screenCaptureGrantedLive else { return }
+        // Already confirmed live this session — nothing more to do. (A grant merely
+        // cached from a previous session still goes through the live check below, so a
+        // stale cache can't suppress a legitimate re-grant flow.)
+        guard !screenCaptureGrant.confirmedThisSession else { return }
 
         // Watch for System Settings to deactivate: that's the signal that the user has
         // finished with the privacy page (granted or dismissed) and returned to another
@@ -1416,14 +1493,17 @@ public final class PermissionCenter: ObservableObject {
                 guard let self else { return }
                 // Fast path: sync check (works on macOS < 15 and after any restart).
                 if CGPreflightScreenCaptureAccess() {
-                    self.screenCaptureGrantedLive = true
+                    self.applyScreenCaptureProbe(true)
                     self.refresh()
                     return
                 }
                 // Bypass macOS 15+ per-process TCC cache with one-shot SCShareableContent.
                 // Safe here: this is user-initiated and fires exactly once per "Grant…" click,
-                // only after the user has left System Settings.
-                self.screenCaptureGrantedLive = await self.checkScreenCapturePermissionLive()
+                // only after the user has left System Settings. The result is authoritative,
+                // so a false clears any stale cached grant immediately.
+                self.applyScreenCaptureProbe(
+                    await self.checkScreenCapturePermissionLive(), authoritative: true
+                )
                 self.refresh()
             }
         }
@@ -1442,14 +1522,14 @@ public final class PermissionCenter: ObservableObject {
     }
 
     private func screenCaptureState() -> PermissionState {
-        // screenCaptureGrantedLive is updated every 3 s via the background polling task.
+        // screenCaptureGrant is updated every 3 s via the background polling task.
         // Background polling uses CGPreflightScreenCaptureAccess() to avoid triggering
         // TCC prompts. A one-shot SCShareableContent check (checkScreenCapturePermissionLive)
         // is used to bypass the macOS 15+ per-process cache, but only when the user
         // explicitly presses the "Grant…" button — never from the polling loop.
         Self.screenCapturePermissionState(
             syncGranted: CGPreflightScreenCaptureAccess(),
-            liveGranted: screenCaptureGrantedLive
+            liveGranted: screenCaptureGrant.isGranted
         )
     }
 
