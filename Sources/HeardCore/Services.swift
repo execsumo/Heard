@@ -1929,30 +1929,14 @@ public enum TranscriptWriter {
         }
     }
 
-    public static func write(document: TranscriptDocument, outputDirectory: URL, filenameFormat: FilenameFormat = .isoDate) throws -> URL {
+    public static func write(document: TranscriptDocument, outputDirectory: URL) throws -> URL {
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        
+
         let title = document.title.sanitizedFileName()
         let formatter = DateFormatter()
-        let filenameStr: String
-        
-        switch filenameFormat {
-        case .isoDate:
-            formatter.dateFormat = "yyyy-MM-dd"
-            filenameStr = "\(formatter.string(from: document.startTime))_\(title)"
-        case .isoDateTime:
-            formatter.dateFormat = "yyyy-MM-dd_HH-mm"
-            filenameStr = "\(formatter.string(from: document.startTime))_\(title)"
-        case .shortDateTime:
-            formatter.dateFormat = "MM-dd_HH-mm"
-            filenameStr = "\(formatter.string(from: document.startTime))_\(title)"
-        case .nameFirstIso:
-            formatter.dateFormat = "yyyy-MM-dd"
-            filenameStr = "\(title)_\(formatter.string(from: document.startTime))"
-        case .nameOnly:
-            filenameStr = title
-        }
-        
+        formatter.dateFormat = "yyyy-MM-dd"
+        let filenameStr = "\(formatter.string(from: document.startTime))_\(title)"
+
         var candidate = outputDirectory.appendingPathComponent("\(filenameStr).md")
         var suffix = 2
 
@@ -2411,8 +2395,7 @@ public final class PipelineProcessor: ObservableObject {
             let outputDirectory = URL(fileURLWithPath: settingsStore.settings.outputDirectory, isDirectory: true)
             let outputURL = try TranscriptWriter.write(
                 document: transcript,
-                outputDirectory: outputDirectory,
-                filenameFormat: settingsStore.settings.filenameFormat
+                outputDirectory: outputDirectory
             )
 
             job.transcriptPath = outputURL
@@ -2484,7 +2467,7 @@ public final class PipelineProcessor: ObservableObject {
 
         guard appUsable || micUsable else { throw PipelineError.noAudioFiles }
 
-        if settingsStore.settings.lowMemoryMode {
+        if settingsStore.settings.effectiveLowMemory {
             // Serialize preprocessing to halve peak RAM (~400 MB instead of ~800 MB)
             if appUsable {
                 let track = try await AudioPreprocessor.preprocess(wavURL: job.appAudioPath)

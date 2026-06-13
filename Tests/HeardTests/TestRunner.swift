@@ -2195,6 +2195,48 @@ func runSpeakerEmbeddingAggregatorTests() {
     }
 }
 
+func runSystemMemoryTests() {
+    print("\n🧠 SystemMemory / MemoryMode Tests")
+
+    let threshold = SystemMemory.lowMemoryThresholdBytes // 8 GB
+
+    test("8 GB is treated as low-memory (boundary is inclusive)") {
+        try expect(SystemMemory.isLowMemoryMachine(physicalMemoryBytes: threshold))
+    }
+
+    test("below 8 GB is low-memory") {
+        try expect(SystemMemory.isLowMemoryMachine(physicalMemoryBytes: 4 * 1024 * 1024 * 1024))
+    }
+
+    test("just over 8 GB is not low-memory") {
+        try expect(!SystemMemory.isLowMemoryMachine(physicalMemoryBytes: threshold + 1))
+    }
+
+    test("16 GB is not low-memory") {
+        try expect(!SystemMemory.isLowMemoryMachine(physicalMemoryBytes: 16 * 1024 * 1024 * 1024))
+    }
+
+    test("threshold equals 8 GiB in bytes") {
+        try expectEqual(threshold, 8_589_934_592)
+    }
+
+    test("effectiveLowMemory honors forced overrides regardless of RAM") {
+        var low = AppSettings.default
+        low.memoryMode = .low
+        try expect(low.effectiveLowMemory)
+
+        var normal = AppSettings.default
+        normal.memoryMode = .normal
+        try expect(!normal.effectiveLowMemory)
+    }
+
+    test("auto effectiveLowMemory matches the machine's RAM check") {
+        var auto = AppSettings.default
+        auto.memoryMode = .auto
+        try expectEqual(auto.effectiveLowMemory, SystemMemory.isLowMemoryMachine)
+    }
+}
+
 @main
 struct TestRunner {
     @MainActor static func main() async {
@@ -2219,6 +2261,7 @@ struct TestRunner {
         runRosterReaderTests()
         runRosterReaderAXTests()
         runSegmentDeduplicatorTests()
+        runSystemMemoryTests()
         runPermissionCenterTests()
 
         print("\n" + String(repeating: "─", count: 50))

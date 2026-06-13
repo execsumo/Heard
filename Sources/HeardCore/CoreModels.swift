@@ -284,26 +284,6 @@ public struct PermissionStatus: Identifiable, Equatable {
     }
 }
 
-public enum FilenameFormat: String, Codable, CaseIterable, Identifiable {
-    case isoDate = "YYYY-MM-DD_Name"
-    case isoDateTime = "YYYY-MM-DD_HH-mm_Name"
-    case shortDateTime = "MM-DD_HH-mm_Name"
-    case nameFirstIso = "Name_YYYY-MM-DD"
-    case nameOnly = "Name"
-
-    public var id: String { rawValue }
-
-    public var displayName: String {
-        switch self {
-        case .isoDate: return "YYYY-MM-DD_MeetingName"
-        case .isoDateTime: return "YYYY-MM-DD_HH-mm_MeetingName"
-        case .shortDateTime: return "MM-DD_HH-mm_MeetingName"
-        case .nameFirstIso: return "MeetingName_YYYY-MM-DD"
-        case .nameOnly: return "MeetingName"
-        }
-    }
-}
-
 public struct FormattingCommand: Codable, Equatable, Identifiable, Hashable {
     public var id: UUID = UUID()
     public var spoken: String
@@ -333,8 +313,6 @@ public struct AppSettings: Codable, Equatable {
     public var transcriptionModel: TranscriptionModel
     /// Show a floating HUD while dictation is active (opt-in).
     public var showDictationHUD: Bool
-    /// Format used for the transcript filename.
-    public var filenameFormat: FilenameFormat
     /// Hotkey to open the in-meeting note composer. Active only while a meeting is recording.
     public var meetingNoteHotkey: HotkeyCombo
     /// Whether to show the app icon in the Dock.
@@ -355,10 +333,22 @@ public struct AppSettings: Codable, Equatable {
     /// profile.
     public var diarizationClusteringSimilarity: Double
     public var appearance: AppAppearance
-    /// When enabled, preprocessing runs the app and mic tracks sequentially rather than
-    /// concurrently, halving peak RAM during the VAD stage (~400 MB instead of ~800 MB).
-    /// Useful on machines with 8 GB unified memory under heavy load.
-    public var lowMemoryMode: Bool
+    /// Controls whether preprocessing runs the app and mic tracks sequentially (low
+    /// memory) or concurrently. `.auto` decides based on the machine's physical RAM;
+    /// `.low`/`.normal` force the behavior. Low-memory preprocessing halves peak RAM
+    /// during the VAD stage (~400 MB instead of ~800 MB) at a small speed cost.
+    public var memoryMode: MemoryMode
+
+    /// Resolves `memoryMode` to the concrete behavior used by the pipeline. `.auto`
+    /// consults `SystemMemory.isLowMemoryMachine`; `.low`/`.normal` return the forced
+    /// value.
+    public var effectiveLowMemory: Bool {
+        switch memoryMode {
+        case .auto: return SystemMemory.isLowMemoryMachine
+        case .low: return true
+        case .normal: return false
+        }
+    }
     /// How many days of inactivity before a speaker profile is automatically deleted.
     /// 0 means never delete automatically.
     public var speakerRetentionDays: Int
@@ -383,7 +373,6 @@ public struct AppSettings: Codable, Equatable {
         modelKeepAlive: 2,
         transcriptionModel: .v2,
         showDictationHUD: false,
-        filenameFormat: .isoDate,
         meetingNoteHotkey: .meetingNoteDefault,
         showDockIcon: false,
         enableTeamsDetection: true,
@@ -391,7 +380,7 @@ public struct AppSettings: Codable, Equatable {
         enableWebexDetection: true,
         diarizationClusteringSimilarity: 0.65,
         appearance: .system,
-        lowMemoryMode: false,
+        memoryMode: .auto,
         speakerRetentionDays: 90,
         selectedInputDeviceUID: nil
     )
@@ -410,7 +399,6 @@ public struct AppSettings: Codable, Equatable {
         modelKeepAlive: Int = 2,
         transcriptionModel: TranscriptionModel = .v2,
         showDictationHUD: Bool = false,
-        filenameFormat: FilenameFormat = .isoDate,
         meetingNoteHotkey: HotkeyCombo = .meetingNoteDefault,
         showDockIcon: Bool = false,
         enableTeamsDetection: Bool = true,
@@ -418,7 +406,7 @@ public struct AppSettings: Codable, Equatable {
         enableWebexDetection: Bool = true,
         diarizationClusteringSimilarity: Double = 0.65,
         appearance: AppAppearance = .system,
-        lowMemoryMode: Bool = false,
+        memoryMode: MemoryMode = .auto,
         speakerRetentionDays: Int = 90,
         selectedInputDeviceUID: String? = nil
     ) {
@@ -435,7 +423,6 @@ public struct AppSettings: Codable, Equatable {
         self.modelKeepAlive = modelKeepAlive
         self.transcriptionModel = transcriptionModel
         self.showDictationHUD = showDictationHUD
-        self.filenameFormat = filenameFormat
         self.meetingNoteHotkey = meetingNoteHotkey
         self.showDockIcon = showDockIcon
         self.enableTeamsDetection = enableTeamsDetection
@@ -443,9 +430,51 @@ public struct AppSettings: Codable, Equatable {
         self.enableWebexDetection = enableWebexDetection
         self.diarizationClusteringSimilarity = diarizationClusteringSimilarity
         self.appearance = appearance
-        self.lowMemoryMode = lowMemoryMode
+        self.memoryMode = memoryMode
         self.speakerRetentionDays = speakerRetentionDays
         self.selectedInputDeviceUID = selectedInputDeviceUID
+    }
+}
+
+/// How the audio-preprocessing pipeline trades RAM against speed.
+public enum MemoryMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    /// Decide automatically from the machine's physical RAM (see `SystemMemory`).
+    case auto
+    /// Always preprocess tracks sequentially (lower peak RAM, slightly slower).
+    case low
+    /// Always preprocess tracks concurrently (higher peak RAM, faster).
+    case normal
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .auto: return "Automatic"
+        case .low: return "Force Low"
+        case .normal: return "Force Normal"
+        }
+    }
+}
+
+/// Physical-memory inspection used to decide the default (`.auto`) memory mode.
+public enum SystemMemory {
+    /// Machines at or below this many bytes of physical RAM default to low-memory
+    /// preprocessing. 8 GB = 8 * 1024^3 = 8_589_934_592 bytes.
+    public static let lowMemoryThresholdBytes: UInt64 = 8 * 1024 * 1024 * 1024
+
+    /// Physical RAM reported by the OS, in bytes.
+    public static var physicalMemoryBytes: UInt64 {
+        ProcessInfo.processInfo.physicalMemory
+    }
+
+    /// Whether this machine should run in low-memory mode when `memoryMode` is `.auto`.
+    public static var isLowMemoryMachine: Bool {
+        isLowMemoryMachine(physicalMemoryBytes: physicalMemoryBytes)
+    }
+
+    /// Pure, testable form of the threshold check.
+    public static func isLowMemoryMachine(physicalMemoryBytes: UInt64) -> Bool {
+        physicalMemoryBytes <= lowMemoryThresholdBytes
     }
 }
 

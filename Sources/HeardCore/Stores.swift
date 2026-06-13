@@ -153,12 +153,6 @@ public final class SettingsStore: ObservableObject {
             formattingCommands = decoded
         }
 
-        var filenameFormat = base.filenameFormat
-        if let formatString = defaults.string(forKey: "filenameFormat"),
-           let decoded = FilenameFormat(rawValue: formatString) {
-            filenameFormat = decoded
-        }
-
         var modelKeepAlive = base.modelKeepAlive
         if let val = defaults.object(forKey: "modelKeepAlive") as? NSNumber {
             modelKeepAlive = val.intValue
@@ -184,6 +178,16 @@ public final class SettingsStore: ObservableObject {
             speakerRetentionDays = val.intValue
         }
 
+        var memoryMode = base.memoryMode
+        if let modeString = defaults.string(forKey: "memoryMode"),
+           let decoded = MemoryMode(rawValue: modeString) {
+            memoryMode = decoded
+        } else if let legacy = defaults.object(forKey: "lowMemoryMode") as? Bool {
+            // Migrate the old boolean toggle: an explicit "on" becomes a forced
+            // low-memory override; "off" falls back to the new automatic default.
+            memoryMode = legacy ? .low : .auto
+        }
+
         settings = AppSettings(
             userName: defaults.string(forKey: "userName") ?? base.userName,
             launchAtLogin: defaults.object(forKey: "launchAtLogin") as? Bool ?? base.launchAtLogin,
@@ -198,12 +202,12 @@ public final class SettingsStore: ObservableObject {
             modelKeepAlive: modelKeepAlive,
             transcriptionModel: transcriptionModel,
             showDictationHUD: defaults.object(forKey: "showDictationHUD") as? Bool ?? base.showDictationHUD,
-            filenameFormat: filenameFormat,
             meetingNoteHotkey: meetingNoteHotkey,
             enableTeamsDetection: defaults.object(forKey: "enableTeamsDetection") as? Bool ?? base.enableTeamsDetection,
             enableZoomDetection: defaults.object(forKey: "enableZoomDetection") as? Bool ?? base.enableZoomDetection,
             enableWebexDetection: defaults.object(forKey: "enableWebexDetection") as? Bool ?? base.enableWebexDetection,
             diarizationClusteringSimilarity: diarizationClusteringSimilarity,
+            memoryMode: memoryMode,
             speakerRetentionDays: speakerRetentionDays,
             selectedInputDeviceUID: defaults.string(forKey: "selectedInputDeviceUID")
         )
@@ -223,7 +227,6 @@ public final class SettingsStore: ObservableObject {
         }
         defaults.set(settings.developerMode, forKey: "developerMode")
         defaults.set(settings.dictationEnabled, forKey: "dictationEnabled")
-        defaults.set(settings.filenameFormat.rawValue, forKey: "filenameFormat")
         defaults.set(settings.pushToTalk, forKey: "pushToTalk")
         defaults.set(settings.modelKeepAlive, forKey: "modelKeepAlive")
         defaults.set(settings.transcriptionModel.rawValue, forKey: "transcriptionModel")
@@ -239,6 +242,7 @@ public final class SettingsStore: ObservableObject {
         defaults.set(settings.enableWebexDetection, forKey: "enableWebexDetection")
         defaults.set(settings.diarizationClusteringSimilarity, forKey: "diarizationClusteringSimilarity")
         defaults.set(settings.speakerRetentionDays, forKey: "speakerRetentionDays")
+        defaults.set(settings.memoryMode.rawValue, forKey: "memoryMode")
         if let uid = settings.selectedInputDeviceUID {
             defaults.set(uid, forKey: "selectedInputDeviceUID")
         } else {

@@ -1112,7 +1112,7 @@ public struct SettingsView: View {
 
             sectionGroup("Output") {
                 SettingsCard {
-                    CardRow {
+                    CardRow(isLast: true) {
                         HStack {
                             Text("Save Location")
                                 .font(.system(size: 12, weight: .medium))
@@ -1128,23 +1128,6 @@ public struct SettingsView: View {
                                 .controlSize(.small)
                             Button("Open") { model.openOutputDirectory() }
                                 .controlSize(.small)
-                        }
-                    }
-                    CardRow(isLast: true) {
-                        HStack {
-                            Text("Filename Format")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(HeardTheme.Paper.ink)
-                            Spacer()
-                            Picker("", selection: settingsBinding(\.filenameFormat)) {
-                                ForEach(FilenameFormat.allCases) { format in
-                                    Text(format.displayName).tag(format)
-                                }
-                            }
-                            .labelsHidden()
-                            .controlSize(.small)
-                            .frame(maxWidth: .infinity)
-                            .frame(width: 160)
                         }
                     }
                 }
@@ -1601,12 +1584,28 @@ public struct SettingsView: View {
 
             sectionGroup("Memory") {
                 SettingsCard {
-                    ToggleRow(
-                        title: "Low Memory Mode",
-                        subtitle: "Preprocesses audio tracks one at a time instead of simultaneously. Halves peak RAM during transcription (~400 MB instead of ~800 MB). Slightly slower. Recommended on 8 GB machines.",
-                        isLast: true,
-                        isOn: settingsBinding(\.lowMemoryMode)
-                    )
+                    CardRow {
+                        HStack {
+                            Text("Low Memory Mode")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(HeardTheme.Paper.ink)
+                            Spacer()
+                            Picker("", selection: settingsBinding(\.memoryMode)) {
+                                ForEach(MemoryMode.allCases) { mode in
+                                    Text(mode.displayName).tag(mode)
+                                }
+                            }
+                            .labelsHidden()
+                            .controlSize(.small)
+                            .frame(maxWidth: .infinity)
+                            .frame(width: 160)
+                        }
+                    }
+                    CardRow(isLast: true) {
+                        Text(memoryModeSubtitle)
+                            .font(.system(size: 11))
+                            .foregroundStyle(HeardTheme.Paper.mute)
+                    }
                 }
             }
 
@@ -1755,6 +1754,23 @@ public struct SettingsView: View {
             get: { model.settingsStore.settings[keyPath: keyPath] },
             set: { model.settingsStore.settings[keyPath: keyPath] = $0 }
         )
+    }
+
+    /// Explains the memory mode picker: what it does, the detected RAM, and (for
+    /// Automatic) which mode the RAM check resolved to.
+    private var memoryModeSubtitle: String {
+        let gb = Double(SystemMemory.physicalMemoryBytes) / (1024 * 1024 * 1024)
+        let detected = "Detected \(Int(gb.rounded())) GB"
+        let base = "Preprocesses audio tracks one at a time instead of simultaneously, halving peak RAM during transcription (~400 MB instead of ~800 MB) at a small speed cost."
+        switch model.settingsStore.settings.memoryMode {
+        case .auto:
+            let resolved = SystemMemory.isLowMemoryMachine ? "low-memory mode" : "normal mode"
+            return "\(base) \(detected) — Automatic runs in \(resolved)."
+        case .low:
+            return "\(base) \(detected). Forced on."
+        case .normal:
+            return "\(base) \(detected). Forced off."
+        }
     }
 }
 
