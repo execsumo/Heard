@@ -209,7 +209,8 @@ public final class SettingsStore: ObservableObject {
             diarizationClusteringSimilarity: diarizationClusteringSimilarity,
             memoryMode: memoryMode,
             speakerRetentionDays: speakerRetentionDays,
-            selectedInputDeviceUID: defaults.string(forKey: "selectedInputDeviceUID")
+            selectedInputDeviceUID: defaults.string(forKey: "selectedInputDeviceUID"),
+            showAdvancedSettings: defaults.object(forKey: "showAdvancedSettings") as? Bool ?? base.showAdvancedSettings
         )
     }
 
@@ -243,6 +244,7 @@ public final class SettingsStore: ObservableObject {
         defaults.set(settings.diarizationClusteringSimilarity, forKey: "diarizationClusteringSimilarity")
         defaults.set(settings.speakerRetentionDays, forKey: "speakerRetentionDays")
         defaults.set(settings.memoryMode.rawValue, forKey: "memoryMode")
+        defaults.set(settings.showAdvancedSettings, forKey: "showAdvancedSettings")
         if let uid = settings.selectedInputDeviceUID {
             defaults.set(uid, forKey: "selectedInputDeviceUID")
         } else {

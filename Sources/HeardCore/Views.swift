@@ -935,7 +935,9 @@ public struct SettingsView: View {
 
             VStack(spacing: 2) {
                 ForEach(SettingsTab.allCases) { tab in
-                    sidebarItem(tab)
+                    if tab != .advanced || model.settingsStore.settings.showAdvancedSettings {
+                        sidebarItem(tab)
+                    }
                 }
             }
             .padding(.horizontal, 6)
@@ -990,7 +992,7 @@ public struct SettingsView: View {
         Group {
             switch model.selectedSettingsTab {
             case .general:       generalSection
-            case .transcription: transcriptionSection
+            case .recording:     recordingSection
             case .dictation:     dictationSection
             case .speakers:      speakersSection
             case .advanced:      advancedSection
@@ -1020,28 +1022,6 @@ public struct SettingsView: View {
                 }
             }
 
-            sectionGroup("Appearance") {
-                SettingsCard {
-                    CardRow(isLast: true) {
-                        HStack {
-                            Text("Theme")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(HeardTheme.Paper.ink)
-                            Spacer()
-                            Picker("", selection: settingsBinding(\.appearance)) {
-                                ForEach(AppAppearance.allCases) { appearance in
-                                    Text(appearance.displayName).tag(appearance)
-                                }
-                            }
-                            .labelsHidden()
-                            .controlSize(.small)
-                            .frame(maxWidth: .infinity)
-                            .frame(width: 160)
-                        }
-                    }
-                }
-            }
-
             sectionGroup("Behavior") {
                 SettingsCard {
                     ToggleRow(
@@ -1049,13 +1029,6 @@ public struct SettingsView: View {
                         isOn: Binding(
                             get: { model.settingsStore.settings.launchAtLogin },
                             set: { model.setLaunchAtLogin($0) }
-                        )
-                    )
-                    ToggleRow(
-                        title: "Auto-Watch & Record Meetings",
-                        isOn: Binding(
-                            get: { model.settingsStore.settings.autoWatch },
-                            set: { model.setAutoWatch($0) }
                         )
                     )
                     ToggleRow(
@@ -1069,11 +1042,58 @@ public struct SettingsView: View {
                 }
             }
 
+            sectionGroup("Advanced") {
+                SettingsCard {
+                    ToggleRow(
+                        title: "Show Advanced Settings",
+                        subtitle: "Reveals models, performance, diarization, and debugging options.",
+                        isLast: true,
+                        isOn: settingsBinding(\.showAdvancedSettings)
+                    )
+                }
+            }
+
+            sectionGroup("Permissions") {
+                SettingsCard {
+                    let perms = model.permissionCenter.statuses
+                    ForEach(Array(perms.enumerated()), id: \.offset) { _, perm in
+                        CardRow(isLast: true) {
+                            PermissionRow(permission: perm, model: model)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Recording
+
+    private var recordingSection: some View {
+        paneScroll {
             sectionGroup("Meeting Detection") {
                 SettingsCard {
                     ToggleRow(title: "Microsoft Teams", isOn: settingsBinding(\.enableTeamsDetection))
                     ToggleRow(title: "Zoom", isOn: settingsBinding(\.enableZoomDetection))
-                    ToggleRow(title: "Webex", isLast: true, isOn: settingsBinding(\.enableWebexDetection))
+                    ToggleRow(title: "Webex", isOn: settingsBinding(\.enableWebexDetection))
+                    ToggleRow(
+                        title: "Auto-Watch & Record Meetings",
+                        isLast: true,
+                        isOn: Binding(
+                            get: { model.settingsStore.settings.autoWatch },
+                            set: { model.setAutoWatch($0) }
+                        )
+                    )
+                }
+            }
+
+            sectionGroup("Microphone") {
+                SettingsCard {
+                    CardRow(isLast: true) {
+                        MicrophonePickerRow(
+                            selectedUID: model.settingsStore.settings.selectedInputDeviceUID,
+                            onSelect: { model.setInputDeviceUID($0) }
+                        )
+                    }
                 }
             }
 
@@ -1081,7 +1101,7 @@ public struct SettingsView: View {
                 SettingsCard {
                     CardRow(isLast: true) {
                         HStack {
-                            Text("Supported Languages")
+                            Text("Language")
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(HeardTheme.Paper.ink)
                             Spacer()
@@ -1099,57 +1119,6 @@ public struct SettingsView: View {
                 }
             }
 
-            sectionGroup("Microphone") {
-                SettingsCard {
-                    CardRow(isLast: true) {
-                        MicrophonePickerRow(
-                            selectedUID: model.settingsStore.settings.selectedInputDeviceUID,
-                            onSelect: { model.setInputDeviceUID($0) }
-                        )
-                    }
-                }
-            }
-
-            sectionGroup("Output") {
-                SettingsCard {
-                    CardRow(isLast: true) {
-                        HStack {
-                            Text("Save Location")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(HeardTheme.Paper.ink)
-                            Spacer()
-                            Text(model.settingsStore.settings.outputDirectory)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(HeardTheme.Paper.mute)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .frame(maxWidth: 180, alignment: .trailing)
-                            Button("Choose…") { model.chooseOutputDirectory() }
-                                .controlSize(.small)
-                            Button("Open") { model.openOutputDirectory() }
-                                .controlSize(.small)
-                        }
-                    }
-                }
-            }
-
-            sectionGroup("Permissions") {
-                SettingsCard {
-                    let perms = model.permissionCenter.statuses
-                    ForEach(Array(perms.enumerated()), id: \.offset) { _, perm in
-                        CardRow(isLast: true) {
-                            PermissionRow(permission: perm, model: model)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: Transcription
-
-    private var transcriptionSection: some View {
-        paneScroll {
             sectionGroup("Custom Vocabulary") {
                 SettingsCard {
                     CardRow {
@@ -1206,6 +1175,29 @@ public struct SettingsView: View {
                                 .background(HeardTheme.Paper.surfaceAlt,
                                             in: RoundedRectangle(cornerRadius: 5))
                             Button("Set Hotkey") { hotkeyTarget = .meetingNote }
+                                .controlSize(.small)
+                        }
+                    }
+                }
+            }
+
+            sectionGroup("Output") {
+                SettingsCard {
+                    CardRow(isLast: true) {
+                        HStack {
+                            Text("Save Location")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(HeardTheme.Paper.ink)
+                            Spacer()
+                            Text(model.settingsStore.settings.outputDirectory)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(HeardTheme.Paper.mute)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: 180, alignment: .trailing)
+                            Button("Choose…") { model.chooseOutputDirectory() }
+                                .controlSize(.small)
+                            Button("Open") { model.openOutputDirectory() }
                                 .controlSize(.small)
                         }
                     }
@@ -1443,6 +1435,31 @@ public struct SettingsView: View {
                     }
                 }
             }
+
+            HeardTheme.Paper.border.frame(height: 0.5)
+
+            HStack(spacing: HeardTheme.Spacing.sm) {
+                Text("Archive inactive speakers after")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(HeardTheme.Paper.ink)
+                Picker("", selection: settingsBinding(\.speakerRetentionDays)) {
+                    Text("Never").tag(0)
+                    Text("30 days").tag(30)
+                    Text("60 days").tag(60)
+                    Text("90 days").tag(90)
+                    Text("180 days").tag(180)
+                    Text("1 year").tag(365)
+                }
+                .labelsHidden()
+                .fixedSize()
+                Spacer()
+                Text("Unseen profiles are removed on next launch.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(HeardTheme.Paper.mute)
+            }
+            .padding(.horizontal, HeardTheme.Spacing.lg)
+            .padding(.vertical, HeardTheme.Spacing.sm)
+            .background(HeardTheme.Paper.bg)
         }
         .background(HeardTheme.Paper.bg)
     }
@@ -1603,34 +1620,6 @@ public struct SettingsView: View {
                     }
                     CardRow(isLast: true) {
                         Text(memoryModeSubtitle)
-                            .font(.system(size: 11))
-                            .foregroundStyle(HeardTheme.Paper.mute)
-                    }
-                }
-            }
-
-            sectionGroup("Speaker Archive") {
-                SettingsCard {
-                    CardRow(isLast: false) {
-                        HStack {
-                            Text("Archive speakers after")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(HeardTheme.Paper.ink)
-                            Spacer()
-                            Picker("", selection: settingsBinding(\.speakerRetentionDays)) {
-                                Text("Never").tag(0)
-                                Text("30 days").tag(30)
-                                Text("60 days").tag(60)
-                                Text("90 days").tag(90)
-                                Text("180 days").tag(180)
-                                Text("1 year").tag(365)
-                            }
-                            .labelsHidden()
-                            .fixedSize()
-                        }
-                    }
-                    CardRow(isLast: true) {
-                        Text("Speaker profiles not seen in any meeting for the selected period are automatically deleted on the next app launch. Their audio clips and embeddings are removed.")
                             .font(.system(size: 11))
                             .foregroundStyle(HeardTheme.Paper.mute)
                     }

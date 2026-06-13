@@ -355,6 +355,9 @@ public struct AppSettings: Codable, Equatable {
     /// CoreAudio UID of the user-selected input device for dictation and meeting
     /// recording. nil means follow the system default input device.
     public var selectedInputDeviceUID: String?
+    /// Reveals the gated Advanced tab (models, performance, diarization, debugging).
+    /// Off by default to keep the default settings surface calm.
+    public var showAdvancedSettings: Bool
 
     public static let `default` = AppSettings(
         userName: "",
@@ -382,7 +385,8 @@ public struct AppSettings: Codable, Equatable {
         appearance: .system,
         memoryMode: .auto,
         speakerRetentionDays: 90,
-        selectedInputDeviceUID: nil
+        selectedInputDeviceUID: nil,
+        showAdvancedSettings: false
     )
 
     public init(
@@ -408,7 +412,8 @@ public struct AppSettings: Codable, Equatable {
         appearance: AppAppearance = .system,
         memoryMode: MemoryMode = .auto,
         speakerRetentionDays: Int = 90,
-        selectedInputDeviceUID: String? = nil
+        selectedInputDeviceUID: String? = nil,
+        showAdvancedSettings: Bool = false
     ) {
         self.userName = userName
         self.launchAtLogin = launchAtLogin
@@ -433,6 +438,7 @@ public struct AppSettings: Codable, Equatable {
         self.memoryMode = memoryMode
         self.speakerRetentionDays = speakerRetentionDays
         self.selectedInputDeviceUID = selectedInputDeviceUID
+        self.showAdvancedSettings = showAdvancedSettings
     }
 }
 
@@ -597,7 +603,7 @@ public struct TranscriptDocument {
 
 public enum SettingsTab: String, CaseIterable, Identifiable {
     case general
-    case transcription
+    case recording
     case dictation
     case speakers
     case advanced
@@ -608,7 +614,7 @@ public enum SettingsTab: String, CaseIterable, Identifiable {
     public var label: String {
         switch self {
         case .general: return "General"
-        case .transcription: return "Transcription"
+        case .recording: return "Recording"
         case .dictation: return "Dictation"
         case .speakers: return "Speakers"
         case .advanced: return "Advanced"
@@ -619,7 +625,7 @@ public enum SettingsTab: String, CaseIterable, Identifiable {
     public var icon: String {
         switch self {
         case .general: return "gearshape"
-        case .transcription: return "waveform.and.mic"
+        case .recording: return "record.circle"
         case .dictation: return "mic.badge.plus"
         case .speakers: return "person.3"
         case .advanced: return "cpu"
