@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Stop taking meeting notes. Get them automatically.</strong><br/>
-  Heard is a quiet macOS menu bar app that auto-detects your Microsoft Teams meetings, records them, and turns them into clean, speaker-labeled Markdown transcripts — <em>fully on-device</em>.
+  Heard is a quiet macOS menu bar app that auto-detects your meetings in Microsoft Teams, Zoom, and Webex, records them, and turns them into clean, speaker-labeled Markdown transcripts — <em>fully on-device</em>.
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/hero.png" alt="Heard recording a Teams meeting from the macOS menu bar" width="720" />
+  <img src="docs/screenshots/hero.png" alt="Heard recording a meeting from the macOS menu bar" width="720" />
 </p>
 
 ---
@@ -28,7 +28,7 @@
 **No cloud. No subscription. No sending your meetings to anyone's servers.**
 Every byte of audio, every transcript, every speaker embedding lives on your Mac. Heard never makes a network call to a transcription service — because there is no transcription service. It all runs locally on Apple Silicon.
 
-- **Zero‑click recording** — As soon as a Teams meeting starts, Heard starts. When the meeting ends, you have a transcript waiting in your Documents folder.
+- **Zero‑click recording** — As soon as a meeting starts in Teams, Zoom, or Webex, Heard starts. When the meeting ends, you have a transcript waiting in your Documents folder.
 - **Speaker-labeled transcripts** — Diarization separates each voice; once you name a speaker, Heard remembers them across every future meeting.
 - **Dual‑track audio** — Heard records the system audio (the people on the call) and your microphone as separate streams, then merges them after transcription. The result is dramatically cleaner than recording a single mixed track.
 - **Custom vocabulary** — Add product names, acronyms, or jargon and they'll come through correctly in both meeting transcripts and live dictation.
@@ -113,19 +113,18 @@ After launching, grant Microphone (always required) and Accessibility (required 
 ## Requirements
 
 - macOS 15.0+
-- Apple Silicon (FluidAudio CoreML/ANE models are ARM-only)
-- [FluidAudio](https://github.com/FluidInference/FluidAudio) 0.14.3+ (resolved automatically via SPM)
+- Apple Silicon (on-device ASR and diarization models are ARM-only)
 
 ---
 
 ## Features
 
 ### Meeting Transcription
-- **Teams auto-detection** — Polls `IOPMCopyAssertionsByProcess()` every 3 seconds for Teams power assertions (`PreventUserIdleDisplaySleep` / `NoDisplaySleepAssertion` / "Call in progress"). Requires 2 consecutive hits before triggering; applies a 5-second cooldown on end. Recognises Teams by bundle ID (`com.microsoft.teams` / `com.microsoft.teams2`) with localized-name fallbacks for Teams classic, New Teams, and "work or school" variants.
-- **Meeting title extraction** — Reads the Teams window title via the Accessibility API and strips the ` | Microsoft Teams` suffix for the transcript filename.
+- **Meeting auto-detection** — Polls `IOPMCopyAssertionsByProcess()` every 3 seconds for audio/video power assertions (`PreventUserIdleDisplaySleep` / `NoDisplaySleepAssertion` / "Call in progress"). Requires 2 consecutive hits before triggering; applies a 5-second cooldown on end. Recognises Microsoft Teams (bundle IDs `com.microsoft.teams` / `com.microsoft.teams2`, with classic/New Teams/work-or-school fallbacks), Zoom (`us.zoom.xos`), and Webex (`Cisco-Systems.Spark`).
+- **Meeting title extraction** — Reads the active meeting window title via the Accessibility API and strips app-specific suffixes (e.g. ` | Microsoft Teams`) for clean transcript filenames.
 - **Dual-track recording** — The mic track is captured via `AVAudioEngine`; the app track is captured via `CATapDescription` + a private aggregate device + a raw AUHAL output unit. The tap collects **all** Teams-related CoreAudio process object IDs (main + renderer children) so audio from Electron/Chromium sub-processes isn't lost. Both tracks land on disk as 48 kHz WAVs and are never mixed during recording.
 - **Recording reliability** — The app-audio tap self-tests after 2 seconds. If it is silent, Heard rebuilds the tap/aggregate/IOProc chain once with a fresh helper-process scan; persistent silence marks the job as mic-only and the menu bar shows "Recording (mic only)". Turning watching off during an active meeting synchronously finalizes that recording and preserves the processing state.
-- **Roster scraping** — Reads Teams participant names via Accessibility APIs every 15 s while a meeting is active. Three strategies: known roster-panel identifiers → AXList/AXTable containers → window-title parsing. Filters out UI control strings (mute, raise hand, etc.).
+- **Roster scraping** — Reads participant names from the active meeting app via Accessibility APIs every 15 s while a meeting is active. Three strategies: known roster-panel identifiers → AXList/AXTable containers → window-title parsing. Filters out UI control strings (mute, raise hand, etc.).
 - **On-device pipeline** — Sequential stages per job: preprocessing (48 kHz → 16 kHz mono via `AVAudioConverter`, in-memory Silero VAD trimming + `VadSegmentMap`) → Parakeet TDT V2/V3 transcription (per-track, parallel 4-chunk processing, with CTC vocabulary boosting) → Inverse Text Normalization (punctuation formatting) → mic-bleed deduplication → LS-EEND + WeSpeaker diarization → speaker assignment and Markdown output.
 - **Speaker identification** — Cosine-distance matching (threshold 0.40, confidence margin 0.10) against a persistent speaker database, with embedding diversity management and auto-update on confident matches. Uses UUID-based placeholders (e.g. `Speaker_1AB23C`) to guarantee universally unique speaker profiles.
 - **Cumulative transcription stats** — Every transcribed segment seamlessly increments the matched speaker's total transcribed hours and word count, which are visible in the Settings tab.
@@ -168,13 +167,15 @@ swift build
 # Run from the terminal (⚠ mic permission is attributed to the terminal, not Heard)
 swift run Heard
 
-# Build a .app bundle and launch it (recommended for day-to-day use)
+# Build a .app bundle and launch it (recommended for day-to-day use).
+# bundle.sh auto-signs with your "Developer ID Application" cert if present,
+# else a local "Dev Cert", else ad-hoc. A stable (non-ad-hoc) identity is
+# required for dictation so the Accessibility grant persists across rebuilds.
 ./scripts/bundle.sh
 open build/Heard.app
 
-# Stable-signed build — required for dictation so the Accessibility grant
-# persists across rebuilds. Replace "Heard Dev" with any local identity.
-./scripts/bundle.sh --sign "Heard Dev"
+# Force a specific signing identity instead of auto-detection:
+./scripts/bundle.sh --sign "Dev Cert"
 open build/Heard.app
 
 # Release build
@@ -211,13 +212,13 @@ Heard/
 │       ├── TextInjector.swift        # CGEvent unicode / HID / clipboard paths
 │       ├── HotkeyManager.swift       # Carbon RegisterEventHotKey wrapper (multi-hotkey registry)
 │       ├── MeetingNoteComposer.swift # Floating panel for in-meeting notes
-│       └── RosterReader.swift        # Teams roster via AXUIElement
+│       └── RosterReader.swift        # Meeting app roster via AXUIElement
 ├── Tests/HeardTests/
 │   └── TestRunner.swift              # Lightweight harness — no XCTest / no Xcode
 ├── scripts/
 │   ├── bundle.sh                     # Build + bundle + (optional) sign
 │   ├── dmg.sh                        # Release pipeline: sign, notarize, staple, package DMG, print SHA256
-│   └── diagnose.swift                # Print what Heard sees from Teams & power assertions
+│   └── diagnose.swift                # Print what Heard sees from meeting apps & power assertions
 ├── .github/
 │   └── workflows/
 │       └── ci.yml                    # Build + test on all pushes; release bundle + GitHub Release on tag push
@@ -267,7 +268,7 @@ Pipeline models stay unloaded during recording. The Models tab exposes **pipelin
 |---|---|---|
 | Microphone | Record the local user | Always |
 | Screen Recording | Surface the Teams window title for nicer filenames | Recommended |
-| Accessibility | Read Teams window title & roster, inject dictation text | Required for dictation; recommended for roster-based auto-naming |
+| Accessibility | Read meeting window title & roster, inject dictation text | Required for dictation; recommended for roster-based auto-naming |
 
 Only Microphone is strictly required; everything else degrades gracefully. Permission status is shown inside the General tab with deep-links to the right System Settings pane.
 
@@ -301,7 +302,7 @@ swift run HeardTests
 
 **Manual smoke test:** `./scripts/bundle.sh && open build/Heard.app`, enable Developer Mode in Settings → General, then use **Simulate Meeting** from the menu bar to exercise the full flow without a real Teams call.
 
-**Diagnostics:** `swift scripts/diagnose.swift` prints what Heard sees from Teams processes and power assertions — useful for debugging detection on a specific machine.
+**Diagnostics:** `swift scripts/diagnose.swift` prints what Heard sees from meeting app processes and power assertions — useful for debugging detection on a specific machine.
 
 ## Distribution
 
@@ -326,6 +327,10 @@ Pass `--skip-notarize` for local testing without Apple Developer credentials.
 ### Homebrew Cask
 
 After a notarized DMG is published to GitHub Releases, update `Casks/heard.rb` in [execsumo/homebrew-heard](https://github.com/execsumo/homebrew-heard) with the new `version` and `sha256` from the `dmg.sh` output.
+
+## Acknowledgements
+
+Heard is built on [FluidAudio](https://github.com/FluidInference/FluidAudio) by [Fluid Inference](https://github.com/FluidInference) — the on-device library that powers ASR, speaker diarization, and inverse text normalization via CoreML on Apple Silicon. FluidAudio is bundled with Heard via Swift Package Manager; no separate installation is needed.
 
 ## References
 
