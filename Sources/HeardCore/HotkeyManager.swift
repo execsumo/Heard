@@ -165,6 +165,7 @@ public final class HotkeyManager {
     private let id: UInt32
     private var onPressed: (() -> Void)?
     private var onReleased: (() -> Void)?
+    private var lastPressedAt: Date?
 
     private static let signature = OSType(0x48524430)  // "HRD0"
 
@@ -228,6 +229,11 @@ public final class HotkeyManager {
     }
 
     func handleHotkeyPressed() {
+        if let last = lastPressedAt, Date().timeIntervalSince(last) < 0.25 {
+            DebugFileLog.log("handleHotkeyPressed id=\(id) — debounced")
+            return
+        }
+        lastPressedAt = Date()
         DebugFileLog.log("handleHotkeyPressed id=\(id)")
         onPressed?()
     }

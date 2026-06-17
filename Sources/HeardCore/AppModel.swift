@@ -129,6 +129,11 @@ public final class AppModel: ObservableObject {
         dictationManager.onUtterance = { text in
             TextInjector.inject(text)
         }
+        // Surface silent "no speech captured" stops so a dropped/stalled mic
+        // isn't an invisible failure. Cleared on the next dictation start.
+        dictationManager.onNoAudioCaptured = { [weak model] in
+            model?.dictationError = "No speech captured — please try again."
+        }
 
         // Activate hotkey if dictation is enabled
         if settingsStore.settings.dictationEnabled {

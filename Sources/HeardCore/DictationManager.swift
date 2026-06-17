@@ -12,6 +12,7 @@ public enum DictationState: String {
 public enum DictationError: Error, LocalizedError {
     case notIdle(current: DictationState)
     case microphoneDenied
+    case micStalled
 
     public var errorDescription: String? {
         switch self {
@@ -19,6 +20,8 @@ public enum DictationError: Error, LocalizedError {
             return "Cannot start dictation: already \(s.rawValue). Please wait for the current operation to finish."
         case .microphoneDenied:
             return "Microphone access is required for dictation. Grant it in System Settings → Privacy & Security → Microphone."
+        case .micStalled:
+            return "The microphone didn't start delivering audio. Try dictating again; if it keeps happening, unplug/replug your input device or restart Heard."
         }
     }
 }
@@ -51,6 +54,18 @@ public final class DictationManager: ObservableObject {
     private var bufferCount = 0
     private var bufferCapWarned = false
 
+    /// Set true once the first mic buffer for the current capture lands. Used by
+    /// `start()` to confirm the AVAudioEngine tap is actually delivering audio —
+    /// the engine can report `running=true` while the input node silently
+    /// delivers nothing for seconds (a CoreAudio HAL race), which previously
+    /// produced empty transcripts the user couldn't diagnose.
+    private var firstBufferArrived = false
+    /// Wall-clock time the current mic engine started, for first-buffer latency logging.
+    private var micStartedAt: Date?
+    /// Wall-clock time the session entered `.listening`, used to distinguish a
+    /// genuine "no audio captured" failure from an intentional quick tap.
+    private var listeningStartedAt: Date?
+
     /// Hard cap on buffered audio: 4 hours at 16 kHz (matches the recording
     /// manager's max duration). A dictation session left running accumulates
     /// ~230 MB/hour; past the cap further audio is dropped rather than letting
@@ -59,6 +74,12 @@ public final class DictationManager: ObservableObject {
 
     /// Called when transcription completes for a session with the final text.
     public var onUtterance: ((String) -> Void)?
+
+    /// Called when a stop produced no usable text despite the user having
+    /// listened for a non-trivial duration — i.e. the mic captured silence or
+    /// dropped audio. Lets the UI surface a "no speech captured" hint instead
+    /// of failing silently. Runs on the main actor.
+    public var onNoAudioCaptured: (@MainActor () -> Void)?
 
     /// Custom vocabulary terms for boosting. Applied as CTC rescoring after
     /// the TDT transcription completes. Requires the CTC 110M model to be
@@ -121,8 +142,42 @@ public final class DictationManager: ObservableObject {
         bufferCapWarned = false
 
         try startMicCapture()
+
+        // Confirm the tap is actually delivering audio. On the happy path the
+        // first buffer lands ~100 ms after start; an engine that reports running
+        // but stalls can take many seconds, during which the user dictates into a
+        // dead mic. If nothing arrives in time, tear down and rebuild once — that
+        // clears most transient HAL races — and fail loudly if it still stalls.
+        if await !waitForFirstBuffer(timeout: 0.75) {
+            DebugFileLog.log("DictationManager.start mic tap stalled (<750ms no audio) — rebuilding engine once")
+            await drainAndStopMicCapture()
+            audioBuffer.removeAll(keepingCapacity: true)
+            bufferCapWarned = false
+            try startMicCapture()
+            if await !waitForFirstBuffer(timeout: 1.0) {
+                DebugFileLog.log("DictationManager.start mic tap still stalled after rebuild — throwing micStalled")
+                await drainAndStopMicCapture()
+                state = .idle
+                scheduleModelUnload()
+                throw DictationError.micStalled
+            }
+            DebugFileLog.log("DictationManager.start mic tap recovered after rebuild")
+        }
+
         state = .listening
+        listeningStartedAt = Date()
         DebugFileLog.log("DictationManager.start success — state=listening")
+    }
+
+    /// Polls for the first mic buffer up to `timeout` seconds. Returns true once
+    /// audio is flowing, false if the tap never delivered. `appendSamples`
+    /// (main-actor) sets `firstBufferArrived`; the `Task.sleep` yields so it can.
+    private func waitForFirstBuffer(timeout: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !firstBufferArrived && Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        return firstBufferArrived
     }
 
     public func stop() async {
@@ -131,6 +186,12 @@ public final class DictationManager: ObservableObject {
             DebugFileLog.log("DictationManager.stop refused — not listening (state=\(state.rawValue))")
             return
         }
+
+        // How long the user actually held the session open. Used to tell a
+        // genuine capture failure (held a while, got nothing) apart from an
+        // intentional quick tap (no feedback warranted).
+        let listenedFor = listeningStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+        listeningStartedAt = nil
 
         // Drain mic — see drainAndStopMicCapture for why awaiting matters.
         await drainAndStopMicCapture()
@@ -152,7 +213,8 @@ public final class DictationManager: ObservableObject {
         let minSamples = 16_000
         guard samples.count >= minSamples else {
             NSLog("Heard: Dictation audio too short to transcribe (%d samples)", samples.count)
-            DebugFileLog.log("DictationManager.stop short audio — sampleCount=\(samples.count) < \(minSamples)")
+            DebugFileLog.log("DictationManager.stop short audio — sampleCount=\(samples.count) < \(minSamples) listenedFor=\(String(format: "%.1f", listenedFor))s")
+            notifyIfAudioWasExpected(listenedFor: listenedFor)
             return
         }
 
@@ -173,7 +235,8 @@ public final class DictationManager: ObservableObject {
             let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
             DebugFileLog.log("DictationManager.stop final len=\(trimmed.count)")
             guard !trimmed.isEmpty else {
-                DebugFileLog.log("DictationManager.stop empty after normalize — skipping inject")
+                DebugFileLog.log("DictationManager.stop empty after normalize — skipping inject listenedFor=\(String(format: "%.1f", listenedFor))s")
+                notifyIfAudioWasExpected(listenedFor: listenedFor)
                 return
             }
             DebugFileLog.log("DictationManager.stop firing onUtterance")
@@ -182,6 +245,15 @@ public final class DictationManager: ObservableObject {
             NSLog("Heard: Dictation transcription failed: %@", error.localizedDescription)
             DebugFileLog.log("DictationManager.stop transcribe threw: \(error)")
         }
+    }
+
+    /// Notifies the UI of a no-speech result, but only when the user held the
+    /// session long enough that they clearly expected audio. A short tap that
+    /// yields nothing is normal (mis-press) and shouldn't raise an error.
+    private func notifyIfAudioWasExpected(listenedFor: TimeInterval) {
+        guard listenedFor >= 1.5 else { return }
+        DebugFileLog.log("DictationManager firing onNoAudioCaptured — listenedFor=\(String(format: "%.1f", listenedFor))s")
+        onNoAudioCaptured?()
     }
 
     public func toggle() async throws {
@@ -312,6 +384,8 @@ public final class DictationManager: ObservableObject {
         )
         micBufferContinuation = continuation
         bufferCount = 0
+        firstBufferArrived = false
+        micStartedAt = Date()
 
         let converter = audioConverter
         micForwardTask = Task { [weak self] in
@@ -355,8 +429,10 @@ public final class DictationManager: ObservableObject {
         audioBuffer.append(contentsOf: samples)
         bufferCount += 1
         if bufferCount == 1 {
+            firstBufferArrived = true
+            let latencyMs = micStartedAt.map { Int(Date().timeIntervalSince($0) * 1000) }
             NSLog("Heard: Dictation received first mic buffer")
-            DebugFileLog.log("appendSamples first buffer received — samples=\(samples.count)")
+            DebugFileLog.log("appendSamples first buffer received — samples=\(samples.count) latencyMs=\(latencyMs.map(String.init) ?? "?")")
         } else if bufferCount % 60 == 0 {
             NSLog("Heard: Dictation buffers streamed=%d totalSamples=%d", bufferCount, audioBuffer.count)
             DebugFileLog.log("appendSamples buffers=\(bufferCount) totalSamples=\(audioBuffer.count)")
