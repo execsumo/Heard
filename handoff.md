@@ -57,6 +57,8 @@ What each fix should look like (and how to read pass/fail):
 
 All items from the post-v0.2.2 robustness review are now resolved (see `ROADMAP.md` → Completed Technical Debt & Polish).
 
+**UI file split (tech debt):** the ~1.9 kLOC `Views.swift` was split by view area into `DesignSystem.swift`, `MenuBarView.swift`, `SpeakerNamingView.swift`, `SettingsView.swift`, `SettingsTabs.swift`, and `SettingsComponents.swift` (all in `Sources/HeardCore/`). Pure move — no logic or symbol changes; `swift build` is clean and all 181 tests pass.
+
 ## What's Working
 
 ### Meeting Detection
@@ -218,7 +220,12 @@ The dictation feature captures mic audio, transcribes in real-time, and injects 
 | `Sources/HeardCore/CoreModels.swift` | AppPhase, PipelineJob, SpeakerProfile, AppSettings, HotkeyCombo, etc. |
 | `Sources/HeardCore/Services.swift` | MeetingDetector, RecordingManager, PipelineProcessor, PermissionCenter, TranscriptWriter, TempFileCleanup, AudioDeviceCleanup, LaunchAtLogin, WindowActivationCoordinator |
 | `Sources/HeardCore/Stores.swift` | SettingsStore, SpeakerStore, PipelineQueueStore, FileManager extensions |
-| `Sources/HeardCore/Views.swift` | MenuBarView, SettingsView, all tabs and components |
+| `Sources/HeardCore/DesignSystem.swift` | Paper palette tokens, `SettingsCard`/`CardRow`/`ToggleRow`/`StatusDot`/`HeardMark` and shared layout primitives |
+| `Sources/HeardCore/MenuBarView.swift` | MenuBarView, dropdown rows/headers, menu-bar icon |
+| `Sources/HeardCore/SpeakerNamingView.swift` | "Name Speakers" window + per-candidate audio playback cells |
+| `Sources/HeardCore/SettingsView.swift` | Settings window shell + sidebar navigation |
+| `Sources/HeardCore/SettingsTabs.swift` | General/Recording/Dictation/Speakers/Advanced/About tab bodies |
+| `Sources/HeardCore/SettingsComponents.swift` | Reusable settings rows (`MicrophonePickerRow`, `HotkeyRecorderView`, …) |
 | `Sources/HeardCore/AudioProcessing.swift` | AudioPreprocessor, VadSegmentMap, PreprocessedTrack |
 | `Sources/HeardCore/SpeakerAssignment.swift` | SpeakerMatcher, SegmentMerger, cosineDistance |
 | `Sources/HeardCore/AudioClipExtractor.swift` | Extract speaker audio clips from WAV for naming prompt |

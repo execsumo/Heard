@@ -9,13 +9,10 @@ To preserve the focus, performance, and simplicity of Heard as a lean, native, s
 These represent the remaining areas of focus to clean up and stabilize:
 
 ### Active Tech Debt & Known Issues
-- **In-meeting note editing.** Today the user edits notes by opening the rendered `.md` directly. A future polish: a "Notes" disclosure on each completed job in the menu bar dropdown that lists captured notes and lets the user edit/delete before the transcript is finalized (or rewrite the `.md` if it's already been written).
-- **`Views.swift` size.** All SwiftUI UI components live in a single ~1.9 kLOC file after the Paper design system was implemented. Split this by tab or view area to improve build times and maintenance once early UI iteration is finished.
 - **Menu bar dropdown height clipping.** The menu bar dropdown uses `.window` style and has a fixed max height. The jobs list can clip when many jobs accumulate.
-- **Dictation auto-resume.** Dictation does not auto-resume after a meeting ends (it auto-pauses when a meeting starts to avoid injecting audio, but the user must restart it manually).
-- **Teams detection localization.** Teams detection currently matches localized app names; non-English macOS system locales might fail to detect Teams meetings.
 
 ### Completed Technical Debt & Polish
+- ~~**`Views.swift` size.**~~ Done — the ~1.9 kLOC single file was split by view area into `DesignSystem.swift` (Paper tokens + `SettingsCard`/`StatusDot`/layout primitives), `MenuBarView.swift` (dropdown UI + menu-bar icon), `SpeakerNamingView.swift`, `SettingsView.swift` (window shell + sidebar nav), `SettingsTabs.swift` (General/Recording/Dictation/Speakers/Advanced/About tab bodies), and `SettingsComponents.swift` (reusable rows like `MicrophonePickerRow`/`HotkeyRecorderView`). Pure move — no logic changes; build clean and all tests green.
 - ~~**Silent corruption reset in JSON stores.**~~ Done — an existing-but-undecodable `queue.json`/`speakers.json` is quarantined to `<name>.corrupt` (logged) before resetting, instead of being silently discarded.
 - ~~**Persist amplification in `SpeakerStore`.**~~ Done — per-meeting stat updates and retention archiving now rewrite the JSON once per operation, not once per profile. (`SettingsStore.persist()` still rewrites all keys per change — left alone deliberately: UserDefaults writes are in-memory/coalesced and the JSON encodes are tiny.)
 - ~~**Mic failure killed the whole recording.**~~ Done — mic capture is best-effort like the app tap; recording degrades to app-audio-only with a "Recording (no mic)" header and warning banner. Start only throws when both tracks fail.
