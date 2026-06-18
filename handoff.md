@@ -38,6 +38,23 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15
 - **First-buffer latency logging**: `appendSamples` logs `latencyMs` from mic start to first buffer, so a recurrence is diagnosable at a glance (happy path ≈ 100 ms).
 - **Hotkey debounce** (`HotkeyManager.handleHotkeyPressed`): a single physical press was delivered as 2+ `kEventHotKeyPressed` events within the same millisecond, causing a double-toggle; repeats within 250 ms are now dropped.
 
+**Verifying the v0.2.4 dictation fix from logs (for the next agent).** The user runs the live test, then hands off; read the debug log and confirm the signatures below. The log only writes when **Developer Mode is on** — Settings → General → "Show Advanced Settings" ON, then Advanced tab → "Developer Mode" ON. Log path: `~/Library/Application Support/Heard/dict-debug.log`.
+
+Pull the relevant lines:
+```bash
+grep -E "latencyMs|mic tap stalled|recovered after rebuild|throwing micStalled|onNoAudioCaptured|— debounced|firing onUtterance|TextInjector.inject" \
+  ~/Library/Application\ Support/Heard/dict-debug.log | tail -80
+```
+
+What each fix should look like (and how to read pass/fail):
+- **Healthy capture (fix #1/#4 baseline):** every start logs `appendSamples first buffer received — samples=… latencyMs=<N>`. On a healthy tap `N ≈ 50–200 ms`. Pre-fix failures showed multi-second gaps (e.g. `latencyMs=3527`, `11221`) with **no** recovery. A small `latencyMs` on every start = tap is delivering promptly.
+- **Stall caught and recovered (fix #1 working):** if the tap stalls, you'll see `DictationManager.start mic tap stalled (<750ms no audio) — rebuilding engine once` immediately followed by `DictationManager.start mic tap recovered after rebuild`, and that session should then transcribe normally (`firing onUtterance` + `TextInjector.inject … axTrusted=true`). This is the success case — the bug self-healed instead of producing an empty paste.
+- **Stall not recoverable (fix #1 degraded-but-visible):** `DictationManager.start mic tap still stalled after rebuild — throwing micStalled` means the mic is genuinely unavailable; the user sees the `micStalled` error (no silent dead-mic). If this recurs, suspect a device/HAL issue (input device, sample rate), not the app logic.
+- **Empty result surfaced (fix #2 working):** `DictationManager firing onNoAudioCaptured — listenedFor=<N>s` (N ≥ 1.5) means a real session produced no text and the UI showed "No speech captured — please try again." Quick taps under 1.5 s intentionally stay silent and won't log this.
+- **Hotkey debounce (fix #3 working):** duplicate presses now appear as `handleHotkeyPressed id=1 — debounced` instead of two `toggleDictation entered …` at the same timestamp (the second previously logged `toggleDictation dropped — inFlight=true`). Seeing `— debounced` lines = duplicates are being dropped earlier.
+
+**Overall pass criteria:** across several start/stop cycles on real speech — small `latencyMs` every time, each session ends in `firing onUtterance` + a successful `TextInjector.inject … axTrusted=true`, text lands in the target app, and **zero** empty/silent results that aren't explained by a `recovered after rebuild`, `micStalled`, or `onNoAudioCaptured` line. Any unexplained empty transcript (no first buffer, no recovery line) means the stall guard isn't catching a case — capture the surrounding log window.
+
 All items from the post-v0.2.2 robustness review are now resolved (see `ROADMAP.md` → Completed Technical Debt & Polish).
 
 ## What's Working
