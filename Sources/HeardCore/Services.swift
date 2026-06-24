@@ -388,17 +388,27 @@ public final class MeetingDetector: ObservableObject {
         // Bound each AX round-trip so a hung meeting app can't hang us.
         AXUIElementSetMessagingTimeout(app, 1.0)
         var windowsRef: AnyObject?
-        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-              let windows = windowsRef as? [AXUIElement]
-        else { return nil }
+        let windowsErr = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef)
+        guard windowsErr == .success, let windows = windowsRef as? [AXUIElement] else {
+            // .apiDisabled => Accessibility denied; other errors / non-array => Electron
+            // a11y tree not yet built. Both produce an empty title -> "Meeting" fallback.
+            DebugFileLog.log("extractMeetingTitle: windows query failed pid=\(pid) source=\(source.rawValue) axErr=\(windowsErr.rawValue)")
+            return nil
+        }
+        DebugFileLog.log("extractMeetingTitle: pid=\(pid) source=\(source.rawValue) windowCount=\(windows.count)")
 
         for window in windows {
             var titleRef: AnyObject?
             guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
                   let title = titleRef as? String, !title.isEmpty
             else { continue }
-            if let cleaned = cleanWindowTitle(title, source: source) { return cleaned }
+            if let cleaned = cleanWindowTitle(title, source: source) {
+                DebugFileLog.log("extractMeetingTitle: raw=\(title.debugDescription) -> cleaned=\(cleaned.debugDescription)")
+                return cleaned
+            }
+            DebugFileLog.log("extractMeetingTitle: raw=\(title.debugDescription) rejected (empty/placeholder after suffix strip)")
         }
+        DebugFileLog.log("extractMeetingTitle: no usable title among \(windows.count) window(s) -> nil (falls back to 'Meeting')")
         return nil
     }
 
