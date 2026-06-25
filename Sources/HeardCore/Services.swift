@@ -109,7 +109,7 @@ public struct MeetingSnapshot {
 }
 
 public struct RecordingSession {
-    public let title: String
+    public var title: String
     public let startTime: Date
     public let appAudioPath: URL
     public let micAudioPath: URL
@@ -299,10 +299,16 @@ public final class MeetingDetector: ObservableObject {
             // the main thread, then start the meeting once the data is in hand.
             Task { [weak self] in
                 let (title, rosterNames) = await Task.detached(priority: .userInitiated) {
+                    // Teams is an Electron/Chromium app: its accessibility tree is
+                    // dormant until a client requests it via AXManualAccessibility.
+                    // Nudge it now — the tree builds asynchronously, so this first
+                    // read often still misses; the roster poll retries title+roster.
+                    if source == .teams { Self.enableMeetingAppAccessibility(pid: pid, source: source) }
                     let title = Self.extractMeetingTitle(pid: pid, source: source) ?? ""
                     let roster: [String] = source == .teams ? RosterReader.readRoster(pid: pid) : []
                     return (title, roster)
                 }.value
+                DebugFileLog.log("meeting start scrape: source=\(source.rawValue) pid=\(pid) titleCaptured=\(!title.isEmpty) rosterCount=\(rosterNames.count) — roster poll will retry title/roster every 15s")
                 guard let self else { return }
                 // The meeting may have ended (or watching been toggled off) while
                 // we were scraping — the detection state machine is the source of truth.
@@ -372,6 +378,25 @@ public final class MeetingDetector: ObservableObject {
         return nil
     }
 
+    /// Wake a Chromium/Electron meeting app's accessibility tree.
+    ///
+    /// Teams keeps its a11y tree off by default to save resources, so AX reads of
+    /// its windows/titles/roster fail (commonly `kAXErrorAPIDisabled`, -25211) even
+    /// though Heard itself is trusted. Setting `AXManualAccessibility` on the app
+    /// element signals Chromium to build the tree. The build is asynchronous, so
+    /// callers must still retry the actual read after this returns.
+    ///
+    /// The `setErr` log line is the diagnostic discriminator: `.success` means the
+    /// nudge was accepted (any lingering empty reads are tree-build timing); a
+    /// `.apiDisabled` here would instead mean Heard is genuinely untrusted.
+    nonisolated private static func enableMeetingAppAccessibility(pid: pid_t?, source: MeetingApp) {
+        guard let pid else { return }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 1.0)
+        let setErr = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        DebugFileLog.log("enableMeetingAppAccessibility: pid=\(pid) source=\(source.rawValue) setErr=\(setErr.rawValue)")
+    }
+
     /// Extract the meeting title from a meeting-app window via Accessibility API.
     /// Strips the trailing app-name suffix (` | Microsoft Teams`, ` - Zoom`, etc.).
     /// Returns nil if AX is denied, no window matches, or the title is just a placeholder.
@@ -390,8 +415,11 @@ public final class MeetingDetector: ObservableObject {
         var windowsRef: AnyObject?
         let windowsErr = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef)
         guard windowsErr == .success, let windows = windowsRef as? [AXUIElement] else {
-            // .apiDisabled => Accessibility denied; other errors / non-array => Electron
-            // a11y tree not yet built. Both produce an empty title -> "Meeting" fallback.
+            // For a per-app Electron query, .apiDisabled (-25211) usually means the
+            // app's Chromium a11y tree is still dormant (see enableMeetingAppAccessibility),
+            // NOT that Heard is untrusted — confirm trust via the system-wide element
+            // instead. Any failure here yields an empty title -> "Meeting" fallback;
+            // the roster poll retries once the tree wakes.
             DebugFileLog.log("extractMeetingTitle: windows query failed pid=\(pid) source=\(source.rawValue) axErr=\(windowsErr.rawValue)")
             return nil
         }
@@ -431,17 +459,41 @@ public final class MeetingDetector: ObservableObject {
     private func startRosterPolling() {
         rosterPollingTask?.cancel()
         rosterPollingTask = Task { [weak self] in
+            var tick = 0
+            // Developer-Mode only: emit at most a few AX tree dumps per meeting when
+            // the roster keeps coming back empty, so we can retune the parser without
+            // flooding the log. Reset per meeting (the task is recreated on each start).
+            var rosterDumpsRemaining = 3
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(15))
                 guard let self, !Task.isCancelled,
                       let snapshot = self.activeSnapshot,
                       snapshot.source == .teams
                 else { break }
+                tick += 1
                 // The roster walk is a deep recursive AX scrape of Teams'
                 // Electron tree — keep it off the main thread.
                 let pid = snapshot.meetingPID
-                let names = await Task.detached(priority: .utility) {
-                    RosterReader.readRoster(pid: pid)
+                let source = snapshot.source
+                // Re-extract the title until we get one: the initial capture at
+                // join time usually fires before Teams' a11y tree has finished
+                // building, leaving the title empty (-> "Meeting" filename).
+                let needTitle = (self.activeSnapshot?.title ?? "").isEmpty
+                // An empty roster means the tree still looks asleep — the join-time
+                // nudge may have timed out against a busy Teams. Re-nudge before each
+                // read until names appear (idempotent). Gate on roster, not title:
+                // window titles can be AppKit-provided and succeed without the woken
+                // Chromium tree that the roster DOM actually needs.
+                let rosterEmpty = (self.activeSnapshot?.rosterNames.isEmpty ?? true)
+                // While roster is still empty, capture a bounded tree dump (Developer
+                // Mode + budget) so an empty result is self-diagnosing, not silent.
+                let wantDump = rosterEmpty && rosterDumpsRemaining > 0 && DebugFileLog.isEnabled
+                let (names, refreshedTitle, treeDump) = await Task.detached(priority: .utility) {
+                    if rosterEmpty { Self.enableMeetingAppAccessibility(pid: pid, source: source) }
+                    let names = RosterReader.readRoster(pid: pid)
+                    let title = needTitle ? Self.extractMeetingTitle(pid: pid, source: source) : nil
+                    let dump = (wantDump && names.isEmpty) ? RosterReader.diagnosticTreeDump(pid: pid) : nil
+                    return (names, title, dump)
                 }.value
                 if !names.isEmpty {
                     let existing = Set(self.activeSnapshot?.rosterNames ?? [])
@@ -449,6 +501,14 @@ public final class MeetingDetector: ObservableObject {
                     if !newNames.isEmpty {
                         self.activeSnapshot?.rosterNames.append(contentsOf: newNames)
                     }
+                }
+                if let refreshedTitle, !refreshedTitle.isEmpty {
+                    self.activeSnapshot?.title = refreshedTitle
+                }
+                DebugFileLog.log("roster poll tick=\(tick): read=\(names.count) total=\(self.activeSnapshot?.rosterNames.count ?? 0) titleEmpty=\(needTitle) titleRefreshed=\(refreshedTitle != nil)")
+                if let treeDump {
+                    rosterDumpsRemaining -= 1
+                    DebugFileLog.log("roster poll tick=\(tick): readRoster empty — AX tree dump (\(3 - rosterDumpsRemaining)/3):\n\(treeDump)")
                 }
             }
         }
@@ -624,6 +684,18 @@ public final class RecordingManager: ObservableObject {
         guard activeSession != nil, !names.isEmpty else { return }
         activeSession?.rosterNames = names
         currentRosterNames = names
+    }
+
+    /// Update the meeting title on the active session. The title is often captured
+    /// late (Teams' a11y tree builds after join), so the recording starts with an
+    /// empty title and this fills it in before the session is enqueued, fixing the
+    /// transcript filename. No-ops on empty so a failed re-attempt can't clobber a
+    /// title already captured.
+    public func updateTitle(_ title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
+        guard activeSession != nil, !trimmed.isEmpty else { return }
+        activeSession?.title = trimmed
+        currentTitle = trimmed
     }
 
     /// Append a user-authored note to the active recording session. The offset
@@ -1623,35 +1695,42 @@ public final class PermissionCenter: ObservableObject {
             queue: .main
         ) { [weak self] notification in
             guard let self,
-                  self.pendingScreenCaptureCheck,
                   let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   // macOS 13+: "System Settings"; earlier: "System Preferences" — both share this bundle ID
                   app.bundleIdentifier == "com.apple.systempreferences"
             else { return }
 
-            // One-shot: remove the observer and clear the flag immediately.
-            self.pendingScreenCaptureCheck = false
-            if let obs = self.systemPrefsObserver {
-                NSWorkspace.shared.notificationCenter.removeObserver(obs)
-                self.systemPrefsObserver = nil
-            }
+            // The observer is registered with `queue: .main`, so this block always runs
+            // on the main actor — assert that to access main-actor-isolated state safely
+            // (the alternative, a bare Task hop, would let a second notification slip in
+            // before the flag/observer are cleared).
+            MainActor.assumeIsolated {
+                guard self.pendingScreenCaptureCheck else { return }
 
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                // Fast path: sync check (works on macOS < 15 and after any restart).
-                if CGPreflightScreenCaptureAccess() {
-                    self.applyScreenCaptureProbe(true)
-                    self.refresh()
-                    return
+                // One-shot: remove the observer and clear the flag immediately.
+                self.pendingScreenCaptureCheck = false
+                if let obs = self.systemPrefsObserver {
+                    NSWorkspace.shared.notificationCenter.removeObserver(obs)
+                    self.systemPrefsObserver = nil
                 }
-                // Bypass macOS 15+ per-process TCC cache with one-shot SCShareableContent.
-                // Safe here: this is user-initiated and fires exactly once per "Grant…" click,
-                // only after the user has left System Settings. The result is authoritative,
-                // so a false clears any stale cached grant immediately.
-                self.applyScreenCaptureProbe(
-                    await self.checkScreenCapturePermissionLive(), authoritative: true
-                )
-                self.refresh()
+
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    // Fast path: sync check (works on macOS < 15 and after any restart).
+                    if CGPreflightScreenCaptureAccess() {
+                        self.applyScreenCaptureProbe(true)
+                        self.refresh()
+                        return
+                    }
+                    // Bypass macOS 15+ per-process TCC cache with one-shot SCShareableContent.
+                    // Safe here: this is user-initiated and fires exactly once per "Grant…" click,
+                    // only after the user has left System Settings. The result is authoritative,
+                    // so a false clears any stale cached grant immediately.
+                    self.applyScreenCaptureProbe(
+                        await self.checkScreenCapturePermissionLive(), authoritative: true
+                    )
+                    self.refresh()
+                }
             }
         }
     }

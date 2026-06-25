@@ -256,7 +256,9 @@ public final class AppModel: ObservableObject {
             onMeetingEnded: { [weak self] snapshot in
                 guard let self else { return }
                 // Update the recording session with the final accumulated roster names
+                // and the title (often captured late, after Teams' a11y tree built).
                 self.recordingManager.updateRosterNames(snapshot.rosterNames)
+                self.recordingManager.updateTitle(snapshot.title)
                 guard let session = self.recordingManager.stopRecording() else { return }
                 self.pipelineProcessor.enqueueFinishedRecording(session, endedAt: Date())
                 self.phase = .processing

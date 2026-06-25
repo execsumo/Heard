@@ -1909,6 +1909,49 @@ func runRosterReaderAXTests() {
         let names = RosterReader.readRosterFromNode(tree)
         try expectEqual(names, [])
     }
+
+    // Diagnostic tree dump (Developer-Mode aid for retuning the parser).
+
+    test("diagnosticTreeDump renders roles, identifiers, and truncated text") {
+        let tree = MockAXNode(role: "AXApplication", children: [
+            MockAXNode(role: "AXWindow", identifier: "main", title: "Sprint Planning", children: [
+                MockAXNode(role: "AXGroup", identifier: "roster-list", children: [
+                    MockAXNode(role: "AXStaticText", value: "Alice Smith"),
+                ]),
+            ]),
+        ])
+        let out = RosterReader.diagnosticTreeDump(root: tree)
+        try expect(out != nil, "expected a dump")
+        let s = out ?? ""
+        try expect(s.contains("AXApplication"), "missing root role")
+        try expect(s.contains("id=roster-list"), "missing identifier")
+        try expect(s.contains("title=Sprint Planning"), "missing window title")
+        try expect(s.contains("value=Alice Smith"), "missing leaf value")
+    }
+
+    test("diagnosticTreeDump truncates long text and notes the full length") {
+        let long = String(repeating: "x", count: 100)
+        let tree = MockAXNode(role: "AXStaticText", value: long)
+        let out = RosterReader.diagnosticTreeDump(root: tree) ?? ""
+        try expect(out.contains("…(100)"), "expected truncation marker with full length")
+        try expect(!out.contains(long), "full untruncated text should not appear")
+    }
+
+    test("diagnosticTreeDump bounds output to the node budget") {
+        let children = (0..<50).map { MockAXNode(role: "AXRow", identifier: "row-\($0)") }
+        let tree = MockAXNode(role: "AXList", children: children)
+        let out = RosterReader.diagnosticTreeDump(root: tree, maxDepth: 9, nodeBudget: 10) ?? ""
+        let lines = out.split(separator: "\n")
+        try expect(lines.count <= 11, "expected <= 11 lines (10 nodes + note), got \(lines.count)")
+        try expect(out.contains("budget 10 reached"), "missing truncation note")
+    }
+
+    test("diagnosticTreeDump stops descending at maxDepth") {
+        var node = MockAXNode(role: "AXLeaf", identifier: "deep")
+        for i in 0..<6 { node = MockAXNode(role: "AXGroup", identifier: "g\(i)", children: [node]) }
+        let out = RosterReader.diagnosticTreeDump(root: node, maxDepth: 2, nodeBudget: 500) ?? ""
+        try expect(!out.contains("id=deep"), "leaf below maxDepth should be excluded")
+    }
 }
 
 // MARK: - SegmentDeduplicator Tests
