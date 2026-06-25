@@ -265,4 +265,56 @@ public enum RosterReader {
             return seen.insert(lower).inserted
         }
     }
+
+    // MARK: - Diagnostics
+
+    /// Developer-Mode diagnostic. When `readRoster` comes back empty against a real
+    /// (woken) Teams tree, this dumps a bounded view of the app's AX tree — roles,
+    /// identifiers, descriptions, and truncated text — so the parser's hardcoded
+    /// identifiers/heuristics can be retuned against Teams' actual structure. The
+    /// roster parser has never been validated against live Teams output, so this is
+    /// the data we need to close that gap. Live entry point: builds the app element
+    /// and walks it on the caller's (background) thread.
+    public static func diagnosticTreeDump(pid teamsPID: pid_t?) -> String? {
+        guard let pid = teamsPID else { return nil }
+        let element = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(element, 1.0)
+        return diagnosticTreeDump(root: AXUIElementNode(element))
+    }
+
+    /// Testable core: render any AX node tree as a compact, bounded textual outline.
+    /// Depth-first (mirrors the parser's own traversal) with a shared node budget so
+    /// a huge Electron tree can't produce an unbounded log. Text is truncated so the
+    /// dump stays structural (metadata) rather than a verbatim content capture.
+    public static func diagnosticTreeDump(root: any AXNode, maxDepth: Int = 9, nodeBudget: Int = 500) -> String? {
+        var lines: [String] = []
+        var remaining = nodeBudget
+
+        func truncate(_ s: String, _ limit: Int = 40) -> String {
+            let flat = s.replacingOccurrences(of: "\n", with: "⏎")
+            return flat.count <= limit ? flat : String(flat.prefix(limit)) + "…(\(flat.count))"
+        }
+
+        func walk(_ node: any AXNode, depth: Int) {
+            guard remaining > 0 else { return }
+            remaining -= 1
+            var parts = ["\(String(repeating: "  ", count: depth))\(node.axRole ?? "?")"]
+            if let id = node.axIdentifier, !id.isEmpty { parts.append("id=\(id)") }
+            if let d = node.axDescription, !d.isEmpty { parts.append("desc=\(truncate(d))") }
+            if let t = node.axTitle, !t.isEmpty { parts.append("title=\(truncate(t))") }
+            if let v = node.axValue, !v.isEmpty { parts.append("value=\(truncate(v))") }
+            lines.append(parts.joined(separator: " "))
+            guard depth < maxDepth, let children = node.axChildren else { return }
+            for child in children {
+                if remaining <= 0 { break }
+                walk(child, depth: depth + 1)
+            }
+        }
+
+        walk(root, depth: 0)
+        if remaining <= 0 {
+            lines.append("…(node budget \(nodeBudget) reached — tree truncated; raise the cap to see more)")
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
 }
