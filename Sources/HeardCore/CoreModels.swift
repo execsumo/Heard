@@ -67,6 +67,28 @@ public struct MeetingNote: Codable, Identifiable, Equatable {
     }
 }
 
+/// A message scraped from the meeting app's chat panel via Accessibility APIs
+/// (see `ChatReader`). Inserted chronologically into the final transcript,
+/// distinct from spoken segments and from the user's own in-meeting notes.
+/// Opt-in only — see `AppSettings.includeMeetingChat` — since this passively
+/// captures other participants' written words without their per-message consent.
+public struct ChatMessage: Codable, Identifiable, Equatable {
+    public let id: UUID
+    /// Offset in seconds from the recording's `startTime`, captured when the
+    /// message was first observed by the poll (not when it was actually sent —
+    /// Teams' AX tree doesn't reliably expose per-message send times).
+    public let offsetSeconds: TimeInterval
+    public let sender: String
+    public let text: String
+
+    public init(id: UUID = UUID(), offsetSeconds: TimeInterval, sender: String, text: String) {
+        self.id = id
+        self.offsetSeconds = offsetSeconds
+        self.sender = sender
+        self.text = text
+    }
+}
+
 public struct PipelineJob: Codable, Identifiable, Equatable {
     public let id: UUID
     public var meetingTitle: String
@@ -81,6 +103,10 @@ public struct PipelineJob: Codable, Identifiable, Equatable {
     public var retryCount: Int
     public var rosterNames: [String]
     public var notes: [MeetingNote]
+    /// Messages scraped from the meeting app's chat panel, if the user opted in
+    /// (`AppSettings.includeMeetingChat`). Empty for meetings before this feature
+    /// existed or where chat scraping is disabled/unavailable.
+    public var chatMessages: [ChatMessage]
     /// `mic.start − app.start` in seconds. Used during speaker assignment to
     /// align mic-track segments with app-track segments for cross-track
     /// deduplication. Defaults to 0 for jobs persisted before this field
@@ -101,6 +127,7 @@ public struct PipelineJob: Codable, Identifiable, Equatable {
         retryCount: Int,
         rosterNames: [String] = [],
         notes: [MeetingNote] = [],
+        chatMessages: [ChatMessage] = [],
         micDelaySeconds: TimeInterval = 0
     ) {
         self.id = id
@@ -116,13 +143,14 @@ public struct PipelineJob: Codable, Identifiable, Equatable {
         self.retryCount = retryCount
         self.rosterNames = rosterNames
         self.notes = notes
+        self.chatMessages = chatMessages
         self.micDelaySeconds = micDelaySeconds
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, meetingTitle, startTime, endTime, appAudioPath, micAudioPath
         case transcriptPath, stage, stageStartTime, error, retryCount
-        case rosterNames, notes, micDelaySeconds
+        case rosterNames, notes, chatMessages, micDelaySeconds
     }
 
     public init(from decoder: Decoder) throws {
@@ -140,6 +168,7 @@ public struct PipelineJob: Codable, Identifiable, Equatable {
         retryCount = try c.decode(Int.self, forKey: .retryCount)
         rosterNames = try c.decodeIfPresent([String].self, forKey: .rosterNames) ?? []
         notes = try c.decodeIfPresent([MeetingNote].self, forKey: .notes) ?? []
+        chatMessages = try c.decodeIfPresent([ChatMessage].self, forKey: .chatMessages) ?? []
         micDelaySeconds = try c.decodeIfPresent(TimeInterval.self, forKey: .micDelaySeconds) ?? 0
     }
 }
@@ -358,6 +387,12 @@ public struct AppSettings: Codable, Equatable {
     /// Reveals the gated Advanced tab (models, performance, diarization, debugging).
     /// Off by default to keep the default settings surface calm.
     public var showAdvancedSettings: Bool
+    /// Scrape the meeting app's chat panel via Accessibility APIs and interleave it
+    /// into the transcript (see `ChatReader`/`ChatMessage`). Off by default: unlike
+    /// the roster (names only) or notes (the user's own words), this passively
+    /// captures other participants' written words without their per-message
+    /// consent, so it's opt-in rather than automatic.
+    public var includeMeetingChat: Bool
 
     public static let `default` = AppSettings(
         userName: "",
@@ -386,7 +421,8 @@ public struct AppSettings: Codable, Equatable {
         memoryMode: .auto,
         speakerRetentionDays: 90,
         selectedInputDeviceUID: nil,
-        showAdvancedSettings: false
+        showAdvancedSettings: false,
+        includeMeetingChat: false
     )
 
     public init(
@@ -413,7 +449,8 @@ public struct AppSettings: Codable, Equatable {
         memoryMode: MemoryMode = .auto,
         speakerRetentionDays: Int = 90,
         selectedInputDeviceUID: String? = nil,
-        showAdvancedSettings: Bool = false
+        showAdvancedSettings: Bool = false,
+        includeMeetingChat: Bool = false
     ) {
         self.userName = userName
         self.launchAtLogin = launchAtLogin
@@ -439,6 +476,7 @@ public struct AppSettings: Codable, Equatable {
         self.speakerRetentionDays = speakerRetentionDays
         self.selectedInputDeviceUID = selectedInputDeviceUID
         self.showAdvancedSettings = showAdvancedSettings
+        self.includeMeetingChat = includeMeetingChat
     }
 }
 
@@ -575,6 +613,9 @@ public struct TranscriptDocument {
     public var notes: [MeetingNote]
     /// Display name to attribute notes to. Falls back to "Me" when empty.
     public var noteAuthor: String
+    /// Messages scraped from the meeting chat panel, when opted in. Rendered
+    /// chronologically alongside speaker segments and notes in the markdown output.
+    public var chatMessages: [ChatMessage]
 
     public init(
         title: String,
@@ -586,7 +627,8 @@ public struct TranscriptDocument {
         diarizationSegments: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)] = [],
         unmatchedRosterNames: [String] = [],
         notes: [MeetingNote] = [],
-        noteAuthor: String = "Me"
+        noteAuthor: String = "Me",
+        chatMessages: [ChatMessage] = []
     ) {
         self.title = title
         self.startTime = startTime
@@ -598,6 +640,7 @@ public struct TranscriptDocument {
         self.unmatchedRosterNames = unmatchedRosterNames
         self.notes = notes
         self.noteAuthor = noteAuthor
+        self.chatMessages = chatMessages
     }
 }
 

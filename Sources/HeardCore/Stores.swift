@@ -210,7 +210,8 @@ public final class SettingsStore: ObservableObject {
             memoryMode: memoryMode,
             speakerRetentionDays: speakerRetentionDays,
             selectedInputDeviceUID: defaults.string(forKey: "selectedInputDeviceUID"),
-            showAdvancedSettings: defaults.object(forKey: "showAdvancedSettings") as? Bool ?? base.showAdvancedSettings
+            showAdvancedSettings: defaults.object(forKey: "showAdvancedSettings") as? Bool ?? base.showAdvancedSettings,
+            includeMeetingChat: defaults.object(forKey: "includeMeetingChat") as? Bool ?? base.includeMeetingChat
         )
     }
 
@@ -245,6 +246,7 @@ public final class SettingsStore: ObservableObject {
         defaults.set(settings.speakerRetentionDays, forKey: "speakerRetentionDays")
         defaults.set(settings.memoryMode.rawValue, forKey: "memoryMode")
         defaults.set(settings.showAdvancedSettings, forKey: "showAdvancedSettings")
+        defaults.set(settings.includeMeetingChat, forKey: "includeMeetingChat")
         if let uid = settings.selectedInputDeviceUID {
             defaults.set(uid, forKey: "selectedInputDeviceUID")
         } else {

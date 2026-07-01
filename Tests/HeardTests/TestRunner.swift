@@ -694,6 +694,82 @@ func runTranscriptWriterTests() {
         try expect(content.contains("**Note from John:** side comment"),
                    "Note line untouched by rename")
     }
+
+    test("Chat messages are interleaved chronologically with segments and notes") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let doc = TranscriptDocument(
+            title: "Q1 Review",
+            startTime: Date(),
+            endTime: Date().addingTimeInterval(120),
+            participants: ["Alice", "Me"],
+            segments: [
+                TranscriptSegment(speaker: "Alice", startTime: 0, endTime: 20, text: "We saw FCR jump."),
+                TranscriptSegment(speaker: "Me", startTime: 60, endTime: 90, text: "Nice work."),
+            ],
+            notes: [MeetingNote(offsetSeconds: 22, text: "FCR = First Call Resolution")],
+            noteAuthor: "John",
+            chatMessages: [ChatMessage(offsetSeconds: 40, sender: "Bob Jones", text: "Great numbers!")]
+        )
+        let url = try TranscriptWriter.write(document: doc, outputDirectory: tmpDir)
+        let content = try String(contentsOf: url, encoding: .utf8)
+
+        try expect(content.contains("**Chat — Bob Jones:** Great numbers!"),
+                   "Should render chat line with sender attribution")
+        try expect(content.contains("[00:40] _**Chat — Bob Jones:**"),
+                   "Chat timestamp uses offsetSeconds")
+
+        // Order: Alice (00:00) < note (00:22) < chat (00:40) < Me (01:00)
+        let aliceRange = content.range(of: "Alice:")!
+        let noteRange = content.range(of: "Note from John:")!
+        let chatRange = content.range(of: "Chat — Bob Jones:")!
+        let meRange = content.range(of: "Me:** Nice work")!
+        try expect(aliceRange.lowerBound < noteRange.lowerBound, "note must come after Alice")
+        try expect(noteRange.lowerBound < chatRange.lowerBound, "chat must come after the note")
+        try expect(chatRange.lowerBound < meRange.lowerBound, "chat must come before Me")
+    }
+
+    test("Chat message at same timestamp as segment sorts after the segment") {
+        let body = TranscriptWriter.renderBody(
+            segments: [TranscriptSegment(speaker: "Alice", startTime: 10, endTime: 15, text: "Hi.")],
+            notes: [],
+            noteAuthor: "John",
+            chatMessages: [ChatMessage(offsetSeconds: 10, sender: "Bob", text: "tied")]
+        )
+        let aliceIdx = body.range(of: "Alice:")!.lowerBound
+        let chatIdx = body.range(of: "Chat — Bob:")!.lowerBound
+        try expect(aliceIdx < chatIdx, "Segment must precede same-timestamp chat message")
+    }
+
+    test("Empty chatMessages array renders identical to pre-chat output") {
+        let segs = [TranscriptSegment(speaker: "Alice", startTime: 0, endTime: 5, text: "Hello.")]
+        let body = TranscriptWriter.renderBody(segments: segs, notes: [], noteAuthor: "John")
+        try expect(body.contains("**Alice:** Hello."), "Alice present")
+        try expect(!body.contains("Chat —"), "No chat marker without chat messages")
+    }
+
+    test("renameSpeakerInDirectory does not mangle Chat lines") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let doc = TranscriptDocument(
+            title: "Standup", startTime: Date(), endTime: Date().addingTimeInterval(60),
+            participants: ["Speaker 7"],
+            segments: [TranscriptSegment(speaker: "Speaker 7", startTime: 0, endTime: 30, text: "Hey.")],
+            chatMessages: [ChatMessage(offsetSeconds: 10, sender: "Speaker 7", text: "typed the same as I said")]
+        )
+        let url = try TranscriptWriter.write(document: doc, outputDirectory: tmpDir)
+        TranscriptWriter.renameSpeakerInDirectory(tmpDir, from: "Speaker 7", to: "Bob")
+        let content = try String(contentsOf: url, encoding: .utf8)
+        try expect(content.contains("**Bob:** Hey."), "Speaker rename applied to segment")
+        try expect(content.contains("**Chat — Speaker 7:** typed the same as I said"),
+                   "Chat sender label is untouched by speaker-segment rename")
+    }
 }
 
 // MARK: - Store Tests
@@ -1954,6 +2030,104 @@ func runRosterReaderAXTests() {
     }
 }
 
+// MARK: - ChatReader Tests
+
+func runChatReaderTests() {
+    print("\n💬 ChatReader Tests")
+
+    test("Row-container shape: first child is sender, rest joined as body") {
+        let tree = MockAXNode(role: "AXApplication", children: [
+            MockAXNode(role: "AXWindow", children: [
+                MockAXNode(role: "AXGroup", identifier: "chat-pane-list", children: [
+                    MockAXNode(role: "AXGroup", children: [
+                        MockAXNode(role: "AXStaticText", value: "Alice Smith"),
+                        MockAXNode(role: "AXStaticText", value: "Hello"),
+                        MockAXNode(role: "AXStaticText", value: "everyone."),
+                    ]),
+                ]),
+            ]),
+        ])
+        let messages = ChatReader.readChatMessagesFromNode(tree)
+        try expectEqual(messages.count, 1)
+        try expectEqual(messages[0].sender, "Alice Smith")
+        try expectEqual(messages[0].text, "Hello everyone.")
+    }
+
+    test("Single-string shape: 'Sender: text' splits on first colon") {
+        let tree = MockAXNode(role: "AXApplication", children: [
+            MockAXNode(role: "AXWindow", children: [
+                MockAXNode(role: "AXGroup", identifier: "chat-pane-list", children: [
+                    MockAXNode(role: "AXStaticText", description: "Bob Jones: Sounds good, thanks!"),
+                ]),
+            ]),
+        ])
+        let messages = ChatReader.readChatMessagesFromNode(tree)
+        try expectEqual(messages.count, 1)
+        try expectEqual(messages[0].sender, "Bob Jones")
+        try expectEqual(messages[0].text, "Sounds good, thanks!")
+    }
+
+    test("Single-string shape: 'Sender, text' splits on first comma when no colon") {
+        let tree = MockAXNode(role: "AXApplication", children: [
+            MockAXNode(role: "AXWindow", children: [
+                MockAXNode(role: "AXGroup", identifier: "message-list", children: [
+                    MockAXNode(role: "AXStaticText", value: "Carol Liu, on my way"),
+                ]),
+            ]),
+        ])
+        let messages = ChatReader.readChatMessagesFromNode(tree)
+        try expectEqual(messages.count, 1)
+        try expectEqual(messages[0].sender, "Carol Liu")
+        try expectEqual(messages[0].text, "on my way")
+    }
+
+    test("Control-string rows are dropped") {
+        let tree = MockAXNode(role: "AXApplication", children: [
+            MockAXNode(role: "AXWindow", children: [
+                MockAXNode(role: "AXGroup", identifier: "chat-pane-list", children: [
+                    MockAXNode(role: "AXStaticText", description: "Alice Smith: Hello"),
+                    MockAXNode(role: "AXStaticText", description: "Bob Jones: send"),
+                ]),
+            ]),
+        ])
+        let messages = ChatReader.readChatMessagesFromNode(tree)
+        try expectEqual(messages.count, 1)
+        try expectEqual(messages[0].sender, "Alice Smith")
+    }
+
+    test("No known chat identifier in the tree returns empty") {
+        let tree = MockAXNode(role: "AXApplication", children: [
+            MockAXNode(role: "AXWindow", children: [
+                MockAXNode(role: "AXGroup", identifier: "roster-list", children: [
+                    MockAXNode(role: "AXStaticText", value: "Alice Smith"),
+                ]),
+            ]),
+        ])
+        let messages = ChatReader.readChatMessagesFromNode(tree)
+        try expect(messages.isEmpty, "roster panel should not be mistaken for chat")
+    }
+
+    test("Chat panel not present (empty tree) returns empty, not a crash") {
+        let tree = MockAXNode(role: "AXApplication", children: [])
+        let messages = ChatReader.readChatMessagesFromNode(tree)
+        try expect(messages.isEmpty)
+    }
+
+    test("Row with only a sender and no body text is dropped") {
+        let tree = MockAXNode(role: "AXApplication", children: [
+            MockAXNode(role: "AXWindow", children: [
+                MockAXNode(role: "AXGroup", identifier: "chat-pane-list", children: [
+                    MockAXNode(role: "AXGroup", children: [
+                        MockAXNode(role: "AXStaticText", value: "Alice Smith"),
+                    ]),
+                ]),
+            ]),
+        ])
+        let messages = ChatReader.readChatMessagesFromNode(tree)
+        try expect(messages.isEmpty, "a row with no body text should not become an empty message")
+    }
+}
+
 // MARK: - SegmentDeduplicator Tests
 
 func runSegmentDeduplicatorTests() {
@@ -2303,6 +2477,7 @@ struct TestRunner {
         runSpeakerEmbeddingAggregatorTests()
         runRosterReaderTests()
         runRosterReaderAXTests()
+        runChatReaderTests()
         runSegmentDeduplicatorTests()
         runSystemMemoryTests()
         runPermissionCenterTests()

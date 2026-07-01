@@ -181,6 +181,17 @@ extension SettingsView {
                 }
             }
 
+            sectionGroup("Meeting Chat") {
+                SettingsCard {
+                    ToggleRow(
+                        title: "Include Meeting Chat in Transcript",
+                        subtitle: "Off by default: this captures other participants' chat messages, not just your own notes.",
+                        isLast: true,
+                        isOn: settingsBinding(\.includeMeetingChat)
+                    )
+                }
+            }
+
             sectionGroup("Output") {
                 SettingsCard {
                     CardRow(isLast: true) {
