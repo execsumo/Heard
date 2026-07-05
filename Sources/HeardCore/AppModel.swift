@@ -24,6 +24,10 @@ public final class AppModel: ObservableObject {
     // Tracks whether the push-to-talk key is currently held. Set on press, cleared on release.
     // Used to detect key-up events that arrive before model loading completes.
     private var pushToTalkKeyHeld = false
+    // Where keyboard focus was when the current dictation session started.
+    // The transcript is pasted back into this field, not wherever focus sits
+    // once transcription finishes.
+    var dictationFocusTarget: TextInjector.FocusTarget?
 
     public let settingsStore: SettingsStore
     public let speakerStore: SpeakerStore
@@ -125,9 +129,10 @@ public final class AppModel: ObservableObject {
 
         model.pipelineProcessor.runNextIfNeeded()
 
-        // Wire dictation: text injection on finalized utterances
-        dictationManager.onUtterance = { text in
-            TextInjector.inject(text)
+        // Wire dictation: text injection on finalized utterances, targeting the
+        // field that was focused when the session started.
+        dictationManager.onUtterance = { [weak model] text in
+            TextInjector.inject(text, restoringFocusTo: model?.dictationFocusTarget)
         }
         // Surface silent "no speech captured" stops so a dropped/stalled mic
         // isn't an invisible failure. Cleared on the next dictation start.
@@ -332,6 +337,12 @@ public var filteredSpeakers: [SpeakerProfile] {
         if !isDictating && recordingManager.activeSession != nil {
             DebugFileLog.log("toggleDictation dropped — meeting active and not currently dictating")
             return
+        }
+        // Snapshot the focused field synchronously at trigger time — model
+        // loading inside the task can take seconds, during which the user may
+        // click elsewhere, and the transcript must land where they started.
+        if !isDictating {
+            dictationFocusTarget = TextInjector.captureFocusTarget()
         }
         dictationToggleInFlight = true
         Task {
