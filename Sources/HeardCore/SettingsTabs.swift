@@ -395,7 +395,7 @@ extension SettingsView {
                     Spacer()
 
                     Button("Merge Selected") { model.mergeSelectedSpeakers() }
-                        .disabled(model.mergeSelection.count != 2)
+                        .disabled(model.mergeSelection.count < 2)
                 }
             }
             .padding(HeardTheme.Spacing.lg)
@@ -420,13 +420,10 @@ extension SettingsView {
                 }
                 .width(min: 60, ideal: 70, max: 90)
                 TableColumn("Time in Meetings", value: \.totalMeetingDuration) { speaker in
-                    let hours = Int(speaker.totalMeetingDuration) / 3600
-                    let minutes = (Int(speaker.totalMeetingDuration) % 3600) / 60
-                    if hours > 0 {
-                        Text("\(hours)h \(minutes)m").monospacedDigit()
-                    } else {
-                        Text("\(minutes)m").monospacedDigit()
-                    }
+                    Text(Self.durationText(speaker.totalMeetingDuration)).monospacedDigit()
+                }
+                TableColumn("Speaking Time", value: \.totalSpeakingTime) { speaker in
+                    Text(Self.durationText(speaker.totalSpeakingTime)).monospacedDigit()
                 }
                 TableColumn("Last Seen", value: \.lastSeen) { speaker in
                     Text(speaker.lastSeen.formatted(date: .abbreviated, time: .omitted))
@@ -467,6 +464,14 @@ extension SettingsView {
             .background(HeardTheme.Paper.bg)
         }
         .background(HeardTheme.Paper.bg)
+    }
+
+    /// Compact duration for the speaker-stats columns: "2h 05m", "14m", "38s".
+    static func durationText(_ duration: TimeInterval) -> String {
+        let total = Int(duration)
+        if total >= 3600 { return String(format: "%dh %02dm", total / 3600, (total % 3600) / 60) }
+        if total >= 60 { return "\(total / 60)m" }
+        return "\(total)s"
     }
 
     // MARK: Advanced
@@ -595,6 +600,54 @@ extension SettingsView {
                             Button("Reset to Default") {
                                 model.settingsStore.settings.diarizationClusteringSimilarity =
                                     AppSettings.default.diarizationClusteringSimilarity
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(HeardTheme.Paper.accent)
+                        }
+                    }
+                }
+            }
+
+            sectionGroup("Voice Matching") {
+                SettingsCard {
+                    CardRow(isLast: false) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Match strictness")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(HeardTheme.Paper.ink)
+                                Spacer()
+                                Text(String(format: "%.2f", model.settingsStore.settings.speakerMatchThreshold))
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .foregroundStyle(HeardTheme.Paper.mute)
+                            }
+                            HStack(spacing: 8) {
+                                Text("Stricter")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(HeardTheme.Paper.mute)
+                                Slider(
+                                    value: settingsBinding(\.speakerMatchThreshold),
+                                    in: 0.15...0.45,
+                                    step: 0.05
+                                )
+                                Text("Looser")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(HeardTheme.Paper.mute)
+                            }
+                        }
+                    }
+                    CardRow(isLast: false) {
+                        Text("How close a voice must be to a saved profile to be recognized as the same person across meetings. Stricter asks you to name people more often but almost never mislabels; looser recognizes more voices automatically at some risk of matching the wrong profile. Default: 0.30.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(HeardTheme.Paper.mute)
+                    }
+                    CardRow(isLast: true) {
+                        HStack {
+                            Spacer()
+                            Button("Reset to Default") {
+                                model.settingsStore.settings.speakerMatchThreshold =
+                                    AppSettings.default.speakerMatchThreshold
                             }
                             .buttonStyle(.plain)
                             .font(.system(size: 11, weight: .medium))

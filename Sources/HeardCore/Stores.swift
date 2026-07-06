@@ -34,6 +34,10 @@ public enum AppPaths {
     public static var speakersFile: URL {
         FileManager.default.heardAppSupportDirectory.appendingPathComponent("speakers.json")
     }
+
+    public static var namingCandidatesFile: URL {
+        FileManager.default.heardAppSupportDirectory.appendingPathComponent("naming_candidates.json")
+    }
 }
 
 public enum Formatting {
@@ -173,6 +177,11 @@ public final class SettingsStore: ObservableObject {
             diarizationClusteringSimilarity = val.doubleValue
         }
 
+        var speakerMatchThreshold = base.speakerMatchThreshold
+        if let val = defaults.object(forKey: "speakerMatchThreshold") as? NSNumber {
+            speakerMatchThreshold = val.doubleValue
+        }
+
         var speakerRetentionDays = base.speakerRetentionDays
         if let val = defaults.object(forKey: "speakerRetentionDays") as? NSNumber {
             speakerRetentionDays = val.intValue
@@ -207,6 +216,7 @@ public final class SettingsStore: ObservableObject {
             enableZoomDetection: defaults.object(forKey: "enableZoomDetection") as? Bool ?? base.enableZoomDetection,
             enableWebexDetection: defaults.object(forKey: "enableWebexDetection") as? Bool ?? base.enableWebexDetection,
             diarizationClusteringSimilarity: diarizationClusteringSimilarity,
+            speakerMatchThreshold: speakerMatchThreshold,
             memoryMode: memoryMode,
             speakerRetentionDays: speakerRetentionDays,
             selectedInputDeviceUID: defaults.string(forKey: "selectedInputDeviceUID"),
@@ -242,6 +252,7 @@ public final class SettingsStore: ObservableObject {
         defaults.set(settings.enableZoomDetection, forKey: "enableZoomDetection")
         defaults.set(settings.enableWebexDetection, forKey: "enableWebexDetection")
         defaults.set(settings.diarizationClusteringSimilarity, forKey: "diarizationClusteringSimilarity")
+        defaults.set(settings.speakerMatchThreshold, forKey: "speakerMatchThreshold")
         defaults.set(settings.speakerRetentionDays, forKey: "speakerRetentionDays")
         defaults.set(settings.memoryMode.rawValue, forKey: "memoryMode")
         defaults.set(settings.showAdvancedSettings, forKey: "showAdvancedSettings")
@@ -287,18 +298,19 @@ public final class SpeakerStore: ObservableObject {
         persist()
     }
 
-    public func updateStats(id: UUID, addDuration: TimeInterval, addWords: Int) {
-        updateStats([(id: id, addDuration: addDuration, addWords: addWords)])
+    public func updateStats(id: UUID, addDuration: TimeInterval, addWords: Int, addSpeaking: TimeInterval = 0) {
+        updateStats([(id: id, addDuration: addDuration, addWords: addWords, addSpeaking: addSpeaking)])
     }
 
     /// Batched variant: one disk write for the whole meeting's stat updates
     /// instead of a full JSON rewrite per speaker.
-    public func updateStats(_ updates: [(id: UUID, addDuration: TimeInterval, addWords: Int)]) {
+    public func updateStats(_ updates: [(id: UUID, addDuration: TimeInterval, addWords: Int, addSpeaking: TimeInterval)]) {
         var changed = false
         for update in updates {
             guard let index = speakers.firstIndex(where: { $0.id == update.id }) else { continue }
             speakers[index].totalMeetingDuration += update.addDuration
             speakers[index].totalWordCount += update.addWords
+            speakers[index].totalSpeakingTime += update.addSpeaking
             changed = true
         }
         if changed { persist() }
@@ -360,6 +372,13 @@ public final class SpeakerStore: ObservableObject {
         return doomed.count
     }
 
+    /// Cap on embeddings and voice clips a merged profile may accumulate. Matching
+    /// scans every stored embedding, so unbounded growth from repeated (or N-way)
+    /// merges would slow matching and raise false-match risk; overflow clips are
+    /// deleted from disk.
+    static let maxMergedEmbeddings = SpeakerMatcher.maxEmbeddingsPerSpeaker
+    static let maxMergedClips = 5
+
     public func merge(primaryID: UUID, secondaryID: UUID) {
         guard
             let primaryIndex = speakers.firstIndex(where: { $0.id == primaryID }),
@@ -369,13 +388,19 @@ public final class SpeakerStore: ObservableObject {
 
         var primary = speakers[primaryIndex]
         let secondary = speakers[secondaryIndex]
-        primary.embeddings.append(contentsOf: secondary.embeddings)
-        primary.audioClipURLs.append(contentsOf: secondary.audioClipURLs)
+        // Keep the primary's entries first — they belong to the surviving identity.
+        primary.embeddings = Array((primary.embeddings + secondary.embeddings).prefix(Self.maxMergedEmbeddings))
+        let combinedClips = primary.audioClipURLs + secondary.audioClipURLs
+        primary.audioClipURLs = Array(combinedClips.prefix(Self.maxMergedClips))
+        for dropped in combinedClips.dropFirst(Self.maxMergedClips) {
+            try? FileManager.default.removeItem(at: dropped)
+        }
         primary.firstSeen = min(primary.firstSeen, secondary.firstSeen)
         primary.lastSeen = max(primary.lastSeen, secondary.lastSeen)
         primary.meetingCount += secondary.meetingCount
         primary.totalMeetingDuration += secondary.totalMeetingDuration
         primary.totalWordCount += secondary.totalWordCount
+        primary.totalSpeakingTime += secondary.totalSpeakingTime
         speakers[primaryIndex] = primary
         speakers.remove(at: secondaryIndex)
         persist()
@@ -405,6 +430,43 @@ public final class SpeakerStore: ObservableObject {
             // hurts (voice embeddings accumulate over months) — quarantine it.
             JSONStore.quarantine(url, decodeError: error)
             return []
+        }
+    }
+}
+
+/// Persists pending naming candidates so they survive an app restart — naming is
+/// user-paced and may be deferred across sessions. Loading drops clips whose files
+/// are gone (48-hour recordings cleanup, crashes) and whole candidates left with no
+/// playable clip, mirroring the pipeline's "can't listen → can't identify" rule.
+@MainActor
+public final class NamingCandidateStore {
+    private let store = JSONStore()
+    private let url: URL
+
+    public init(url: URL = AppPaths.namingCandidatesFile) {
+        self.url = url
+    }
+
+    public func load() -> [NamingCandidate] {
+        let raw = store.load([NamingCandidate].self, from: url, defaultValue: [])
+        let fm = FileManager.default
+        return raw.compactMap { candidate in
+            var kept = candidate
+            // Keep clipEmbeddings parallel to the surviving clips.
+            let pairs = candidate.audioClipURLs.enumerated().filter { fm.fileExists(atPath: $0.element.path) }
+            kept.audioClipURLs = pairs.map { $0.element }
+            kept.clipEmbeddings = pairs.compactMap { index, _ in
+                index < candidate.clipEmbeddings.count ? candidate.clipEmbeddings[index] : nil
+            }
+            return kept.audioClipURLs.isEmpty ? nil : kept
+        }
+    }
+
+    public func save(_ candidates: [NamingCandidate]) {
+        if candidates.isEmpty {
+            try? FileManager.default.removeItem(at: url)
+        } else {
+            try? store.save(candidates, to: url)
         }
     }
 }

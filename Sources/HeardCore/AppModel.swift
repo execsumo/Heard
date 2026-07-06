@@ -6,7 +6,12 @@ import Foundation
 public final class AppModel: ObservableObject {
     @Published public var phase: AppPhase = .dormant
     @Published public var errorMessage: String?
-    @Published public var namingCandidates: [NamingCandidate] = []
+    @Published public var namingCandidates: [NamingCandidate] = [] {
+        // Naming is user-paced and may be deferred across sessions — mirror every
+        // change to disk so pending candidates survive an app restart.
+        didSet { namingCandidateStore.save(namingCandidates) }
+    }
+    let namingCandidateStore = NamingCandidateStore()
     @Published public var selectedSettingsTab: SettingsTab = .general
     @Published public var speakerFilter = ""
     @Published public var vocabularyDraft = ""
@@ -97,12 +102,17 @@ public final class AppModel: ObservableObject {
         // dead play buttons in the Speakers list.
         speakerStore.pruneUnidentifiablePlaceholders()
 
+        // Restore naming candidates deferred from a previous session — loaded before
+        // the stale-recordings sweep so their clip files are preserved by it.
+        let pendingCandidates = model.namingCandidateStore.load()
+
         // Clean stale recordings (>48h), preserving files referenced by active jobs
+        // and by pending naming candidates.
         let activeJobPaths = Set(
             queueStore.jobs
                 .filter { $0.stage != .complete }
                 .flatMap { [$0.appAudioPath, $0.micAudioPath] }
-        )
+        ).union(pendingCandidates.flatMap(\.audioClipURLs))
         TempFileCleanup.cleanStaleRecordings(activeJobPaths: activeJobPaths)
 
         // Destroy orphaned private aggregate devices left behind by previous crashes
@@ -124,6 +134,14 @@ public final class AppModel: ObservableObject {
 
         if settingsStore.settings.autoWatch {
             model.startWatching()
+        }
+
+        // Surface candidates deferred from a previous session: badge + menu row
+        // come back exactly as they were when the app quit.
+        if !pendingCandidates.isEmpty {
+            NSLog("Heard: restored \(pendingCandidates.count) pending naming candidate(s) from disk")
+            model.namingCandidates = pendingCandidates
+            model.phase = .userAction
         }
 
         // Retry failed jobs once on relaunch (handles transient failures from previous session)
@@ -304,15 +322,18 @@ public var filteredSpeakers: [SpeakerProfile] {
 
     public func startWatching() {
         meetingDetector.startWatching()
-        phase = .dormant
+        // Don't clobber the "Name Speakers" badge — pending candidates outrank
+        // the plain watching state until the user resolves them.
+        if phase != .userAction { phase = .dormant }
     }
 
     public func stopWatching() {
         // stopWatching may synchronously fire onMeetingEnded (which sets phase = .processing).
-        // Only fall back to .dormant when no meeting was active.
+        // Only fall back to .dormant when no meeting was active, and preserve a
+        // pending "Name Speakers" badge.
         let phaseBefore = phase
         meetingDetector.stopWatching()
-        if phase == phaseBefore {
+        if phase == phaseBefore && phase != .userAction {
             phase = .dormant
         }
     }
@@ -758,6 +779,7 @@ public var filteredSpeakers: [SpeakerProfile] {
             existing.meetingCount += 1
             existing.totalMeetingDuration += candidate.totalMeetingDuration
             existing.totalWordCount += candidate.totalWordCount
+            existing.totalSpeakingTime += candidate.totalSpeakingTime
             speakerStore.upsert(existing)
         } else {
             speakerStore.upsert(
@@ -770,6 +792,7 @@ public var filteredSpeakers: [SpeakerProfile] {
                     meetingCount: 1,
                     totalMeetingDuration: candidate.totalMeetingDuration,
                     totalWordCount: candidate.totalWordCount,
+                    totalSpeakingTime: candidate.totalSpeakingTime,
                     audioClipURLs: persistedClips
                 )
             )
@@ -802,7 +825,8 @@ public var filteredSpeakers: [SpeakerProfile] {
             NamingCandidate(
                 id: UUID(),
                 temporaryName: "\(candidate.temporaryName) · voice \(i + 1)",
-                suggestedName: nil,
+                // Any of the cluster's roster suggestions could belong to any part.
+                suggestedNames: candidate.suggestedNames,
                 audioClipURLs: [candidate.audioClipURLs[i]],
                 // Prefer the clip-local embedding; the cluster centroid is exactly the
                 // polluted mixture the user is splitting away from, so never fall back
@@ -812,7 +836,10 @@ public var filteredSpeakers: [SpeakerProfile] {
                 clipEmbeddings: i < candidate.clipEmbeddings.count ? [candidate.clipEmbeddings[i]] : [],
                 transcriptPath: nil,
                 totalMeetingDuration: candidate.totalMeetingDuration,
-                totalWordCount: 0
+                // Words and speaking time measured the merged cluster — attributing
+                // them to any single part would double-count.
+                totalWordCount: 0,
+                totalSpeakingTime: 0
             )
         }
         namingCandidates.replaceSubrange(index...index, with: parts)
@@ -852,6 +879,7 @@ public var filteredSpeakers: [SpeakerProfile] {
                     meetingCount: 1,
                     totalMeetingDuration: candidate.totalMeetingDuration,
                     totalWordCount: candidate.totalWordCount,
+                    totalSpeakingTime: candidate.totalSpeakingTime,
                     audioClipURLs: persistedClips
                 )
             )
@@ -873,34 +901,32 @@ public var filteredSpeakers: [SpeakerProfile] {
         speakerStore.rename(id: id, to: trimmed)
 
         // Prompt the user before retroactively renaming
-        if askUserToUpdateTranscripts(oldName: oldName, newName: trimmed) {
+        if askUserToUpdateTranscripts(oldNames: [oldName], newName: trimmed) {
             rewriteSpeakerAcrossTranscripts(from: oldName, to: trimmed)
         }
     }
 
+    /// Merge every selected profile (2 or more) into one. The survivor is chosen by
+    /// `SpeakerMatcher.mergePrimary`: a human-given name beats a placeholder, then
+    /// most meetings, then oldest profile.
     public func mergeSelectedSpeakers() {
-        let ids = Array(mergeSelection)
-        guard ids.count == 2 else { return }
+        let selected = speakerStore.speakers.filter { mergeSelection.contains($0.id) }
+        guard selected.count >= 2, let primary = SpeakerMatcher.mergePrimary(of: selected) else { return }
+        let secondaries = selected.filter { $0.id != primary.id }
 
-        // Prefer the human-given name: if ids[0] is a placeholder but ids[1] is not,
-        // swap so the real name survives as primary.
-        var primaryID = ids[0]
-        var secondaryID = ids[1]
-        if let p0 = speakerStore.speakers.first(where: { $0.id == ids[0] }),
-           let p1 = speakerStore.speakers.first(where: { $0.id == ids[1] }),
-           SpeakerMatcher.isPlaceholderName(p0.name) && !SpeakerMatcher.isPlaceholderName(p1.name) {
-            primaryID = ids[1]
-            secondaryID = ids[0]
-        }
+        // One prompt covers every explicitly-named profile being folded in;
+        // placeholder names are rewritten without asking (nothing user-authored
+        // is being replaced).
+        let namedSecondaries = secondaries.map(\.name).filter { !SpeakerMatcher.isPlaceholderName($0) }
+        let rewriteNamed = namedSecondaries.isEmpty
+            || askUserToUpdateTranscripts(oldNames: namedSecondaries, newName: primary.name)
 
-        if let primary = speakerStore.speakers.first(where: { $0.id == primaryID }),
-           let secondary = speakerStore.speakers.first(where: { $0.id == secondaryID }) {
-            if askUserToUpdateTranscripts(oldName: secondary.name, newName: primary.name) {
+        for secondary in secondaries {
+            if SpeakerMatcher.isPlaceholderName(secondary.name) || rewriteNamed {
                 rewriteSpeakerAcrossTranscripts(from: secondary.name, to: primary.name)
             }
+            speakerStore.merge(primaryID: primary.id, secondaryID: secondary.id)
         }
-
-        speakerStore.merge(primaryID: primaryID, secondaryID: secondaryID)
         mergeSelection.removeAll()
     }
 
@@ -921,20 +947,22 @@ public var filteredSpeakers: [SpeakerProfile] {
         }
     }
 
-    private func askUserToUpdateTranscripts(oldName: String, newName: String) -> Bool {
-        // If it's a generated placeholder, there's no need to ask, just do it.
-        // The user only needs to be asked if they are renaming an already explicitly named speaker.
-        if SpeakerMatcher.isPlaceholderName(oldName) {
+    private func askUserToUpdateTranscripts(oldNames: [String], newName: String) -> Bool {
+        // Generated placeholders don't need consent — nothing user-authored is
+        // being replaced. Only ask when an explicitly named speaker is affected.
+        let named = oldNames.filter { !SpeakerMatcher.isPlaceholderName($0) }
+        if named.isEmpty {
             return true
         }
 
+        let list = named.map { "'\($0)'" }.joined(separator: ", ")
         let alert = NSAlert()
         alert.messageText = "Update past transcripts?"
-        alert.informativeText = "Would you like to retroactively replace '\(oldName)' with '\(newName)' in all previously saved transcripts?"
+        alert.informativeText = "Would you like to retroactively replace \(list) with '\(newName)' in all previously saved transcripts?"
         alert.addButton(withTitle: "Update Transcripts")
         alert.addButton(withTitle: "Skip")
         alert.alertStyle = .informational
-        
+
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
         return response == .alertFirstButtonReturn

@@ -2520,25 +2520,29 @@ public final class PipelineProcessor: ObservableObject {
                 // speakers here; their transcript keeps the "Speaker N" label.
                 let audible = clips.filter { !$0.clips.isEmpty }
                 for silent in clips where silent.clips.isEmpty {
-                    NSLog("Heard: Skipping naming candidate '\(silent.temporaryName)' — no playable clip could be extracted")
+                    NSLog("Heard: Skipping naming candidate '\(silent.speaker.temporaryName)' — no playable clip could be extracted")
                 }
 
-                // Build candidates with audio clips, embeddings, and suggested roster names
-                let rosterSuggestions = transcript.unmatchedRosterNames
-                let candidates = audible.enumerated().map { (index, clip) in
+                // Build candidates with audio clips, embeddings, and roster suggestions.
+                // Every candidate gets the full unmatched-roster list — with several
+                // unknown voices there is no reliable way to pre-pair a specific name
+                // to a specific voice, so the prompt offers all of them as tappable
+                // chips and the user picks by ear.
+                let candidates = audible.map { item in
                     NamingCandidate(
                         id: UUID(),
-                        temporaryName: clip.temporaryName,
-                        suggestedName: index < rosterSuggestions.count ? rosterSuggestions[index] : nil,
-                        audioClipURLs: clip.clips.map(\.url),
-                        embedding: clip.embedding,
+                        temporaryName: item.speaker.temporaryName,
+                        suggestedNames: transcript.unmatchedRosterNames,
+                        audioClipURLs: item.clips.map(\.url),
+                        embedding: item.speaker.embedding,
                         clipEmbeddings: perClipEmbeddings(
-                            speakerID: clip.speakerID,
-                            regions: clip.clips.map { (startTime: $0.startTime, endTime: $0.endTime) }
+                            speakerID: item.speaker.speakerID,
+                            regions: item.clips.map { (startTime: $0.startTime, endTime: $0.endTime) }
                         ),
                         transcriptPath: outputURL,
-                        totalMeetingDuration: clip.duration,
-                        totalWordCount: clip.words
+                        totalMeetingDuration: item.speaker.totalMeetingDuration,
+                        totalWordCount: item.speaker.totalWordCount,
+                        totalSpeakingTime: item.speaker.totalSpeakingTime
                     )
                 }
                 if !candidates.isEmpty {
@@ -2997,7 +3001,7 @@ public final class PipelineProcessor: ObservableObject {
         var allSegments: [TranscriptSegment] = appSegments + micSegments
 
         // Apply diarization speaker labels
-        var unmatchedSpeakerInfo: [(speakerID: String, temporaryName: String, embedding: [Float], duration: TimeInterval, words: Int)] = []
+        var unmatchedSpeakerInfo: [UnmatchedSpeaker] = []
         var diarSegTuples: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)] = []
         var unmatchedRosterNamesForPrompt: [String] = []
 
@@ -3016,7 +3020,8 @@ public final class PipelineProcessor: ObservableObject {
             let matches = SpeakerMatcher.matchSpeakers(
                 embeddings: uniqueEmbeddings,
                 database: speakerStore.speakers,
-                localUserName: me
+                localUserName: me,
+                matchThreshold: Float(settingsStore.settings.speakerMatchThreshold)
             )
 
             var nameMap: [String: String] = [:]
@@ -3052,7 +3057,11 @@ public final class PipelineProcessor: ObservableObject {
             // Collect unmatched speaker info for naming prompt
             let stillUnmatched = matches.filter { $0.isNewSpeaker && nameMap[$0.detectedSpeakerID]?.hasPrefix("Speaker_") ?? true }
             unmatchedSpeakerInfo = stillUnmatched.map {
-                (speakerID: $0.detectedSpeakerID, temporaryName: nameMap[$0.detectedSpeakerID] ?? $0.assignedName, embedding: $0.embedding, duration: 0.0, words: 0)
+                UnmatchedSpeaker(
+                    speakerID: $0.detectedSpeakerID,
+                    temporaryName: nameMap[$0.detectedSpeakerID] ?? $0.assignedName,
+                    embedding: $0.embedding
+                )
             }
 
             // Collect diarization segments with original-time timestamps for clip extraction
@@ -3124,18 +3133,30 @@ public final class PipelineProcessor: ObservableObject {
             let words = segment.text.split(whereSeparator: { $0.isWhitespace }).count
             wordsPerSpeaker[segment.speaker, default: 0] += words
         }
+        // Speaking time from the pre-merge segments: mergeConsecutive extends a
+        // block's endTime across the silence between same-speaker sentences, so the
+        // merged segments would overcount. Sentence-level durations are the honest
+        // approximation of time actually spent talking.
+        var speakingPerSpeaker: [String: TimeInterval] = [:]
+        for segment in allSegments {
+            speakingPerSpeaker[segment.speaker, default: 0] += max(0, segment.endTime - segment.startTime)
+        }
 
         // Apply to existing known speakers (batched — one disk write)
         let statUpdates = speakerStore.speakers
             .filter { segmentSpeakers.contains($0.name) }
-            .map { (id: $0.id, addDuration: meetingDuration, addWords: wordsPerSpeaker[$0.name] ?? 0) }
+            .map { (id: $0.id,
+                    addDuration: meetingDuration,
+                    addWords: wordsPerSpeaker[$0.name] ?? 0,
+                    addSpeaking: speakingPerSpeaker[$0.name] ?? 0) }
         speakerStore.updateStats(statUpdates)
 
         // Apply to unmatched speakers
         for i in unmatchedSpeakerInfo.indices {
             let name = unmatchedSpeakerInfo[i].temporaryName
-            unmatchedSpeakerInfo[i].duration = meetingDuration
-            unmatchedSpeakerInfo[i].words = wordsPerSpeaker[name] ?? 0
+            unmatchedSpeakerInfo[i].totalMeetingDuration = meetingDuration
+            unmatchedSpeakerInfo[i].totalWordCount = wordsPerSpeaker[name] ?? 0
+            unmatchedSpeakerInfo[i].totalSpeakingTime = speakingPerSpeaker[name] ?? 0
         }
 
         let userName = settingsStore.settings.userName.trimmingCharacters(in: .whitespacesAndNewlines)

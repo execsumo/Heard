@@ -90,18 +90,11 @@ public struct SpeakerNamingView: View {
             clipButtons(for: candidate)
 
             VStack(alignment: .leading, spacing: HeardTheme.Spacing.xs) {
-                HStack(spacing: 6) {
-                    Text(candidate.temporaryName)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(HeardTheme.Paper.mute)
-                    if let suggested = candidate.suggestedName {
-                        Text("maybe \(suggested)?")
-                            .font(.system(size: 11))
-                            .foregroundStyle(HeardTheme.Paper.warn)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(HeardTheme.Paper.warnSoft, in: Capsule())
-                    }
+                Text(candidate.temporaryName)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(HeardTheme.Paper.mute)
+                if !candidate.suggestedNames.isEmpty {
+                    suggestionChips(for: candidate)
                 }
                 TextField(
                     candidate.suggestedName ?? "Enter speaker name",
@@ -144,6 +137,37 @@ public struct SpeakerNamingView: View {
                 Button("Split into separate voices") { splitSingle(candidate) }
             }
             Button("Discard candidate") { discardSingle(candidate) }
+        }
+    }
+
+    /// Tappable roster-name chips. Every unmatched roster name is offered on every
+    /// candidate — with several unknown voices there is no reliable way to pre-pair
+    /// a specific name to a specific voice, so the user picks by ear. Tapping a chip
+    /// fills the name field; Save still commits.
+    private func suggestionChips(for candidate: NamingCandidate) -> some View {
+        HStack(spacing: 4) {
+            Text("maybe:")
+                .font(.system(size: 10))
+                .foregroundStyle(HeardTheme.Paper.mute)
+            ForEach(candidate.suggestedNames.prefix(3), id: \.self) { name in
+                Button {
+                    drafts[candidate.id] = name
+                } label: {
+                    Text(name)
+                        .font(.system(size: 11))
+                        .foregroundStyle(HeardTheme.Paper.warn)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(HeardTheme.Paper.warnSoft, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Fill the name field with \(name)")
+            }
+            if candidate.suggestedNames.count > 3 {
+                Text("+\(candidate.suggestedNames.count - 3) more")
+                    .font(.system(size: 10))
+                    .foregroundStyle(HeardTheme.Paper.mute)
+            }
         }
     }
 

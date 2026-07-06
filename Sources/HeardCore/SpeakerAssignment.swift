@@ -44,11 +44,12 @@ public struct TrackDiarizationResult {
 /// Uses cosine distance with configurable thresholds.
 public enum SpeakerMatcher {
 
-    /// Cosine distance threshold for matching (lower = more similar).
+    /// Default cosine distance threshold for matching (lower = more similar).
     /// 0.30 is on the strict side of typical WeSpeaker ranges — the previous 0.40
     /// caused false-positive matches against unrelated existing profiles, so newly
     /// detected speakers were silently classified as already-known and the naming
-    /// prompt never fired.
+    /// prompt never fired. User-tunable via `AppSettings.speakerMatchThreshold`
+    /// (Advanced → Voice Matching).
     public static let matchThreshold: Float = 0.30
 
     /// Minimum gap between best and second-best match to accept a match.
@@ -87,7 +88,8 @@ public enum SpeakerMatcher {
     public static func matchSpeakers(
         embeddings: [SpeakerEmbedding],
         database: [SpeakerProfile],
-        localUserName: String
+        localUserName: String,
+        matchThreshold: Float = SpeakerMatcher.matchThreshold
     ) -> [MatchResult] {
         var results: [MatchResult] = []
         var usedProfileIDs = Set<UUID>()
@@ -109,7 +111,8 @@ public enum SpeakerMatcher {
             let match = findBestMatch(
                 embedding: detected.vector,
                 database: database,
-                excludeIDs: usedProfileIDs
+                excludeIDs: usedProfileIDs,
+                matchThreshold: matchThreshold
             )
 
             if let match {
@@ -149,7 +152,8 @@ public enum SpeakerMatcher {
     private static func findBestMatch(
         embedding: [Float],
         database: [SpeakerProfile],
-        excludeIDs: Set<UUID>
+        excludeIDs: Set<UUID>,
+        matchThreshold: Float
     ) -> DatabaseMatch? {
         guard !embedding.isEmpty else { return nil }
 
@@ -210,6 +214,20 @@ public enum SpeakerMatcher {
             profile.meetingCount += 1
             addEmbedding(match.embedding, to: &profile.embeddings)
             speakerStore.upsert(profile)
+        }
+    }
+
+    /// Pick the profile that should survive an N-way merge: a human-given name always
+    /// beats a placeholder; within the same tier, the profile seen in the most meetings
+    /// wins (its stats and embeddings are the best-established), with the oldest
+    /// `firstSeen` as the deterministic tiebreaker.
+    public static func mergePrimary(of profiles: [SpeakerProfile]) -> SpeakerProfile? {
+        profiles.min { a, b in
+            let aPlaceholder = isPlaceholderName(a.name)
+            let bPlaceholder = isPlaceholderName(b.name)
+            if aPlaceholder != bPlaceholder { return !aPlaceholder }
+            if a.meetingCount != b.meetingCount { return a.meetingCount > b.meetingCount }
+            return a.firstSeen < b.firstSeen
         }
     }
 

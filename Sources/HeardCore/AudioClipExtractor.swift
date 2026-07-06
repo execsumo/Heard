@@ -226,15 +226,15 @@ public enum AudioClipExtractor {
     /// When provided, silence gaps within each extracted clip are skipped so every playback
     /// is continuous speech rather than a raw time slice that may include long pauses.
     public static func extractSpeakerClips(
-        unmatchedSpeakers: [(speakerID: String, temporaryName: String, embedding: [Float], duration: TimeInterval, words: Int)],
+        unmatchedSpeakers: [UnmatchedSpeaker],
         diarizationSegments: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)],
         speechSegments: [(startTime: TimeInterval, endTime: TimeInterval)]? = nil,
         sourceAudioURL: URL,
         outputDirectory: URL,
         clipsPerSpeaker: Int = 3,
         vadSpeechSegments: [(startTime: TimeInterval, endTime: TimeInterval)] = []
-    ) -> [(speakerID: String, temporaryName: String, clips: [ExtractedClip], embedding: [Float], duration: TimeInterval, words: Int)] {
-        var results: [(speakerID: String, temporaryName: String, clips: [ExtractedClip], embedding: [Float], duration: TimeInterval, words: Int)] = []
+    ) -> [(speaker: UnmatchedSpeaker, clips: [ExtractedClip])] {
+        var results: [(speaker: UnmatchedSpeaker, clips: [ExtractedClip])] = []
 
         for speaker in unmatchedSpeakers {
             let regions = bestClipRegions(
@@ -260,7 +260,7 @@ public enum AudioClipExtractor {
                 }
             }
 
-            results.append((speaker.speakerID, speaker.temporaryName, saved, speaker.embedding, speaker.duration, speaker.words))
+            results.append((speaker, saved))
         }
 
         return results
