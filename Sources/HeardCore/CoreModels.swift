@@ -228,6 +228,11 @@ public struct NamingCandidate: Identifiable, Equatable {
     /// crosstalk.
     public var audioClipURLs: [URL]
     public var embedding: [Float]
+    /// Per-clip embeddings parallel to `audioClipURLs` (an entry may be empty when the
+    /// diarizer didn't expose chunk embeddings for that region). Powers "Split voices":
+    /// when the clips of one cluster turn out to be different people, each split part is
+    /// saved with its own clip-local embedding instead of the polluted cluster centroid.
+    public var clipEmbeddings: [[Float]]
     /// Path to the transcript file that uses this temporary name; used to rewrite the file when the speaker is named.
     public var transcriptPath: URL?
     public var totalMeetingDuration: TimeInterval
@@ -239,6 +244,7 @@ public struct NamingCandidate: Identifiable, Equatable {
         suggestedName: String? = nil,
         audioClipURLs: [URL] = [],
         embedding: [Float] = [],
+        clipEmbeddings: [[Float]] = [],
         transcriptPath: URL? = nil,
         totalMeetingDuration: TimeInterval = 0,
         totalWordCount: Int = 0
@@ -248,6 +254,7 @@ public struct NamingCandidate: Identifiable, Equatable {
         self.suggestedName = suggestedName
         self.audioClipURLs = audioClipURLs
         self.embedding = embedding
+        self.clipEmbeddings = clipEmbeddings
         self.transcriptPath = transcriptPath
         self.totalMeetingDuration = totalMeetingDuration
         self.totalWordCount = totalWordCount

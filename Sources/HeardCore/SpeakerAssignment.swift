@@ -61,7 +61,7 @@ public enum SpeakerMatcher {
     public static let maxEmbeddingsPerSpeaker = 5
 
     /// True when `name` matches the auto-generated `Speaker N` placeholder pattern.
-    /// Placeholders come from skipped or auto-dismissed naming prompts; they are
+    /// Placeholders come from skipped naming prompts; they are
     /// excluded from matching so the user always gets another chance to name the
     /// speaker on a later meeting.
     public static func isPlaceholderName(_ name: String) -> Bool {
@@ -208,17 +208,20 @@ public enum SpeakerMatcher {
             guard var profile = speakerStore.speakers.first(where: { $0.id == profileID }) else { continue }
             profile.lastSeen = Date()
             profile.meetingCount += 1
-
-            // Add embedding if we have room, keeping diverse set
-            if profile.embeddings.count < maxEmbeddingsPerSpeaker {
-                profile.embeddings.append(match.embedding)
-            } else {
-                // Replace the most similar existing embedding (least diverse)
-                if let replaceIndex = mostSimilarIndex(to: match.embedding, in: profile.embeddings) {
-                    profile.embeddings[replaceIndex] = match.embedding
-                }
-            }
+            addEmbedding(match.embedding, to: &profile.embeddings)
             speakerStore.upsert(profile)
+        }
+    }
+
+    /// Insert a new embedding into a stored set, respecting the per-speaker cap and
+    /// keeping the set diverse: append while there's room, otherwise replace the most
+    /// similar (least diverse) existing embedding. Empty embeddings are ignored.
+    public static func addEmbedding(_ embedding: [Float], to embeddings: inout [[Float]]) {
+        guard !embedding.isEmpty else { return }
+        if embeddings.count < maxEmbeddingsPerSpeaker {
+            embeddings.append(embedding)
+        } else if let replaceIndex = mostSimilarIndex(to: embedding, in: embeddings) {
+            embeddings[replaceIndex] = embedding
         }
     }
 

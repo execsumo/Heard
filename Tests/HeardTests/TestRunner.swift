@@ -786,6 +786,33 @@ func runTranscriptWriterTests() {
         try expect(store.speakers.isEmpty)
     }
 
+    test("SpeakerStore prunes placeholder profiles without playable clips") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let existingClip = tmpDir.appendingPathComponent("clip.wav")
+        try Data([0x52, 0x49, 0x46, 0x46]).write(to: existingClip)
+        let missingClip = tmpDir.appendingPathComponent("gone.wav")
+
+        func profile(_ name: String, clips: [URL]) -> SpeakerProfile {
+            SpeakerProfile(id: UUID(), name: name, embeddings: [],
+                           firstSeen: Date(), lastSeen: Date(), meetingCount: 1,
+                           audioClipURLs: clips)
+        }
+
+        let store = SpeakerStore(url: tmpDir.appendingPathComponent("speakers.json"))
+        store.upsert(profile("Alice", clips: []))                       // named, kept
+        store.upsert(profile("Speaker_AB12CD", clips: [existingClip]))  // placeholder + audio, kept
+        store.upsert(profile("Speaker_EF34GH", clips: [missingClip]))   // placeholder, clip gone
+        store.upsert(profile("Speaker_IJ56KL", clips: []))              // placeholder, never had audio
+
+        let removed = store.pruneUnidentifiablePlaceholders()
+        try expectEqual(removed, 2)
+        try expectEqual(Set(store.speakers.map(\.name)), Set(["Alice", "Speaker_AB12CD"]))
+    }
+
     test("PipelineQueueStore enqueue and retrieve") {
         let tmpDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("HeardTests-\(UUID().uuidString)")
@@ -1780,6 +1807,29 @@ func runSpeakerMatcherEdgeTests() {
             localUserName: "Me"
         )
         try expect(result[0].isNewSpeaker)
+    }
+
+    test("addEmbedding appends while under the per-speaker cap") {
+        var stored: [[Float]] = [ref]
+        SpeakerMatcher.addEmbedding(vector(atDistance: 0.20, from: ref), to: &stored)
+        try expectEqual(stored.count, 2)
+    }
+
+    test("addEmbedding at cap replaces the most similar stored embedding") {
+        // Five stored embeddings at increasing distance from the reference axis.
+        var stored: [[Float]] = (0..<SpeakerMatcher.maxEmbeddingsPerSpeaker).map {
+            vector(atDistance: Float($0) * 0.1, from: ref)
+        }
+        let closeToFirst = vector(atDistance: 0.01, from: ref)
+        SpeakerMatcher.addEmbedding(closeToFirst, to: &stored)
+        try expectEqual(stored.count, SpeakerMatcher.maxEmbeddingsPerSpeaker, "Cap holds")
+        try expectEqual(stored[0], closeToFirst, "Most similar entry (index 0) was replaced")
+    }
+
+    test("addEmbedding ignores empty embeddings") {
+        var stored: [[Float]] = [ref]
+        SpeakerMatcher.addEmbedding([], to: &stored)
+        try expectEqual(stored.count, 1)
     }
 }
 

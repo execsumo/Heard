@@ -2514,22 +2514,37 @@ public final class PipelineProcessor: ObservableObject {
                     vadSpeechSegments: vadSegments
                 )
 
+                // A candidate the user can't listen to can't be identified — and a
+                // placeholder profile is excluded from voice matching, so persisting one
+                // without audio would only clutter the Speakers list. Drop clipless
+                // speakers here; their transcript keeps the "Speaker N" label.
+                let audible = clips.filter { !$0.clips.isEmpty }
+                for silent in clips where silent.clips.isEmpty {
+                    NSLog("Heard: Skipping naming candidate '\(silent.temporaryName)' — no playable clip could be extracted")
+                }
+
                 // Build candidates with audio clips, embeddings, and suggested roster names
                 let rosterSuggestions = transcript.unmatchedRosterNames
-                let candidates = clips.enumerated().map { (index, clip) in
+                let candidates = audible.enumerated().map { (index, clip) in
                     NamingCandidate(
                         id: UUID(),
                         temporaryName: clip.temporaryName,
                         suggestedName: index < rosterSuggestions.count ? rosterSuggestions[index] : nil,
-                        audioClipURLs: clip.clipURLs,
+                        audioClipURLs: clip.clips.map(\.url),
                         embedding: clip.embedding,
+                        clipEmbeddings: perClipEmbeddings(
+                            speakerID: clip.speakerID,
+                            regions: clip.clips.map { (startTime: $0.startTime, endTime: $0.endTime) }
+                        ),
                         transcriptPath: outputURL,
                         totalMeetingDuration: clip.duration,
                         totalWordCount: clip.words
                     )
                 }
-                NSLog("Heard: Triggering naming prompt for \(candidates.count) candidate(s)")
-                onNamingRequired(candidates)
+                if !candidates.isEmpty {
+                    NSLog("Heard: Triggering naming prompt for \(candidates.count) candidate(s)")
+                    onNamingRequired(candidates)
+                }
             }
         }
     }
@@ -2863,6 +2878,76 @@ public final class PipelineProcessor: ObservableObject {
         return fallback
     }
 
+    /// One embedding per extracted voice clip, aggregated from the diarizer chunk
+    /// embeddings that overlap the clip's original-time region. Chunk times are in the
+    /// preprocessed (VAD-trimmed) timebase, so they're mapped through the app track's
+    /// `VadSegmentMap` before overlap is computed — the same mapping used for the
+    /// diarization segments themselves. Returns an empty vector for a clip when no
+    /// chunk overlaps it (or when chunk embeddings are unavailable entirely), so the
+    /// result is always parallel to `regions`.
+    private func perClipEmbeddings(
+        speakerID: String,
+        regions: [(startTime: TimeInterval, endTime: TimeInterval)]
+    ) -> [[Float]] {
+        guard let chunks = appDiarization?.chunkEmbeddings, !chunks.isEmpty else {
+            return regions.map { _ in [] }
+        }
+        let speakerChunks = chunks.filter { "R_\($0.speakerId)" == speakerID && !$0.embedding256.isEmpty }
+        guard !speakerChunks.isEmpty else { return regions.map { _ in [] } }
+
+        let vadMap = appTrack?.vadMap
+        return regions.map { region in
+            var overlapping: [SpeakerEmbeddingAggregator.Chunk] = []
+            for chunk in speakerChunks {
+                let start = vadMap?.toOriginalTime(TimeInterval(chunk.startTimeSeconds)) ?? TimeInterval(chunk.startTimeSeconds)
+                let end = vadMap?.toOriginalTime(TimeInterval(chunk.endTimeSeconds)) ?? TimeInterval(chunk.endTimeSeconds)
+                let overlap = min(end, region.endTime) - max(start, region.startTime)
+                if overlap > 0 {
+                    overlapping.append(.init(vector: chunk.embedding256, weight: Float(overlap)))
+                }
+            }
+            return SpeakerEmbeddingAggregator.centroid(of: overlapping) ?? []
+        }
+    }
+
+    /// Extract up to two voice samples for a speaker directly into the persistent
+    /// `speaker_clips/` directory. Used for profiles created without going through the
+    /// naming prompt (roster auto-assignment), whose clips would otherwise never exist.
+    private func extractProfileClips(
+        speakerID: String,
+        diarizationSegments: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)],
+        sourceAudioURL: URL
+    ) -> [URL] {
+        let speechSegments = appTrack?.vadMap.mappings.map {
+            (startTime: $0.originalStart, endTime: $0.originalEnd)
+        }
+        let regions = AudioClipExtractor.bestClipRegions(
+            speakerID: speakerID,
+            diarizationSegments: diarizationSegments,
+            speechSegments: speechSegments,
+            maxCount: 2
+        )
+        guard !regions.isEmpty else { return [] }
+
+        let clipsDir = FileManager.default.heardSpeakerClipsDirectory
+        try? FileManager.default.createDirectory(at: clipsDir, withIntermediateDirectories: true)
+
+        var saved: [URL] = []
+        for region in regions {
+            let clipURL = clipsDir.appendingPathComponent("clip_\(UUID().uuidString.prefix(8)).wav")
+            if let url = AudioClipExtractor.extractClip(
+                from: sourceAudioURL,
+                startTime: region.startTime,
+                endTime: region.endTime,
+                outputURL: clipURL,
+                vadSpeechSegments: speechSegments ?? []
+            ) {
+                saved.append(url)
+            }
+        }
+        return saved
+    }
+
     // MARK: - Stage 4: Speaker Assignment
 
     private func runSpeakerAssignment(_ job: PipelineJob) -> TranscriptDocument {
@@ -2954,15 +3039,12 @@ public final class PipelineProcessor: ObservableObject {
                     let rosterName = unmatchedRosterNames.first!
                     nameMap[speakerID] = rosterName
                     NSLog("Heard: Auto-assigned roster name '\(rosterName)' to \(speakerID)")
-                } else if unmatchedSpeakers.count == unmatchedRosterNames.count && unmatchedSpeakers.count > 0 {
-                    // Same number of unmatched speakers and roster names — assign in order
-                    let sortedRoster = unmatchedRosterNames.sorted()
-                    for (i, speaker) in unmatchedSpeakers.enumerated() where i < sortedRoster.count {
-                        nameMap[speaker.detectedSpeakerID] = sortedRoster[i]
-                        NSLog("Heard: Auto-assigned roster name '\(sortedRoster[i])' to \(speaker.detectedSpeakerID)")
-                    }
                 } else {
-                    // Roster names available but count mismatch — pass as suggestions for naming prompt
+                    // Two or more unknown voices: pairing sorted roster names to diarizer
+                    // cluster order would be a coin flip that silently writes wrong
+                    // name↔voice pairs into transcripts and poisons the speaker database
+                    // with mislabeled embeddings. Pass the names as suggestions instead —
+                    // the naming prompt lets the user confirm each one by ear.
                     unmatchedRosterNamesForPrompt = unmatchedRosterNames.sorted()
                 }
             }
@@ -3001,13 +3083,23 @@ public final class PipelineProcessor: ObservableObject {
                 && !match.embedding.isEmpty
                 && !stillUnmatchedIDs.contains(match.detectedSpeakerID) {
                 let resolvedName = nameMap[match.detectedSpeakerID] ?? match.assignedName
+                // These profiles bypass the naming prompt (which is where clips are
+                // normally attached), so extract a voice sample here — straight into
+                // the persistent speaker_clips directory — or the profile would sit
+                // in the Speakers list with a dead play button forever.
+                let clipURLs = extractProfileClips(
+                    speakerID: match.detectedSpeakerID,
+                    diarizationSegments: diarSegTuples,
+                    sourceAudioURL: job.appAudioPath
+                )
                 let profile = SpeakerProfile(
                     id: UUID(),
                     name: resolvedName,
                     embeddings: [match.embedding],
                     firstSeen: Date(),
                     lastSeen: Date(),
-                    meetingCount: 1
+                    meetingCount: 1,
+                    audioClipURLs: clipURLs
                 )
                 speakerStore.upsert(profile)
             }

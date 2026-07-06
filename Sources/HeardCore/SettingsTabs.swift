@@ -362,10 +362,15 @@ extension SettingsView {
                         Image(systemName: "person.badge.plus")
                             .foregroundStyle(HeardTheme.Paper.warn)
                             .font(.system(size: 12))
-                        Text("New speakers detected — open the speaker naming window to identify them")
+                        Text("\(model.namingCandidates.count) new speaker\(model.namingCandidates.count == 1 ? "" : "s") waiting to be named")
                             .font(.system(size: 12))
                             .foregroundStyle(HeardTheme.Paper.warn)
                         Spacer()
+                        Button("Name Speakers…") {
+                            openWindow(id: "speaker-naming")
+                            NSApp.activate(ignoringOtherApps: true)
+                        }
+                        .controlSize(.small)
                     }
                     .padding(12)
                     .background(HeardTheme.Paper.warnSoft,
@@ -414,7 +419,7 @@ extension SettingsView {
                     Text("\(speaker.meetingCount)").monospacedDigit()
                 }
                 .width(min: 60, ideal: 70, max: 90)
-                TableColumn("Time in Meetings") { speaker in
+                TableColumn("Time in Meetings", value: \.totalMeetingDuration) { speaker in
                     let hours = Int(speaker.totalMeetingDuration) / 3600
                     let minutes = (Int(speaker.totalMeetingDuration) % 3600) / 60
                     if hours > 0 {

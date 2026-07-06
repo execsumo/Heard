@@ -1,34 +1,6 @@
 import AVFoundation
 import SwiftUI
 
-struct NamingCandidateRow: View {
-    let candidate: NamingCandidate
-    let onSave: (String) -> Void
-
-    @State private var draft = ""
-
-    var body: some View {
-        HStack(spacing: HeardTheme.Spacing.sm) {
-            Text(candidate.temporaryName)
-                .font(.callout.weight(.medium))
-                .foregroundStyle(HeardTheme.Paper.ink2)
-                .frame(width: 140, alignment: .leading)
-            TextField("Enter speaker name", text: $draft)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit { save() }
-            Button("Save") { save() }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-    }
-
-    private func save() {
-        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        onSave(draft)
-    }
-}
-
 // MARK: - Speaker Naming Prompt Window
 
 public struct SpeakerNamingView: View {
@@ -37,8 +9,6 @@ public struct SpeakerNamingView: View {
     @State private var playingCandidateID: UUID?
     @State private var playingClipIndex: Int?
     @State private var audioPlayer: AVAudioPlayer?
-    @State private var countdownSeconds = 120
-    @State private var countdownTask: Task<Void, Never>?
     @Environment(\.dismissWindow) private var dismissWindow
 
     public init(model: AppModel) { self.model = model }
@@ -59,16 +29,11 @@ public struct SpeakerNamingView: View {
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(HeardTheme.Paper.ink)
 
-                Text("Listen to each voice clip and enter their name. If a candidate's clips are clearly two different voices, choose Multiple speakers to drop it. Unnamed speakers will be saved with generic labels.")
+                Text("Listen to each voice clip and enter their name. If a candidate's samples are clearly different voices, use Split voices to name each one, or Discard to drop it. Take your time — nothing is saved until you choose. Closing this window keeps the speakers pending; reopen it anytime from the menu bar.")
                     .font(.system(size: 12))
                     .foregroundStyle(HeardTheme.Paper.mute)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 420)
-
-                Text("Auto-saving in \(countdownSeconds)s")
-                    .font(.system(size: 11))
-                    .foregroundStyle(HeardTheme.Paper.warn)
-                    .monospacedDigit()
             }
             .padding(.top, HeardTheme.Spacing.lg)
             .padding(.bottom, HeardTheme.Spacing.md)
@@ -111,15 +76,10 @@ public struct SpeakerNamingView: View {
         }
         .frame(width: 560)
         .background(HeardTheme.Paper.bg)
-        .onAppear { startCountdown() }
-        .onDisappear {
-            stopAudio()
-            countdownTask?.cancel()
-        }
+        .onDisappear { stopAudio() }
         .onChange(of: model.namingCandidates) { _, candidates in
             if candidates.isEmpty {
                 stopAudio()
-                countdownTask?.cancel()
                 dismissWindow(id: "speaker-naming")
             }
         }
@@ -156,12 +116,20 @@ public struct SpeakerNamingView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .disabled(draftText(for: candidate).isEmpty)
-                Button("Multiple speakers") { discardSingle(candidate) }
+                if candidate.audioClipURLs.count >= 2 {
+                    Button("Split voices") { splitSingle(candidate) }
+                        .buttonStyle(.plain)
+                        .controlSize(.small)
+                        .font(.system(size: 10))
+                        .foregroundStyle(HeardTheme.Paper.mute)
+                        .help("The samples are different people? Split this candidate into one entry per sample so each voice can be named (or discarded) separately.")
+                }
+                Button("Discard") { discardSingle(candidate) }
                     .buttonStyle(.plain)
                     .controlSize(.small)
                     .font(.system(size: 10))
                     .foregroundStyle(HeardTheme.Paper.mute)
-                    .help("Drop this candidate without saving. Use when the clips reveal that diarization collapsed two voices into one — keeps the speaker database clean and leaves the transcript labeled Speaker N.")
+                    .help("Drop this candidate without saving — keeps the speaker database clean and leaves the transcript labeled Speaker N.")
             }
         }
         .padding(HeardTheme.Spacing.md)
@@ -172,7 +140,10 @@ public struct SpeakerNamingView: View {
                 .stroke(HeardTheme.Paper.border, lineWidth: 0.5)
         )
         .contextMenu {
-            Button("Multiple speakers — discard") { discardSingle(candidate) }
+            if candidate.audioClipURLs.count >= 2 {
+                Button("Split into separate voices") { splitSingle(candidate) }
+            }
+            Button("Discard candidate") { discardSingle(candidate) }
         }
     }
 
@@ -262,10 +233,7 @@ public struct SpeakerNamingView: View {
     private func binding(for candidate: NamingCandidate) -> Binding<String> {
         Binding(
             get: { drafts[candidate.id] ?? candidate.suggestedName ?? "" },
-            set: { newValue in
-                drafts[candidate.id] = newValue
-                startCountdown()
-            }
+            set: { drafts[candidate.id] = $0 }
         )
     }
 
@@ -287,30 +255,18 @@ public struct SpeakerNamingView: View {
         drafts.removeValue(forKey: candidate.id)
     }
 
+    private func splitSingle(_ candidate: NamingCandidate) {
+        stopAudio()
+        model.splitCandidate(candidate)
+        drafts.removeValue(forKey: candidate.id)
+    }
+
     private func saveAll() {
         for candidate in model.namingCandidates {
             let name = draftText(for: candidate)
             if !name.isEmpty { model.saveSpeakerName(candidate: candidate, name: name) }
         }
         if !model.namingCandidates.isEmpty { model.skipNaming() }
-    }
-
-    // MARK: Countdown
-
-    private func startCountdown() {
-        countdownSeconds = 120
-        countdownTask?.cancel()
-        countdownTask = Task {
-            while !Task.isCancelled && countdownSeconds > 0 {
-                try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled else { return }
-                countdownSeconds -= 1
-            }
-            guard !Task.isCancelled else { return }
-            stopAudio()
-            saveAll()
-            dismissWindow(id: "speaker-naming")
-        }
     }
 }
 

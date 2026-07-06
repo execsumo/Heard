@@ -335,6 +335,31 @@ public final class SpeakerStore: ObservableObject {
         return stale.count
     }
 
+    /// Deletes placeholder-named profiles ("Speaker_XXXXXX") that have no playable
+    /// voice clip on disk. Placeholders are excluded from voice matching, so a profile
+    /// that offers neither a name nor audio can never be identified — it only adds
+    /// noise (and a dead play button) to the Speakers list. Returns the number removed.
+    @discardableResult
+    public func pruneUnidentifiablePlaceholders() -> Int {
+        let fm = FileManager.default
+        let doomed = speakers.filter { profile in
+            SpeakerMatcher.isPlaceholderName(profile.name)
+                && !profile.audioClipURLs.contains { fm.fileExists(atPath: $0.path) }
+        }
+        guard !doomed.isEmpty else { return 0 }
+        let doomedIDs = Set(doomed.map(\.id))
+        for profile in doomed {
+            // Clip entries exist but the files are gone; removal is a no-op safety net.
+            for clipURL in profile.audioClipURLs {
+                try? fm.removeItem(at: clipURL)
+            }
+        }
+        speakers.removeAll { doomedIDs.contains($0.id) }
+        persist()
+        NSLog("Heard: pruned \(doomed.count) unidentifiable placeholder speaker(s)")
+        return doomed.count
+    }
+
     public func merge(primaryID: UUID, secondaryID: UUID) {
         guard
             let primaryIndex = speakers.firstIndex(where: { $0.id == primaryID }),
