@@ -168,20 +168,9 @@ public struct MenuBarView: View {
         }
         .frame(width: 268)
         .background(HeardTheme.Paper.bg)
-        .onChange(of: model.showNamingPrompt) { _, show in
-            NSLog("Heard: MenuBarView observed showNamingPrompt=\(show)")
-            if show {
-                openWindow(id: "speaker-naming")
-                NSApp.activate(ignoringOtherApps: true)
-            }
-        }
-        .onChange(of: model.namingCandidates.isEmpty) { wasEmpty, isEmpty in
-            if wasEmpty && !isEmpty {
-                NSLog("Heard: MenuBarView observed namingCandidates became non-empty (\(model.namingCandidates.count))")
-                openWindow(id: "speaker-naming")
-                NSApp.activate(ignoringOtherApps: true)
-            }
-        }
+        // Naming is user-initiated: no auto-open. The orange badge, the
+        // "Name Speakers…" row above, and the Speakers-tab banner are the cues;
+        // candidates stay pending until the user acts.
     }
 
     // MARK: Status Header

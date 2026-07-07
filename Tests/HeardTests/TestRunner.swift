@@ -786,6 +786,114 @@ func runTranscriptWriterTests() {
         try expect(store.speakers.isEmpty)
     }
 
+    test("SpeakerStore prunes placeholder profiles without playable clips") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let existingClip = tmpDir.appendingPathComponent("clip.wav")
+        try Data([0x52, 0x49, 0x46, 0x46]).write(to: existingClip)
+        let missingClip = tmpDir.appendingPathComponent("gone.wav")
+
+        func profile(_ name: String, clips: [URL]) -> SpeakerProfile {
+            SpeakerProfile(id: UUID(), name: name, embeddings: [],
+                           firstSeen: Date(), lastSeen: Date(), meetingCount: 1,
+                           audioClipURLs: clips)
+        }
+
+        let store = SpeakerStore(url: tmpDir.appendingPathComponent("speakers.json"))
+        store.upsert(profile("Alice", clips: []))                       // named, kept
+        store.upsert(profile("Speaker_AB12CD", clips: [existingClip]))  // placeholder + audio, kept
+        store.upsert(profile("Speaker_EF34GH", clips: [missingClip]))   // placeholder, clip gone
+        store.upsert(profile("Speaker_IJ56KL", clips: []))              // placeholder, never had audio
+
+        let removed = store.pruneUnidentifiablePlaceholders()
+        try expectEqual(removed, 2)
+        try expectEqual(Set(store.speakers.map(\.name)), Set(["Alice", "Speaker_AB12CD"]))
+    }
+
+    test("SpeakerStore updateStats accumulates speaking time") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let store = SpeakerStore(url: tmpDir.appendingPathComponent("speakers.json"))
+        let id = UUID()
+        store.upsert(SpeakerProfile(id: id, name: "Alice", embeddings: [], firstSeen: Date(), lastSeen: Date(), meetingCount: 1))
+        store.updateStats([(id: id, addDuration: 3600, addWords: 500, addSpeaking: 240)])
+        store.updateStats([(id: id, addDuration: 1800, addWords: 100, addSpeaking: 60)])
+        let alice = try unwrap(store.speakers.first)
+        try expectClose(alice.totalMeetingDuration, 5400)
+        try expectEqual(alice.totalWordCount, 600)
+        try expectClose(alice.totalSpeakingTime, 300)
+    }
+
+    test("SpeakerStore merge caps embeddings and sums speaking time") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let store = SpeakerStore(url: tmpDir.appendingPathComponent("speakers.json"))
+        let id1 = UUID(), id2 = UUID()
+        let fourVectors: [[Float]] = [[1, 0], [0, 1], [0.5, 0.5], [0.2, 0.8]]
+        store.upsert(SpeakerProfile(id: id1, name: "Alice", embeddings: fourVectors,
+                                    firstSeen: Date(), lastSeen: Date(), meetingCount: 1,
+                                    totalSpeakingTime: 100))
+        store.upsert(SpeakerProfile(id: id2, name: "Dup", embeddings: fourVectors,
+                                    firstSeen: Date(), lastSeen: Date(), meetingCount: 1,
+                                    totalSpeakingTime: 50))
+        store.merge(primaryID: id1, secondaryID: id2)
+        let merged = try unwrap(store.speakers.first)
+        try expectEqual(merged.embeddings.count, SpeakerMatcher.maxEmbeddingsPerSpeaker,
+                        "8 combined embeddings capped at the per-speaker limit")
+        try expectClose(merged.totalSpeakingTime, 150)
+    }
+
+    test("NamingCandidateStore round-trips candidates and drops missing clips") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let existingClip = tmpDir.appendingPathComponent("clip.wav")
+        try Data([0x52, 0x49, 0x46, 0x46]).write(to: existingClip)
+        let missingClip = tmpDir.appendingPathComponent("gone.wav")
+
+        let url = tmpDir.appendingPathComponent("naming_candidates.json")
+        let store = NamingCandidateStore(url: url)
+        store.save([
+            NamingCandidate(
+                id: UUID(), temporaryName: "Speaker_AB12CD",
+                suggestedNames: ["Alice", "Bob"],
+                audioClipURLs: [missingClip, existingClip],
+                embedding: [1, 0],
+                clipEmbeddings: [[0.9, 0.1], [0.1, 0.9]],
+                totalSpeakingTime: 42
+            ),
+            NamingCandidate(
+                id: UUID(), temporaryName: "Speaker_EF34GH",
+                audioClipURLs: [missingClip]
+            ),
+        ])
+
+        let loaded = store.load()
+        try expectEqual(loaded.count, 1, "Candidate with no surviving clip is dropped")
+        let survivor = try unwrap(loaded.first)
+        try expectEqual(survivor.temporaryName, "Speaker_AB12CD")
+        try expectEqual(survivor.suggestedNames, ["Alice", "Bob"])
+        try expectEqual(survivor.audioClipURLs, [existingClip], "Missing clip pruned")
+        try expectEqual(survivor.clipEmbeddings, [[0.1, 0.9]], "Clip embeddings stay parallel to surviving clips")
+        try expectClose(survivor.totalSpeakingTime, 42)
+
+        // Saving an empty list clears the file entirely.
+        store.save([])
+        try expect(!FileManager.default.fileExists(atPath: url.path))
+        try expect(store.load().isEmpty)
+    }
+
     test("PipelineQueueStore enqueue and retrieve") {
         let tmpDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("HeardTests-\(UUID().uuidString)")
@@ -1780,6 +1888,73 @@ func runSpeakerMatcherEdgeTests() {
             localUserName: "Me"
         )
         try expect(result[0].isNewSpeaker)
+    }
+
+    test("addEmbedding appends while under the per-speaker cap") {
+        var stored: [[Float]] = [ref]
+        SpeakerMatcher.addEmbedding(vector(atDistance: 0.20, from: ref), to: &stored)
+        try expectEqual(stored.count, 2)
+    }
+
+    test("addEmbedding at cap replaces the most similar stored embedding") {
+        // Five stored embeddings at increasing distance from the reference axis.
+        var stored: [[Float]] = (0..<SpeakerMatcher.maxEmbeddingsPerSpeaker).map {
+            vector(atDistance: Float($0) * 0.1, from: ref)
+        }
+        let closeToFirst = vector(atDistance: 0.01, from: ref)
+        SpeakerMatcher.addEmbedding(closeToFirst, to: &stored)
+        try expectEqual(stored.count, SpeakerMatcher.maxEmbeddingsPerSpeaker, "Cap holds")
+        try expectEqual(stored[0], closeToFirst, "Most similar entry (index 0) was replaced")
+    }
+
+    test("addEmbedding ignores empty embeddings") {
+        var stored: [[Float]] = [ref]
+        SpeakerMatcher.addEmbedding([], to: &stored)
+        try expectEqual(stored.count, 1)
+    }
+
+    test("Custom matchThreshold overrides the default") {
+        // Distance 0.35 fails the default 0.30 threshold but passes a looser 0.40.
+        let bob = profile("Bob", [ref])
+        let probe = vector(atDistance: 0.35, from: ref)
+        let strict = SpeakerMatcher.matchSpeakers(
+            embeddings: [SpeakerEmbedding(speakerID: "R_0", vector: probe)],
+            database: [bob],
+            localUserName: "Me"
+        )
+        try expect(strict[0].isNewSpeaker, "0.35 must not match at the default 0.30")
+        let loose = SpeakerMatcher.matchSpeakers(
+            embeddings: [SpeakerEmbedding(speakerID: "R_0", vector: probe)],
+            database: [bob],
+            localUserName: "Me",
+            matchThreshold: 0.40
+        )
+        try expectEqual(loose[0].assignedName, "Bob")
+    }
+
+    test("mergePrimary prefers named over placeholder, then meetings, then age") {
+        func profileAt(_ name: String, meetings: Int, daysAgo: Double) -> SpeakerProfile {
+            SpeakerProfile(
+                id: UUID(), name: name, embeddings: [],
+                firstSeen: Date().addingTimeInterval(-daysAgo * 86400),
+                lastSeen: Date(), meetingCount: meetings
+            )
+        }
+        let placeholder = profileAt("Speaker_AB12CD", meetings: 9, daysAgo: 300)
+        let newBob = profileAt("Bob", meetings: 1, daysAgo: 1)
+        let seasonedAlice = profileAt("Alice", meetings: 5, daysAgo: 30)
+        let olderAliceTie = profileAt("Alice2", meetings: 5, daysAgo: 90)
+
+        try expectEqual(
+            SpeakerMatcher.mergePrimary(of: [placeholder, newBob])?.name, "Bob",
+            "Human name beats placeholder regardless of meeting count")
+        try expectEqual(
+            SpeakerMatcher.mergePrimary(of: [newBob, seasonedAlice])?.name, "Alice",
+            "More meetings wins between named profiles")
+        try expectEqual(
+            SpeakerMatcher.mergePrimary(of: [seasonedAlice, olderAliceTie])?.name, "Alice2",
+            "Meeting-count tie broken by oldest firstSeen")
+        try expect(SpeakerMatcher.mergePrimary(of: []) == nil)
     }
 }
 

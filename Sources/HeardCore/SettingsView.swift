@@ -17,6 +17,7 @@ enum HotkeyTarget: Identifiable {
     @State var tableSortOrder: [KeyPathComparator<SpeakerProfile>] = [
         KeyPathComparator(\.lastSeen, order: .reverse)
     ]
+    @Environment(\.openWindow) var openWindow
 
     public init(model: AppModel) {
         self.model = model
