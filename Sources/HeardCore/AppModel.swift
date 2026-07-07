@@ -262,6 +262,9 @@ public final class AppModel: ObservableObject {
                 if s.enableWebexDetection { enabled.insert(.webex) }
                 return enabled
             },
+            chatScrapeEnabled: { [weak self] in
+                self?.settingsStore.settings.includeMeetingChat ?? false
+            },
             onMeetingStarted: { [weak self] snapshot in
                 guard let self else { return }
                 // Stop dictation before recording starts — mic should not transcribe
@@ -291,6 +294,9 @@ public final class AppModel: ObservableObject {
                 guard let session = self.recordingManager.stopRecording() else { return }
                 self.pipelineProcessor.enqueueFinishedRecording(session, endedAt: Date())
                 self.phase = .processing
+            },
+            onChatMessagesObserved: { [weak self] messages in
+                self?.recordingManager.updateChatMessages(messages)
             }
         )
 

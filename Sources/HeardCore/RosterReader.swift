@@ -16,7 +16,7 @@ public protocol AXNode {
 
 // MARK: - Live AX adapter
 
-private struct AXUIElementNode: AXNode {
+struct AXUIElementNode: AXNode {
     private let element: AXUIElement
     init(_ element: AXUIElement) { self.element = element }
 
