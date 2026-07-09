@@ -118,8 +118,11 @@ public struct RecordingSession {
     /// In-flight notes captured during the meeting via the note-composer hotkey.
     /// Carried into the `PipelineJob` when the session ends.
     public var notes: [MeetingNote]
+    /// In-flight chat messages scraped via `ChatReader`, when opted in. Carried
+    /// into the `PipelineJob` when the session ends.
+    public var chatMessages: [ChatMessage]
 
-    public init(title: String, startTime: Date, appAudioPath: URL, micAudioPath: URL, micDelaySeconds: TimeInterval, rosterNames: [String] = [], notes: [MeetingNote] = []) {
+    public init(title: String, startTime: Date, appAudioPath: URL, micAudioPath: URL, micDelaySeconds: TimeInterval, rosterNames: [String] = [], notes: [MeetingNote] = [], chatMessages: [ChatMessage] = []) {
         self.title = title
         self.startTime = startTime
         self.appAudioPath = appAudioPath
@@ -127,6 +130,7 @@ public struct RecordingSession {
         self.micDelaySeconds = micDelaySeconds
         self.rosterNames = rosterNames
         self.notes = notes
+        self.chatMessages = chatMessages
     }
 }
 
@@ -202,6 +206,13 @@ public final class MeetingDetector: ObservableObject {
     private let onMeetingStarted: @MainActor (MeetingSnapshot) -> Void
     private let onMeetingEnded: @MainActor (MeetingSnapshot) -> Void
     private let enabledSources: @MainActor () -> Set<MeetingApp>
+    /// Whether the user has opted into chat scraping (`AppSettings.includeMeetingChat`).
+    /// Gates both the AX chat walk (privacy: skip entirely when off) and delivery.
+    private let chatScrapeEnabled: @MainActor () -> Bool
+    /// Fired from the roster-poll tick with any newly-observed chat messages
+    /// (already deduplicated against what that poll last saw; cross-poll dedup
+    /// happens downstream in `RecordingManager.updateChatMessages`).
+    private let onChatMessagesObserved: @MainActor ([(sender: String, text: String)]) -> Void
     private var activeSnapshot: MeetingSnapshot?
     private var pollingTask: Task<Void, Never>?
     private var rosterPollingTask: Task<Void, Never>?
@@ -229,12 +240,16 @@ public final class MeetingDetector: ObservableObject {
 
     public init(
         enabledSources: @escaping @MainActor () -> Set<MeetingApp> = { Set(MeetingApp.allCases) },
+        chatScrapeEnabled: @escaping @MainActor () -> Bool = { false },
         onMeetingStarted: @escaping @MainActor (MeetingSnapshot) -> Void,
-        onMeetingEnded: @escaping @MainActor (MeetingSnapshot) -> Void
+        onMeetingEnded: @escaping @MainActor (MeetingSnapshot) -> Void,
+        onChatMessagesObserved: @escaping @MainActor ([(sender: String, text: String)]) -> Void = { _ in }
     ) {
         self.enabledSources = enabledSources
+        self.chatScrapeEnabled = chatScrapeEnabled
         self.onMeetingStarted = onMeetingStarted
         self.onMeetingEnded = onMeetingEnded
+        self.onChatMessagesObserved = onChatMessagesObserved
     }
 
     public func startWatching() {
@@ -254,6 +269,9 @@ public final class MeetingDetector: ObservableObject {
         if let snapshot = activeSnapshot {
             stopRosterPolling()
             activeSnapshot = nil
+            Task.detached(priority: .utility) {
+                Self.disableMeetingAppAccessibility(pid: snapshot.meetingPID, source: snapshot.source)
+            }
             onMeetingEnded(snapshot)
         }
     }
@@ -280,6 +298,9 @@ public final class MeetingDetector: ObservableObject {
             stopRosterPolling()
             activeSnapshot = nil
             detectionState = MeetingDetectionState()
+            Task.detached(priority: .utility) {
+                Self.disableMeetingAppAccessibility(pid: snapshot.meetingPID, source: snapshot.source)
+            }
             onMeetingEnded(snapshot)
             return
         }
@@ -328,6 +349,9 @@ public final class MeetingDetector: ObservableObject {
             guard let snapshot = activeSnapshot else { return }
             stopRosterPolling()
             activeSnapshot = nil
+            Task.detached(priority: .utility) {
+                Self.disableMeetingAppAccessibility(pid: snapshot.meetingPID, source: snapshot.source)
+            }
             onMeetingEnded(snapshot)
         }
     }
@@ -383,18 +407,55 @@ public final class MeetingDetector: ObservableObject {
     /// Teams keeps its a11y tree off by default to save resources, so AX reads of
     /// its windows/titles/roster fail (commonly `kAXErrorAPIDisabled`, -25211) even
     /// though Heard itself is trusted. Setting `AXManualAccessibility` on the app
-    /// element signals Chromium to build the tree. The build is asynchronous, so
-    /// callers must still retry the actual read after this returns.
+    /// element is the documented way to signal Chromium to build the tree — but on
+    /// current Electron builds this always fails with `setErr=-25205`
+    /// (`kAXErrorAttributeUnsupported`): Electron doesn't advertise the attribute in
+    /// `accessibilityAttributeNames` (see electron/electron#37465), so the call is
+    /// rejected before it ever reaches Chromium's tree-building logic. This is an
+    /// upstream Electron bug, not a Heard AX-trust problem.
     ///
-    /// The `setErr` log line is the diagnostic discriminator: `.success` means the
-    /// nudge was accepted (any lingering empty reads are tree-build timing); a
-    /// `.apiDisabled` here would instead mean Heard is genuinely untrusted.
-    nonisolated private static func enableMeetingAppAccessibility(pid: pid_t?, source: MeetingApp) {
-        guard let pid else { return }
+    /// Fallback: `AXEnhancedUserInterface` — the same private attribute VoiceOver
+    /// sets — reliably forces Chromium's full accessibility tree on regardless of
+    /// the `AXManualAccessibility` bug above. It's a blunter instrument (it also
+    /// flips the target app into "assistive technology present" mode, which can
+    /// alter its own UI behavior while set), so it's only tried after
+    /// `AXManualAccessibility` fails, and `disableMeetingAppAccessibility` unsets it
+    /// again once the meeting ends.
+    ///
+    /// The `setErr`/`fallbackSetErr` log lines are the diagnostic discriminators:
+    /// `.success` on either means the nudge was accepted (any lingering empty reads
+    /// are tree-build timing); `.apiDisabled` on both would instead mean Heard is
+    /// genuinely untrusted.
+    @discardableResult
+    nonisolated private static func enableMeetingAppAccessibility(pid: pid_t?, source: MeetingApp) -> Bool {
+        guard let pid else { return false }
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 1.0)
         let setErr = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-        DebugFileLog.log("enableMeetingAppAccessibility: pid=\(pid) source=\(source.rawValue) setErr=\(setErr.rawValue)")
+        if setErr == .success {
+            DebugFileLog.log("enableMeetingAppAccessibility: pid=\(pid) source=\(source.rawValue) setErr=\(setErr.rawValue)")
+            return true
+        }
+        let fallbackSetErr = AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        DebugFileLog.log("enableMeetingAppAccessibility: pid=\(pid) source=\(source.rawValue) setErr=\(setErr.rawValue) fallbackSetErr=\(fallbackSetErr.rawValue)")
+        return fallbackSetErr == .success
+    }
+
+    /// Unset `AXEnhancedUserInterface` on meeting end. `AXManualAccessibility` never
+    /// needs undoing — it either failed to set (the common case, see above) or is a
+    /// one-way tree-build nudge with no corresponding teardown. This is best-effort
+    /// hygiene, not correctness-critical: failures are swallowed.
+    ///
+    /// Known gap: this only fires from Heard's own meeting-end paths. If Heard is
+    /// force-quit or crashes mid-meeting, Teams is left with `AXEnhancedUserInterface`
+    /// set (and its side effects) until Teams itself restarts — there is no process-exit
+    /// hook that could run this reliably, so it's accepted as-is rather than engineered
+    /// around.
+    nonisolated private static func disableMeetingAppAccessibility(pid: pid_t?, source: MeetingApp) {
+        guard let pid, source == .teams else { return }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 1.0)
+        AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
     }
 
     /// Extract the meeting title from a meeting-app window via Accessibility API.
@@ -488,12 +549,14 @@ public final class MeetingDetector: ObservableObject {
                 // While roster is still empty, capture a bounded tree dump (Developer
                 // Mode + budget) so an empty result is self-diagnosing, not silent.
                 let wantDump = rosterEmpty && rosterDumpsRemaining > 0 && DebugFileLog.isEnabled
-                let (names, refreshedTitle, treeDump) = await Task.detached(priority: .utility) {
+                let wantChat = self.chatScrapeEnabled()
+                let (names, refreshedTitle, treeDump, chatMessages) = await Task.detached(priority: .utility) {
                     if rosterEmpty { Self.enableMeetingAppAccessibility(pid: pid, source: source) }
                     let names = RosterReader.readRoster(pid: pid)
                     let title = needTitle ? Self.extractMeetingTitle(pid: pid, source: source) : nil
                     let dump = (wantDump && names.isEmpty) ? RosterReader.diagnosticTreeDump(pid: pid) : nil
-                    return (names, title, dump)
+                    let chat = wantChat ? ChatReader.readChatMessages(pid: pid) : []
+                    return (names, title, dump, chat)
                 }.value
                 if !names.isEmpty {
                     let existing = Set(self.activeSnapshot?.rosterNames ?? [])
@@ -509,6 +572,10 @@ public final class MeetingDetector: ObservableObject {
                 if let treeDump {
                     rosterDumpsRemaining -= 1
                     DebugFileLog.log("roster poll tick=\(tick): readRoster empty — AX tree dump (\(3 - rosterDumpsRemaining)/3):\n\(treeDump)")
+                }
+                if !chatMessages.isEmpty {
+                    DebugFileLog.log("roster poll tick=\(tick): chat read=\(chatMessages.count) messages")
+                    self.onChatMessagesObserved(chatMessages)
                 }
             }
         }
@@ -684,6 +751,28 @@ public final class RecordingManager: ObservableObject {
         guard activeSession != nil, !names.isEmpty else { return }
         activeSession?.rosterNames = names
         currentRosterNames = names
+    }
+
+    /// Append newly observed chat messages to the active session, deduplicating
+    /// against everything already captured. Each poll re-reads the AX tree's
+    /// current on-screen chat state (a snapshot, not an incremental delta), so
+    /// the caller passes every message it currently sees and this filters down
+    /// to genuinely new ones. `offsetSeconds` is stamped as "now" relative to
+    /// the session start — the moment Heard observed the message, not when it
+    /// was actually sent (Teams' AX tree doesn't reliably expose that). No-ops
+    /// if no session is active.
+    public func updateChatMessages(_ raw: [(sender: String, text: String)]) {
+        guard let session = activeSession, !raw.isEmpty else { return }
+        var seen = Set(session.chatMessages.map { "\($0.sender)\u{0}\($0.text)" })
+        let offset = max(0, Date().timeIntervalSince(session.startTime))
+        var newMessages: [ChatMessage] = []
+        for entry in raw {
+            let key = "\(entry.sender)\u{0}\(entry.text)"
+            guard seen.insert(key).inserted else { continue }
+            newMessages.append(ChatMessage(offsetSeconds: offset, sender: entry.sender, text: entry.text))
+        }
+        guard !newMessages.isEmpty else { return }
+        activeSession?.chatMessages.append(contentsOf: newMessages)
     }
 
     /// Update the meeting title on the active session. The title is often captured
@@ -2046,21 +2135,29 @@ public enum TranscriptWriter {
 
         """
 
-        let body = renderBody(segments: document.segments, notes: document.notes, noteAuthor: document.noteAuthor)
+        let body = renderBody(
+            segments: document.segments,
+            notes: document.notes,
+            noteAuthor: document.noteAuthor,
+            chatMessages: document.chatMessages
+        )
 
         try (header + body + "\n").write(to: candidate, atomically: true, encoding: .utf8)
         return candidate
     }
 
-    /// Merge spoken segments and user-authored notes into a single chronological
-    /// markdown body. Notes are rendered in italics with a `**Note from <Name>:**`
-    /// label so they're visually distinct from spoken speaker blocks. Notes use
-    /// their `offsetSeconds` as the timestamp; for sort stability when a note
-    /// shares a timestamp with a segment, the note appears immediately after.
+    /// Merge spoken segments, user-authored notes, and scraped chat messages into
+    /// a single chronological markdown body. Notes and chat are both rendered in
+    /// italics so they're visually distinct from spoken speaker blocks, with
+    /// different labels (`**Note from <Name>:**` vs `**Chat — <Sender>:**`) so
+    /// the user's own words stay distinguishable from other participants' chat.
+    /// Both use their `offsetSeconds` as the timestamp; for sort stability when
+    /// several items share a timestamp with a segment, the segment sorts first.
     public static func renderBody(
         segments: [TranscriptSegment],
         notes: [MeetingNote],
-        noteAuthor: String
+        noteAuthor: String,
+        chatMessages: [ChatMessage] = []
     ) -> String {
         let author = noteAuthor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Me"
@@ -2069,24 +2166,26 @@ public enum TranscriptWriter {
         enum Item {
             case segment(TranscriptSegment)
             case note(MeetingNote)
+            case chat(ChatMessage)
             var time: TimeInterval {
                 switch self {
                 case .segment(let s): return s.startTime
                 case .note(let n): return n.offsetSeconds
+                case .chat(let c): return c.offsetSeconds
                 }
             }
-            // 0 for segments, 1 for notes — keeps notes after a segment that
+            // 0 for segments, 1 for notes/chat — keeps them after a segment that
             // starts at the same instant rather than splitting the speaker block
             // by a hair.
             var sortKind: Int {
                 switch self {
                 case .segment: return 0
-                case .note: return 1
+                case .note, .chat: return 1
                 }
             }
         }
 
-        var items: [Item] = segments.map { .segment($0) } + notes.map { .note($0) }
+        var items: [Item] = segments.map { .segment($0) } + notes.map { .note($0) } + chatMessages.map { .chat($0) }
         items.sort { lhs, rhs in
             if lhs.time != rhs.time { return lhs.time < rhs.time }
             return lhs.sortKind < rhs.sortKind
@@ -2100,6 +2199,10 @@ public enum TranscriptWriter {
                 let body = n.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 let timestamp = max(0, n.offsetSeconds).timestampString
                 return "[\(timestamp)] _**Note from \(author):** \(body)_"
+            case .chat(let c):
+                let body = c.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let timestamp = max(0, c.offsetSeconds).timestampString
+                return "[\(timestamp)] _**Chat — \(c.sender):** \(body)_"
             }
         }.joined(separator: "\n\n")
     }
@@ -2194,6 +2297,7 @@ public final class PipelineProcessor: ObservableObject {
             retryCount: 0,
             rosterNames: session.rosterNames,
             notes: session.notes,
+            chatMessages: session.chatMessages,
             micDelaySeconds: session.micDelaySeconds
         )
         queueStore.enqueue(job)
@@ -2514,22 +2618,41 @@ public final class PipelineProcessor: ObservableObject {
                     vadSpeechSegments: vadSegments
                 )
 
-                // Build candidates with audio clips, embeddings, and suggested roster names
-                let rosterSuggestions = transcript.unmatchedRosterNames
-                let candidates = clips.enumerated().map { (index, clip) in
+                // A candidate the user can't listen to can't be identified — and a
+                // placeholder profile is excluded from voice matching, so persisting one
+                // without audio would only clutter the Speakers list. Drop clipless
+                // speakers here; their transcript keeps the "Speaker N" label.
+                let audible = clips.filter { !$0.clips.isEmpty }
+                for silent in clips where silent.clips.isEmpty {
+                    NSLog("Heard: Skipping naming candidate '\(silent.speaker.temporaryName)' — no playable clip could be extracted")
+                }
+
+                // Build candidates with audio clips, embeddings, and roster suggestions.
+                // Every candidate gets the full unmatched-roster list — with several
+                // unknown voices there is no reliable way to pre-pair a specific name
+                // to a specific voice, so the prompt offers all of them as tappable
+                // chips and the user picks by ear.
+                let candidates = audible.map { item in
                     NamingCandidate(
                         id: UUID(),
-                        temporaryName: clip.temporaryName,
-                        suggestedName: index < rosterSuggestions.count ? rosterSuggestions[index] : nil,
-                        audioClipURLs: clip.clipURLs,
-                        embedding: clip.embedding,
+                        temporaryName: item.speaker.temporaryName,
+                        suggestedNames: transcript.unmatchedRosterNames,
+                        audioClipURLs: item.clips.map(\.url),
+                        embedding: item.speaker.embedding,
+                        clipEmbeddings: perClipEmbeddings(
+                            speakerID: item.speaker.speakerID,
+                            regions: item.clips.map { (startTime: $0.startTime, endTime: $0.endTime) }
+                        ),
                         transcriptPath: outputURL,
-                        totalMeetingDuration: clip.duration,
-                        totalWordCount: clip.words
+                        totalMeetingDuration: item.speaker.totalMeetingDuration,
+                        totalWordCount: item.speaker.totalWordCount,
+                        totalSpeakingTime: item.speaker.totalSpeakingTime
                     )
                 }
-                NSLog("Heard: Triggering naming prompt for \(candidates.count) candidate(s)")
-                onNamingRequired(candidates)
+                if !candidates.isEmpty {
+                    NSLog("Heard: Triggering naming prompt for \(candidates.count) candidate(s)")
+                    onNamingRequired(candidates)
+                }
             }
         }
     }
@@ -2863,6 +2986,76 @@ public final class PipelineProcessor: ObservableObject {
         return fallback
     }
 
+    /// One embedding per extracted voice clip, aggregated from the diarizer chunk
+    /// embeddings that overlap the clip's original-time region. Chunk times are in the
+    /// preprocessed (VAD-trimmed) timebase, so they're mapped through the app track's
+    /// `VadSegmentMap` before overlap is computed — the same mapping used for the
+    /// diarization segments themselves. Returns an empty vector for a clip when no
+    /// chunk overlaps it (or when chunk embeddings are unavailable entirely), so the
+    /// result is always parallel to `regions`.
+    private func perClipEmbeddings(
+        speakerID: String,
+        regions: [(startTime: TimeInterval, endTime: TimeInterval)]
+    ) -> [[Float]] {
+        guard let chunks = appDiarization?.chunkEmbeddings, !chunks.isEmpty else {
+            return regions.map { _ in [] }
+        }
+        let speakerChunks = chunks.filter { "R_\($0.speakerId)" == speakerID && !$0.embedding256.isEmpty }
+        guard !speakerChunks.isEmpty else { return regions.map { _ in [] } }
+
+        let vadMap = appTrack?.vadMap
+        return regions.map { region in
+            var overlapping: [SpeakerEmbeddingAggregator.Chunk] = []
+            for chunk in speakerChunks {
+                let start = vadMap?.toOriginalTime(TimeInterval(chunk.startTimeSeconds)) ?? TimeInterval(chunk.startTimeSeconds)
+                let end = vadMap?.toOriginalTime(TimeInterval(chunk.endTimeSeconds)) ?? TimeInterval(chunk.endTimeSeconds)
+                let overlap = min(end, region.endTime) - max(start, region.startTime)
+                if overlap > 0 {
+                    overlapping.append(.init(vector: chunk.embedding256, weight: Float(overlap)))
+                }
+            }
+            return SpeakerEmbeddingAggregator.centroid(of: overlapping) ?? []
+        }
+    }
+
+    /// Extract up to two voice samples for a speaker directly into the persistent
+    /// `speaker_clips/` directory. Used for profiles created without going through the
+    /// naming prompt (roster auto-assignment), whose clips would otherwise never exist.
+    private func extractProfileClips(
+        speakerID: String,
+        diarizationSegments: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)],
+        sourceAudioURL: URL
+    ) -> [URL] {
+        let speechSegments = appTrack?.vadMap.mappings.map {
+            (startTime: $0.originalStart, endTime: $0.originalEnd)
+        }
+        let regions = AudioClipExtractor.bestClipRegions(
+            speakerID: speakerID,
+            diarizationSegments: diarizationSegments,
+            speechSegments: speechSegments,
+            maxCount: 2
+        )
+        guard !regions.isEmpty else { return [] }
+
+        let clipsDir = FileManager.default.heardSpeakerClipsDirectory
+        try? FileManager.default.createDirectory(at: clipsDir, withIntermediateDirectories: true)
+
+        var saved: [URL] = []
+        for region in regions {
+            let clipURL = clipsDir.appendingPathComponent("clip_\(UUID().uuidString.prefix(8)).wav")
+            if let url = AudioClipExtractor.extractClip(
+                from: sourceAudioURL,
+                startTime: region.startTime,
+                endTime: region.endTime,
+                outputURL: clipURL,
+                vadSpeechSegments: speechSegments ?? []
+            ) {
+                saved.append(url)
+            }
+        }
+        return saved
+    }
+
     // MARK: - Stage 4: Speaker Assignment
 
     private func runSpeakerAssignment(_ job: PipelineJob) -> TranscriptDocument {
@@ -2912,7 +3105,7 @@ public final class PipelineProcessor: ObservableObject {
         var allSegments: [TranscriptSegment] = appSegments + micSegments
 
         // Apply diarization speaker labels
-        var unmatchedSpeakerInfo: [(speakerID: String, temporaryName: String, embedding: [Float], duration: TimeInterval, words: Int)] = []
+        var unmatchedSpeakerInfo: [UnmatchedSpeaker] = []
         var diarSegTuples: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)] = []
         var unmatchedRosterNamesForPrompt: [String] = []
 
@@ -2931,7 +3124,8 @@ public final class PipelineProcessor: ObservableObject {
             let matches = SpeakerMatcher.matchSpeakers(
                 embeddings: uniqueEmbeddings,
                 database: speakerStore.speakers,
-                localUserName: me
+                localUserName: me,
+                matchThreshold: Float(settingsStore.settings.speakerMatchThreshold)
             )
 
             var nameMap: [String: String] = [:]
@@ -2954,15 +3148,12 @@ public final class PipelineProcessor: ObservableObject {
                     let rosterName = unmatchedRosterNames.first!
                     nameMap[speakerID] = rosterName
                     NSLog("Heard: Auto-assigned roster name '\(rosterName)' to \(speakerID)")
-                } else if unmatchedSpeakers.count == unmatchedRosterNames.count && unmatchedSpeakers.count > 0 {
-                    // Same number of unmatched speakers and roster names — assign in order
-                    let sortedRoster = unmatchedRosterNames.sorted()
-                    for (i, speaker) in unmatchedSpeakers.enumerated() where i < sortedRoster.count {
-                        nameMap[speaker.detectedSpeakerID] = sortedRoster[i]
-                        NSLog("Heard: Auto-assigned roster name '\(sortedRoster[i])' to \(speaker.detectedSpeakerID)")
-                    }
                 } else {
-                    // Roster names available but count mismatch — pass as suggestions for naming prompt
+                    // Two or more unknown voices: pairing sorted roster names to diarizer
+                    // cluster order would be a coin flip that silently writes wrong
+                    // name↔voice pairs into transcripts and poisons the speaker database
+                    // with mislabeled embeddings. Pass the names as suggestions instead —
+                    // the naming prompt lets the user confirm each one by ear.
                     unmatchedRosterNamesForPrompt = unmatchedRosterNames.sorted()
                 }
             }
@@ -2970,7 +3161,11 @@ public final class PipelineProcessor: ObservableObject {
             // Collect unmatched speaker info for naming prompt
             let stillUnmatched = matches.filter { $0.isNewSpeaker && nameMap[$0.detectedSpeakerID]?.hasPrefix("Speaker_") ?? true }
             unmatchedSpeakerInfo = stillUnmatched.map {
-                (speakerID: $0.detectedSpeakerID, temporaryName: nameMap[$0.detectedSpeakerID] ?? $0.assignedName, embedding: $0.embedding, duration: 0.0, words: 0)
+                UnmatchedSpeaker(
+                    speakerID: $0.detectedSpeakerID,
+                    temporaryName: nameMap[$0.detectedSpeakerID] ?? $0.assignedName,
+                    embedding: $0.embedding
+                )
             }
 
             // Collect diarization segments with original-time timestamps for clip extraction
@@ -3001,13 +3196,23 @@ public final class PipelineProcessor: ObservableObject {
                 && !match.embedding.isEmpty
                 && !stillUnmatchedIDs.contains(match.detectedSpeakerID) {
                 let resolvedName = nameMap[match.detectedSpeakerID] ?? match.assignedName
+                // These profiles bypass the naming prompt (which is where clips are
+                // normally attached), so extract a voice sample here — straight into
+                // the persistent speaker_clips directory — or the profile would sit
+                // in the Speakers list with a dead play button forever.
+                let clipURLs = extractProfileClips(
+                    speakerID: match.detectedSpeakerID,
+                    diarizationSegments: diarSegTuples,
+                    sourceAudioURL: job.appAudioPath
+                )
                 let profile = SpeakerProfile(
                     id: UUID(),
                     name: resolvedName,
                     embeddings: [match.embedding],
                     firstSeen: Date(),
                     lastSeen: Date(),
-                    meetingCount: 1
+                    meetingCount: 1,
+                    audioClipURLs: clipURLs
                 )
                 speakerStore.upsert(profile)
             }
@@ -3032,18 +3237,30 @@ public final class PipelineProcessor: ObservableObject {
             let words = segment.text.split(whereSeparator: { $0.isWhitespace }).count
             wordsPerSpeaker[segment.speaker, default: 0] += words
         }
+        // Speaking time from the pre-merge segments: mergeConsecutive extends a
+        // block's endTime across the silence between same-speaker sentences, so the
+        // merged segments would overcount. Sentence-level durations are the honest
+        // approximation of time actually spent talking.
+        var speakingPerSpeaker: [String: TimeInterval] = [:]
+        for segment in allSegments {
+            speakingPerSpeaker[segment.speaker, default: 0] += max(0, segment.endTime - segment.startTime)
+        }
 
         // Apply to existing known speakers (batched — one disk write)
         let statUpdates = speakerStore.speakers
             .filter { segmentSpeakers.contains($0.name) }
-            .map { (id: $0.id, addDuration: meetingDuration, addWords: wordsPerSpeaker[$0.name] ?? 0) }
+            .map { (id: $0.id,
+                    addDuration: meetingDuration,
+                    addWords: wordsPerSpeaker[$0.name] ?? 0,
+                    addSpeaking: speakingPerSpeaker[$0.name] ?? 0) }
         speakerStore.updateStats(statUpdates)
 
         // Apply to unmatched speakers
         for i in unmatchedSpeakerInfo.indices {
             let name = unmatchedSpeakerInfo[i].temporaryName
-            unmatchedSpeakerInfo[i].duration = meetingDuration
-            unmatchedSpeakerInfo[i].words = wordsPerSpeaker[name] ?? 0
+            unmatchedSpeakerInfo[i].totalMeetingDuration = meetingDuration
+            unmatchedSpeakerInfo[i].totalWordCount = wordsPerSpeaker[name] ?? 0
+            unmatchedSpeakerInfo[i].totalSpeakingTime = speakingPerSpeaker[name] ?? 0
         }
 
         let userName = settingsStore.settings.userName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3057,7 +3274,8 @@ public final class PipelineProcessor: ObservableObject {
             diarizationSegments: diarSegTuples,
             unmatchedRosterNames: unmatchedRosterNamesForPrompt,
             notes: job.notes,
-            noteAuthor: userName.isEmpty ? "Me" : userName
+            noteAuthor: userName.isEmpty ? "Me" : userName,
+            chatMessages: job.chatMessages
         )
     }
     private func buildSegmentsFromTimings(

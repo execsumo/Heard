@@ -694,6 +694,82 @@ func runTranscriptWriterTests() {
         try expect(content.contains("**Note from John:** side comment"),
                    "Note line untouched by rename")
     }
+
+    test("Chat messages are interleaved chronologically with segments and notes") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let doc = TranscriptDocument(
+            title: "Q1 Review",
+            startTime: Date(),
+            endTime: Date().addingTimeInterval(120),
+            participants: ["Alice", "Me"],
+            segments: [
+                TranscriptSegment(speaker: "Alice", startTime: 0, endTime: 20, text: "We saw FCR jump."),
+                TranscriptSegment(speaker: "Me", startTime: 60, endTime: 90, text: "Nice work."),
+            ],
+            notes: [MeetingNote(offsetSeconds: 22, text: "FCR = First Call Resolution")],
+            noteAuthor: "John",
+            chatMessages: [ChatMessage(offsetSeconds: 40, sender: "Bob Jones", text: "Great numbers!")]
+        )
+        let url = try TranscriptWriter.write(document: doc, outputDirectory: tmpDir)
+        let content = try String(contentsOf: url, encoding: .utf8)
+
+        try expect(content.contains("**Chat — Bob Jones:** Great numbers!"),
+                   "Should render chat line with sender attribution")
+        try expect(content.contains("[00:40] _**Chat — Bob Jones:**"),
+                   "Chat timestamp uses offsetSeconds")
+
+        // Order: Alice (00:00) < note (00:22) < chat (00:40) < Me (01:00)
+        let aliceRange = content.range(of: "Alice:")!
+        let noteRange = content.range(of: "Note from John:")!
+        let chatRange = content.range(of: "Chat — Bob Jones:")!
+        let meRange = content.range(of: "Me:** Nice work")!
+        try expect(aliceRange.lowerBound < noteRange.lowerBound, "note must come after Alice")
+        try expect(noteRange.lowerBound < chatRange.lowerBound, "chat must come after the note")
+        try expect(chatRange.lowerBound < meRange.lowerBound, "chat must come before Me")
+    }
+
+    test("Chat message at same timestamp as segment sorts after the segment") {
+        let body = TranscriptWriter.renderBody(
+            segments: [TranscriptSegment(speaker: "Alice", startTime: 10, endTime: 15, text: "Hi.")],
+            notes: [],
+            noteAuthor: "John",
+            chatMessages: [ChatMessage(offsetSeconds: 10, sender: "Bob", text: "tied")]
+        )
+        let aliceIdx = body.range(of: "Alice:")!.lowerBound
+        let chatIdx = body.range(of: "Chat — Bob:")!.lowerBound
+        try expect(aliceIdx < chatIdx, "Segment must precede same-timestamp chat message")
+    }
+
+    test("Empty chatMessages array renders identical to pre-chat output") {
+        let segs = [TranscriptSegment(speaker: "Alice", startTime: 0, endTime: 5, text: "Hello.")]
+        let body = TranscriptWriter.renderBody(segments: segs, notes: [], noteAuthor: "John")
+        try expect(body.contains("**Alice:** Hello."), "Alice present")
+        try expect(!body.contains("Chat —"), "No chat marker without chat messages")
+    }
+
+    test("renameSpeakerInDirectory does not mangle Chat lines") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let doc = TranscriptDocument(
+            title: "Standup", startTime: Date(), endTime: Date().addingTimeInterval(60),
+            participants: ["Speaker 7"],
+            segments: [TranscriptSegment(speaker: "Speaker 7", startTime: 0, endTime: 30, text: "Hey.")],
+            chatMessages: [ChatMessage(offsetSeconds: 10, sender: "Speaker 7", text: "typed the same as I said")]
+        )
+        let url = try TranscriptWriter.write(document: doc, outputDirectory: tmpDir)
+        TranscriptWriter.renameSpeakerInDirectory(tmpDir, from: "Speaker 7", to: "Bob")
+        let content = try String(contentsOf: url, encoding: .utf8)
+        try expect(content.contains("**Bob:** Hey."), "Speaker rename applied to segment")
+        try expect(content.contains("**Chat — Speaker 7:** typed the same as I said"),
+                   "Chat sender label is untouched by speaker-segment rename")
+    }
 }
 
 // MARK: - Store Tests
@@ -784,6 +860,114 @@ func runTranscriptWriterTests() {
         store.upsert(SpeakerProfile(id: id, name: "Alice", embeddings: [], firstSeen: Date(), lastSeen: Date(), meetingCount: 1))
         store.delete(id: id)
         try expect(store.speakers.isEmpty)
+    }
+
+    test("SpeakerStore prunes placeholder profiles without playable clips") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let existingClip = tmpDir.appendingPathComponent("clip.wav")
+        try Data([0x52, 0x49, 0x46, 0x46]).write(to: existingClip)
+        let missingClip = tmpDir.appendingPathComponent("gone.wav")
+
+        func profile(_ name: String, clips: [URL]) -> SpeakerProfile {
+            SpeakerProfile(id: UUID(), name: name, embeddings: [],
+                           firstSeen: Date(), lastSeen: Date(), meetingCount: 1,
+                           audioClipURLs: clips)
+        }
+
+        let store = SpeakerStore(url: tmpDir.appendingPathComponent("speakers.json"))
+        store.upsert(profile("Alice", clips: []))                       // named, kept
+        store.upsert(profile("Speaker_AB12CD", clips: [existingClip]))  // placeholder + audio, kept
+        store.upsert(profile("Speaker_EF34GH", clips: [missingClip]))   // placeholder, clip gone
+        store.upsert(profile("Speaker_IJ56KL", clips: []))              // placeholder, never had audio
+
+        let removed = store.pruneUnidentifiablePlaceholders()
+        try expectEqual(removed, 2)
+        try expectEqual(Set(store.speakers.map(\.name)), Set(["Alice", "Speaker_AB12CD"]))
+    }
+
+    test("SpeakerStore updateStats accumulates speaking time") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let store = SpeakerStore(url: tmpDir.appendingPathComponent("speakers.json"))
+        let id = UUID()
+        store.upsert(SpeakerProfile(id: id, name: "Alice", embeddings: [], firstSeen: Date(), lastSeen: Date(), meetingCount: 1))
+        store.updateStats([(id: id, addDuration: 3600, addWords: 500, addSpeaking: 240)])
+        store.updateStats([(id: id, addDuration: 1800, addWords: 100, addSpeaking: 60)])
+        let alice = try unwrap(store.speakers.first)
+        try expectClose(alice.totalMeetingDuration, 5400)
+        try expectEqual(alice.totalWordCount, 600)
+        try expectClose(alice.totalSpeakingTime, 300)
+    }
+
+    test("SpeakerStore merge caps embeddings and sums speaking time") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let store = SpeakerStore(url: tmpDir.appendingPathComponent("speakers.json"))
+        let id1 = UUID(), id2 = UUID()
+        let fourVectors: [[Float]] = [[1, 0], [0, 1], [0.5, 0.5], [0.2, 0.8]]
+        store.upsert(SpeakerProfile(id: id1, name: "Alice", embeddings: fourVectors,
+                                    firstSeen: Date(), lastSeen: Date(), meetingCount: 1,
+                                    totalSpeakingTime: 100))
+        store.upsert(SpeakerProfile(id: id2, name: "Dup", embeddings: fourVectors,
+                                    firstSeen: Date(), lastSeen: Date(), meetingCount: 1,
+                                    totalSpeakingTime: 50))
+        store.merge(primaryID: id1, secondaryID: id2)
+        let merged = try unwrap(store.speakers.first)
+        try expectEqual(merged.embeddings.count, SpeakerMatcher.maxEmbeddingsPerSpeaker,
+                        "8 combined embeddings capped at the per-speaker limit")
+        try expectClose(merged.totalSpeakingTime, 150)
+    }
+
+    test("NamingCandidateStore round-trips candidates and drops missing clips") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let existingClip = tmpDir.appendingPathComponent("clip.wav")
+        try Data([0x52, 0x49, 0x46, 0x46]).write(to: existingClip)
+        let missingClip = tmpDir.appendingPathComponent("gone.wav")
+
+        let url = tmpDir.appendingPathComponent("naming_candidates.json")
+        let store = NamingCandidateStore(url: url)
+        store.save([
+            NamingCandidate(
+                id: UUID(), temporaryName: "Speaker_AB12CD",
+                suggestedNames: ["Alice", "Bob"],
+                audioClipURLs: [missingClip, existingClip],
+                embedding: [1, 0],
+                clipEmbeddings: [[0.9, 0.1], [0.1, 0.9]],
+                totalSpeakingTime: 42
+            ),
+            NamingCandidate(
+                id: UUID(), temporaryName: "Speaker_EF34GH",
+                audioClipURLs: [missingClip]
+            ),
+        ])
+
+        let loaded = store.load()
+        try expectEqual(loaded.count, 1, "Candidate with no surviving clip is dropped")
+        let survivor = try unwrap(loaded.first)
+        try expectEqual(survivor.temporaryName, "Speaker_AB12CD")
+        try expectEqual(survivor.suggestedNames, ["Alice", "Bob"])
+        try expectEqual(survivor.audioClipURLs, [existingClip], "Missing clip pruned")
+        try expectEqual(survivor.clipEmbeddings, [[0.1, 0.9]], "Clip embeddings stay parallel to surviving clips")
+        try expectClose(survivor.totalSpeakingTime, 42)
+
+        // Saving an empty list clears the file entirely.
+        store.save([])
+        try expect(!FileManager.default.fileExists(atPath: url.path))
+        try expect(store.load().isEmpty)
     }
 
     test("PipelineQueueStore enqueue and retrieve") {
@@ -1781,6 +1965,73 @@ func runSpeakerMatcherEdgeTests() {
         )
         try expect(result[0].isNewSpeaker)
     }
+
+    test("addEmbedding appends while under the per-speaker cap") {
+        var stored: [[Float]] = [ref]
+        SpeakerMatcher.addEmbedding(vector(atDistance: 0.20, from: ref), to: &stored)
+        try expectEqual(stored.count, 2)
+    }
+
+    test("addEmbedding at cap replaces the most similar stored embedding") {
+        // Five stored embeddings at increasing distance from the reference axis.
+        var stored: [[Float]] = (0..<SpeakerMatcher.maxEmbeddingsPerSpeaker).map {
+            vector(atDistance: Float($0) * 0.1, from: ref)
+        }
+        let closeToFirst = vector(atDistance: 0.01, from: ref)
+        SpeakerMatcher.addEmbedding(closeToFirst, to: &stored)
+        try expectEqual(stored.count, SpeakerMatcher.maxEmbeddingsPerSpeaker, "Cap holds")
+        try expectEqual(stored[0], closeToFirst, "Most similar entry (index 0) was replaced")
+    }
+
+    test("addEmbedding ignores empty embeddings") {
+        var stored: [[Float]] = [ref]
+        SpeakerMatcher.addEmbedding([], to: &stored)
+        try expectEqual(stored.count, 1)
+    }
+
+    test("Custom matchThreshold overrides the default") {
+        // Distance 0.35 fails the default 0.30 threshold but passes a looser 0.40.
+        let bob = profile("Bob", [ref])
+        let probe = vector(atDistance: 0.35, from: ref)
+        let strict = SpeakerMatcher.matchSpeakers(
+            embeddings: [SpeakerEmbedding(speakerID: "R_0", vector: probe)],
+            database: [bob],
+            localUserName: "Me"
+        )
+        try expect(strict[0].isNewSpeaker, "0.35 must not match at the default 0.30")
+        let loose = SpeakerMatcher.matchSpeakers(
+            embeddings: [SpeakerEmbedding(speakerID: "R_0", vector: probe)],
+            database: [bob],
+            localUserName: "Me",
+            matchThreshold: 0.40
+        )
+        try expectEqual(loose[0].assignedName, "Bob")
+    }
+
+    test("mergePrimary prefers named over placeholder, then meetings, then age") {
+        func profileAt(_ name: String, meetings: Int, daysAgo: Double) -> SpeakerProfile {
+            SpeakerProfile(
+                id: UUID(), name: name, embeddings: [],
+                firstSeen: Date().addingTimeInterval(-daysAgo * 86400),
+                lastSeen: Date(), meetingCount: meetings
+            )
+        }
+        let placeholder = profileAt("Speaker_AB12CD", meetings: 9, daysAgo: 300)
+        let newBob = profileAt("Bob", meetings: 1, daysAgo: 1)
+        let seasonedAlice = profileAt("Alice", meetings: 5, daysAgo: 30)
+        let olderAliceTie = profileAt("Alice2", meetings: 5, daysAgo: 90)
+
+        try expectEqual(
+            SpeakerMatcher.mergePrimary(of: [placeholder, newBob])?.name, "Bob",
+            "Human name beats placeholder regardless of meeting count")
+        try expectEqual(
+            SpeakerMatcher.mergePrimary(of: [newBob, seasonedAlice])?.name, "Alice",
+            "More meetings wins between named profiles")
+        try expectEqual(
+            SpeakerMatcher.mergePrimary(of: [seasonedAlice, olderAliceTie])?.name, "Alice2",
+            "Meeting-count tie broken by oldest firstSeen")
+        try expect(SpeakerMatcher.mergePrimary(of: []) == nil)
+    }
 }
 
 // MARK: - RosterReader Tests
@@ -1951,6 +2202,104 @@ func runRosterReaderAXTests() {
         for i in 0..<6 { node = MockAXNode(role: "AXGroup", identifier: "g\(i)", children: [node]) }
         let out = RosterReader.diagnosticTreeDump(root: node, maxDepth: 2, nodeBudget: 500) ?? ""
         try expect(!out.contains("id=deep"), "leaf below maxDepth should be excluded")
+    }
+}
+
+// MARK: - ChatReader Tests
+
+func runChatReaderTests() {
+    print("\n💬 ChatReader Tests")
+
+    test("Row-container shape: first child is sender, rest joined as body") {
+        let tree = MockAXNode(role: "AXApplication", children: [
+            MockAXNode(role: "AXWindow", children: [
+                MockAXNode(role: "AXGroup", identifier: "chat-pane-list", children: [
+                    MockAXNode(role: "AXGroup", children: [
+                        MockAXNode(role: "AXStaticText", value: "Alice Smith"),
+                        MockAXNode(role: "AXStaticText", value: "Hello"),
+                        MockAXNode(role: "AXStaticText", value: "everyone."),
+                    ]),
+                ]),
+            ]),
+        ])
+        let messages = ChatReader.readChatMessagesFromNode(tree)
+        try expectEqual(messages.count, 1)
+        try expectEqual(messages[0].sender, "Alice Smith")
+        try expectEqual(messages[0].text, "Hello everyone.")
+    }
+
+    test("Single-string shape: 'Sender: text' splits on first colon") {
+        let tree = MockAXNode(role: "AXApplication", children: [
+            MockAXNode(role: "AXWindow", children: [
+                MockAXNode(role: "AXGroup", identifier: "chat-pane-list", children: [
+                    MockAXNode(role: "AXStaticText", description: "Bob Jones: Sounds good, thanks!"),
+                ]),
+            ]),
+        ])
+        let messages = ChatReader.readChatMessagesFromNode(tree)
+        try expectEqual(messages.count, 1)
+        try expectEqual(messages[0].sender, "Bob Jones")
+        try expectEqual(messages[0].text, "Sounds good, thanks!")
+    }
+
+    test("Single-string shape: 'Sender, text' splits on first comma when no colon") {
+        let tree = MockAXNode(role: "AXApplication", children: [
+            MockAXNode(role: "AXWindow", children: [
+                MockAXNode(role: "AXGroup", identifier: "message-list", children: [
+                    MockAXNode(role: "AXStaticText", value: "Carol Liu, on my way"),
+                ]),
+            ]),
+        ])
+        let messages = ChatReader.readChatMessagesFromNode(tree)
+        try expectEqual(messages.count, 1)
+        try expectEqual(messages[0].sender, "Carol Liu")
+        try expectEqual(messages[0].text, "on my way")
+    }
+
+    test("Control-string rows are dropped") {
+        let tree = MockAXNode(role: "AXApplication", children: [
+            MockAXNode(role: "AXWindow", children: [
+                MockAXNode(role: "AXGroup", identifier: "chat-pane-list", children: [
+                    MockAXNode(role: "AXStaticText", description: "Alice Smith: Hello"),
+                    MockAXNode(role: "AXStaticText", description: "Bob Jones: send"),
+                ]),
+            ]),
+        ])
+        let messages = ChatReader.readChatMessagesFromNode(tree)
+        try expectEqual(messages.count, 1)
+        try expectEqual(messages[0].sender, "Alice Smith")
+    }
+
+    test("No known chat identifier in the tree returns empty") {
+        let tree = MockAXNode(role: "AXApplication", children: [
+            MockAXNode(role: "AXWindow", children: [
+                MockAXNode(role: "AXGroup", identifier: "roster-list", children: [
+                    MockAXNode(role: "AXStaticText", value: "Alice Smith"),
+                ]),
+            ]),
+        ])
+        let messages = ChatReader.readChatMessagesFromNode(tree)
+        try expect(messages.isEmpty, "roster panel should not be mistaken for chat")
+    }
+
+    test("Chat panel not present (empty tree) returns empty, not a crash") {
+        let tree = MockAXNode(role: "AXApplication", children: [])
+        let messages = ChatReader.readChatMessagesFromNode(tree)
+        try expect(messages.isEmpty)
+    }
+
+    test("Row with only a sender and no body text is dropped") {
+        let tree = MockAXNode(role: "AXApplication", children: [
+            MockAXNode(role: "AXWindow", children: [
+                MockAXNode(role: "AXGroup", identifier: "chat-pane-list", children: [
+                    MockAXNode(role: "AXGroup", children: [
+                        MockAXNode(role: "AXStaticText", value: "Alice Smith"),
+                    ]),
+                ]),
+            ]),
+        ])
+        let messages = ChatReader.readChatMessagesFromNode(tree)
+        try expect(messages.isEmpty, "a row with no body text should not become an empty message")
     }
 }
 
@@ -2303,6 +2652,7 @@ struct TestRunner {
         runSpeakerEmbeddingAggregatorTests()
         runRosterReaderTests()
         runRosterReaderAXTests()
+        runChatReaderTests()
         runSegmentDeduplicatorTests()
         runSystemMemoryTests()
         runPermissionCenterTests()

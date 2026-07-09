@@ -108,13 +108,10 @@ struct HeardApp: App {
             SpeakerNamingView(model: appModel)
                 .heardAppearance(appModel.settingsStore.settings.appearance)
                 .onAppear { WindowActivationCoordinator.begin("speaker-naming") }
-                .onDisappear {
-                    WindowActivationCoordinator.end("speaker-naming")
-                    // If user closes window without naming, skip naming
-                    if !appModel.namingCandidates.isEmpty {
-                        appModel.skipNaming()
-                    }
-                }
+                // Closing the window means "later", not "skip" — candidates stay
+                // pending and the window can be reopened from the menu bar. Skipping
+                // is only ever the explicit "Skip All" button.
+                .onDisappear { WindowActivationCoordinator.end("speaker-naming") }
         }
         .defaultSize(width: 560, height: 520)
         .windowResizability(.contentSize)

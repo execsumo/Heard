@@ -73,7 +73,8 @@ public final class DictationManager: ObservableObject {
     private static let maxBufferSamples = 4 * 3600 * 16_000
 
     /// Called when transcription completes for a session with the final text.
-    public var onUtterance: ((String) -> Void)?
+    /// Runs on the main actor.
+    public var onUtterance: (@MainActor (String) -> Void)?
 
     /// Called when a stop produced no usable text despite the user having
     /// listened for a non-trivial duration — i.e. the mic captured silence or

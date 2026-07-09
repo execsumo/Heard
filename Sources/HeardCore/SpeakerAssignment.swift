@@ -44,11 +44,12 @@ public struct TrackDiarizationResult {
 /// Uses cosine distance with configurable thresholds.
 public enum SpeakerMatcher {
 
-    /// Cosine distance threshold for matching (lower = more similar).
+    /// Default cosine distance threshold for matching (lower = more similar).
     /// 0.30 is on the strict side of typical WeSpeaker ranges — the previous 0.40
     /// caused false-positive matches against unrelated existing profiles, so newly
     /// detected speakers were silently classified as already-known and the naming
-    /// prompt never fired.
+    /// prompt never fired. User-tunable via `AppSettings.speakerMatchThreshold`
+    /// (Advanced → Voice Matching).
     public static let matchThreshold: Float = 0.30
 
     /// Minimum gap between best and second-best match to accept a match.
@@ -61,7 +62,7 @@ public enum SpeakerMatcher {
     public static let maxEmbeddingsPerSpeaker = 5
 
     /// True when `name` matches the auto-generated `Speaker N` placeholder pattern.
-    /// Placeholders come from skipped or auto-dismissed naming prompts; they are
+    /// Placeholders come from skipped naming prompts; they are
     /// excluded from matching so the user always gets another chance to name the
     /// speaker on a later meeting.
     public static func isPlaceholderName(_ name: String) -> Bool {
@@ -87,7 +88,8 @@ public enum SpeakerMatcher {
     public static func matchSpeakers(
         embeddings: [SpeakerEmbedding],
         database: [SpeakerProfile],
-        localUserName: String
+        localUserName: String,
+        matchThreshold: Float = SpeakerMatcher.matchThreshold
     ) -> [MatchResult] {
         var results: [MatchResult] = []
         var usedProfileIDs = Set<UUID>()
@@ -109,7 +111,8 @@ public enum SpeakerMatcher {
             let match = findBestMatch(
                 embedding: detected.vector,
                 database: database,
-                excludeIDs: usedProfileIDs
+                excludeIDs: usedProfileIDs,
+                matchThreshold: matchThreshold
             )
 
             if let match {
@@ -149,7 +152,8 @@ public enum SpeakerMatcher {
     private static func findBestMatch(
         embedding: [Float],
         database: [SpeakerProfile],
-        excludeIDs: Set<UUID>
+        excludeIDs: Set<UUID>,
+        matchThreshold: Float
     ) -> DatabaseMatch? {
         guard !embedding.isEmpty else { return nil }
 
@@ -208,17 +212,34 @@ public enum SpeakerMatcher {
             guard var profile = speakerStore.speakers.first(where: { $0.id == profileID }) else { continue }
             profile.lastSeen = Date()
             profile.meetingCount += 1
-
-            // Add embedding if we have room, keeping diverse set
-            if profile.embeddings.count < maxEmbeddingsPerSpeaker {
-                profile.embeddings.append(match.embedding)
-            } else {
-                // Replace the most similar existing embedding (least diverse)
-                if let replaceIndex = mostSimilarIndex(to: match.embedding, in: profile.embeddings) {
-                    profile.embeddings[replaceIndex] = match.embedding
-                }
-            }
+            addEmbedding(match.embedding, to: &profile.embeddings)
             speakerStore.upsert(profile)
+        }
+    }
+
+    /// Pick the profile that should survive an N-way merge: a human-given name always
+    /// beats a placeholder; within the same tier, the profile seen in the most meetings
+    /// wins (its stats and embeddings are the best-established), with the oldest
+    /// `firstSeen` as the deterministic tiebreaker.
+    public static func mergePrimary(of profiles: [SpeakerProfile]) -> SpeakerProfile? {
+        profiles.min { a, b in
+            let aPlaceholder = isPlaceholderName(a.name)
+            let bPlaceholder = isPlaceholderName(b.name)
+            if aPlaceholder != bPlaceholder { return !aPlaceholder }
+            if a.meetingCount != b.meetingCount { return a.meetingCount > b.meetingCount }
+            return a.firstSeen < b.firstSeen
+        }
+    }
+
+    /// Insert a new embedding into a stored set, respecting the per-speaker cap and
+    /// keeping the set diverse: append while there's room, otherwise replace the most
+    /// similar (least diverse) existing embedding. Empty embeddings are ignored.
+    public static func addEmbedding(_ embedding: [Float], to embeddings: inout [[Float]]) {
+        guard !embedding.isEmpty else { return }
+        if embeddings.count < maxEmbeddingsPerSpeaker {
+            embeddings.append(embedding)
+        } else if let replaceIndex = mostSimilarIndex(to: embedding, in: embeddings) {
+            embeddings[replaceIndex] = embedding
         }
     }
 

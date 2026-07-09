@@ -6,9 +6,12 @@ import Foundation
 public final class AppModel: ObservableObject {
     @Published public var phase: AppPhase = .dormant
     @Published public var errorMessage: String?
-    @Published public var namingCandidates: [NamingCandidate] = []
-    /// Set to true when naming prompt should be shown. Observed by the naming window scene.
-    @Published public var showNamingPrompt = false
+    @Published public var namingCandidates: [NamingCandidate] = [] {
+        // Naming is user-paced and may be deferred across sessions — mirror every
+        // change to disk so pending candidates survive an app restart.
+        didSet { namingCandidateStore.save(namingCandidates) }
+    }
+    let namingCandidateStore = NamingCandidateStore()
     @Published public var selectedSettingsTab: SettingsTab = .general
     @Published public var speakerFilter = ""
     @Published public var vocabularyDraft = ""
@@ -24,6 +27,10 @@ public final class AppModel: ObservableObject {
     // Tracks whether the push-to-talk key is currently held. Set on press, cleared on release.
     // Used to detect key-up events that arrive before model loading completes.
     private var pushToTalkKeyHeld = false
+    // Where keyboard focus was when the current dictation session started.
+    // The transcript is pasted back into this field, not wherever focus sits
+    // once transcription finishes.
+    var dictationFocusTarget: TextInjector.FocusTarget?
 
     public let settingsStore: SettingsStore
     public let speakerStore: SpeakerStore
@@ -41,7 +48,6 @@ public final class AppModel: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
     private var stageWatchdogTimer: Timer?
-    private var namingDismissTask: Task<Void, Never>?
     // 90 minutes is generous for any realistic workload (4-hour meeting transcription
     // on slow hardware). A genuine FluidAudio hang shows up well within this window.
     private static let maxStageSeconds: TimeInterval = 90 * 60
@@ -91,12 +97,22 @@ public final class AppModel: ObservableObject {
         // Archive speaker profiles inactive beyond the configured retention window
         speakerStore.archiveInactiveSpeakers(retentionDays: settingsStore.settings.speakerRetentionDays)
 
+        // Drop placeholder profiles whose voice clips no longer exist on disk — with
+        // neither a name nor audio they can never be identified, and they render as
+        // dead play buttons in the Speakers list.
+        speakerStore.pruneUnidentifiablePlaceholders()
+
+        // Restore naming candidates deferred from a previous session — loaded before
+        // the stale-recordings sweep so their clip files are preserved by it.
+        let pendingCandidates = model.namingCandidateStore.load()
+
         // Clean stale recordings (>48h), preserving files referenced by active jobs
+        // and by pending naming candidates.
         let activeJobPaths = Set(
             queueStore.jobs
                 .filter { $0.stage != .complete }
                 .flatMap { [$0.appAudioPath, $0.micAudioPath] }
-        )
+        ).union(pendingCandidates.flatMap(\.audioClipURLs))
         TempFileCleanup.cleanStaleRecordings(activeJobPaths: activeJobPaths)
 
         // Destroy orphaned private aggregate devices left behind by previous crashes
@@ -120,14 +136,23 @@ public final class AppModel: ObservableObject {
             model.startWatching()
         }
 
+        // Surface candidates deferred from a previous session: badge + menu row
+        // come back exactly as they were when the app quit.
+        if !pendingCandidates.isEmpty {
+            NSLog("Heard: restored \(pendingCandidates.count) pending naming candidate(s) from disk")
+            model.namingCandidates = pendingCandidates
+            model.phase = .userAction
+        }
+
         // Retry failed jobs once on relaunch (handles transient failures from previous session)
         queueStore.prepareForResume()
 
         model.pipelineProcessor.runNextIfNeeded()
 
-        // Wire dictation: text injection on finalized utterances
-        dictationManager.onUtterance = { text in
-            TextInjector.inject(text)
+        // Wire dictation: text injection on finalized utterances, targeting the
+        // field that was focused when the session started.
+        dictationManager.onUtterance = { [weak model] text in
+            TextInjector.inject(text, restoringFocusTo: model?.dictationFocusTarget)
         }
         // Surface silent "no speech captured" stops so a dropped/stalled mic
         // isn't an invisible failure. Cleared on the next dictation start.
@@ -184,15 +209,19 @@ public final class AppModel: ObservableObject {
             settingsStore: settingsStore,
             modelCatalog: modelCatalog,
             onNamingRequired: { [weak self] candidates in
-                NSLog("Heard: AppModel.onNamingRequired received \(candidates.count) candidate(s) — opening naming window")
-                self?.namingCandidates = candidates
+                NSLog("Heard: AppModel.onNamingRequired received \(candidates.count) candidate(s)")
+                // Append, don't replace — naming is user-paced (no auto-open, no
+                // countdown), so a batch from an earlier meeting may still be pending
+                // when the next meeting's pipeline finishes.
+                self?.namingCandidates.append(contentsOf: candidates)
                 self?.phase = .userAction
-                self?.showNamingPrompt = true
             },
             onPipelineIdle: { [weak self] in
                 guard let self else { return }
                 if self.phase == .processing {
-                    self.phase = .dormant
+                    // Keep the "Name Speakers" badge alive when candidates are still
+                    // pending from this (or an earlier) meeting — naming is user-paced.
+                    self.phase = self.namingCandidates.isEmpty ? .dormant : .userAction
                 }
             }
         )
@@ -233,6 +262,9 @@ public final class AppModel: ObservableObject {
                 if s.enableWebexDetection { enabled.insert(.webex) }
                 return enabled
             },
+            chatScrapeEnabled: { [weak self] in
+                self?.settingsStore.settings.includeMeetingChat ?? false
+            },
             onMeetingStarted: { [weak self] snapshot in
                 guard let self else { return }
                 // Stop dictation before recording starts — mic should not transcribe
@@ -262,6 +294,9 @@ public final class AppModel: ObservableObject {
                 guard let session = self.recordingManager.stopRecording() else { return }
                 self.pipelineProcessor.enqueueFinishedRecording(session, endedAt: Date())
                 self.phase = .processing
+            },
+            onChatMessagesObserved: { [weak self] messages in
+                self?.recordingManager.updateChatMessages(messages)
             }
         )
 
@@ -293,15 +328,18 @@ public var filteredSpeakers: [SpeakerProfile] {
 
     public func startWatching() {
         meetingDetector.startWatching()
-        phase = .dormant
+        // Don't clobber the "Name Speakers" badge — pending candidates outrank
+        // the plain watching state until the user resolves them.
+        if phase != .userAction { phase = .dormant }
     }
 
     public func stopWatching() {
         // stopWatching may synchronously fire onMeetingEnded (which sets phase = .processing).
-        // Only fall back to .dormant when no meeting was active.
+        // Only fall back to .dormant when no meeting was active, and preserve a
+        // pending "Name Speakers" badge.
         let phaseBefore = phase
         meetingDetector.stopWatching()
-        if phase == phaseBefore {
+        if phase == phaseBefore && phase != .userAction {
             phase = .dormant
         }
     }
@@ -332,6 +370,12 @@ public var filteredSpeakers: [SpeakerProfile] {
         if !isDictating && recordingManager.activeSession != nil {
             DebugFileLog.log("toggleDictation dropped — meeting active and not currently dictating")
             return
+        }
+        // Snapshot the focused field synchronously at trigger time — model
+        // loading inside the task can take seconds, during which the user may
+        // click elsewhere, and the transcript must land where they started.
+        if !isDictating {
+            dictationFocusTarget = TextInjector.captureFocusTarget()
         }
         dictationToggleInFlight = true
         Task {
@@ -712,25 +756,53 @@ public var filteredSpeakers: [SpeakerProfile] {
         queueStore.remove(job)
     }
 
+    /// Cap on persisted voice clips per profile. Meetings keep contributing clips as
+    /// names are re-confirmed or profiles merged; beyond this, the oldest are deleted.
+    private static let maxStoredClipsPerSpeaker = 5
+
     public func saveSpeakerName(candidate: NamingCandidate, name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         // Move the audio clips to their persistent home so they survive the 48-hour
         // recordings cleanup and can be replayed from the Speakers settings tab.
         let persistedClips = candidate.audioClipURLs.compactMap { AudioClipExtractor.persistClip($0) }
-        speakerStore.upsert(
-            SpeakerProfile(
-                id: UUID(),
-                name: trimmed,
-                embeddings: candidate.embedding.isEmpty ? [] : [candidate.embedding],
-                firstSeen: Date(),
-                lastSeen: Date(),
-                meetingCount: 1,
-                totalMeetingDuration: candidate.totalMeetingDuration,
-                totalWordCount: candidate.totalWordCount,
-                audioClipURLs: persistedClips
+
+        if var existing = speakerStore.speakers.first(where: {
+            !SpeakerMatcher.isPlaceholderName($0.name)
+                && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame
+        }) {
+            // The name already belongs to a known profile — this meeting's voice just
+            // didn't match it confidently (new headset, room echo, …). Fold the new
+            // embedding and clips into that profile instead of creating a duplicate
+            // row that would compete with it in future matching.
+            SpeakerMatcher.addEmbedding(candidate.embedding, to: &existing.embeddings)
+            let combinedClips = persistedClips + existing.audioClipURLs
+            existing.audioClipURLs = Array(combinedClips.prefix(Self.maxStoredClipsPerSpeaker))
+            for dropped in combinedClips.dropFirst(Self.maxStoredClipsPerSpeaker) {
+                try? FileManager.default.removeItem(at: dropped)
+            }
+            existing.lastSeen = Date()
+            existing.meetingCount += 1
+            existing.totalMeetingDuration += candidate.totalMeetingDuration
+            existing.totalWordCount += candidate.totalWordCount
+            existing.totalSpeakingTime += candidate.totalSpeakingTime
+            speakerStore.upsert(existing)
+        } else {
+            speakerStore.upsert(
+                SpeakerProfile(
+                    id: UUID(),
+                    name: trimmed,
+                    embeddings: candidate.embedding.isEmpty ? [] : [candidate.embedding],
+                    firstSeen: Date(),
+                    lastSeen: Date(),
+                    meetingCount: 1,
+                    totalMeetingDuration: candidate.totalMeetingDuration,
+                    totalWordCount: candidate.totalWordCount,
+                    totalSpeakingTime: candidate.totalSpeakingTime,
+                    audioClipURLs: persistedClips
+                )
             )
-        )
+        }
         // Rewrite every transcript that references the placeholder. Speaker
         // numbers are globally unique, so this normally only touches the one
         // transcript in `candidate.transcriptPath`, but the helper also scans
@@ -743,25 +815,53 @@ public var filteredSpeakers: [SpeakerProfile] {
         }
         namingCandidates.removeAll { $0.id == candidate.id }
         if namingCandidates.isEmpty {
-            showNamingPrompt = false
             phase = queueStore.processingJob == nil ? .dormant : .processing
         }
     }
 
+    /// Split a candidate whose samples reveal multiple distinct voices into one
+    /// sub-candidate per clip, each carrying its clip-local embedding, so the user can
+    /// name (or discard) each voice separately. The transcript keeps the original
+    /// placeholder label — once diarization has merged the voices into one cluster,
+    /// segment-level re-attribution is no longer possible.
+    public func splitCandidate(_ candidate: NamingCandidate) {
+        guard let index = namingCandidates.firstIndex(where: { $0.id == candidate.id }),
+              candidate.audioClipURLs.count >= 2 else { return }
+        let parts = candidate.audioClipURLs.indices.map { i in
+            NamingCandidate(
+                id: UUID(),
+                temporaryName: "\(candidate.temporaryName) · voice \(i + 1)",
+                // Any of the cluster's roster suggestions could belong to any part.
+                suggestedNames: candidate.suggestedNames,
+                audioClipURLs: [candidate.audioClipURLs[i]],
+                // Prefer the clip-local embedding; the cluster centroid is exactly the
+                // polluted mixture the user is splitting away from, so never fall back
+                // to it — an empty embedding (profile without voice matching) is the
+                // honest alternative.
+                embedding: i < candidate.clipEmbeddings.count ? candidate.clipEmbeddings[i] : [],
+                clipEmbeddings: i < candidate.clipEmbeddings.count ? [candidate.clipEmbeddings[i]] : [],
+                transcriptPath: nil,
+                totalMeetingDuration: candidate.totalMeetingDuration,
+                // Words and speaking time measured the merged cluster — attributing
+                // them to any single part would double-count.
+                totalWordCount: 0,
+                totalSpeakingTime: 0
+            )
+        }
+        namingCandidates.replaceSubrange(index...index, with: parts)
+    }
+
     /// Drop a candidate without creating a SpeakerProfile. Used when the user
-    /// listens to the clips and realizes diarization collapsed two voices into
-    /// one cluster — saving would poison the speaker database with a merged
-    /// embedding. The transcript keeps the placeholder ("Speaker N"). The
-    /// temporary clip files are deleted since they aren't going anywhere.
+    /// decides a candidate isn't worth keeping (crosstalk, music, a merged
+    /// cluster they don't want to split) — saving would clutter or poison the
+    /// speaker database. The transcript keeps the placeholder ("Speaker N").
+    /// The temporary clip files are deleted since they aren't going anywhere.
     public func discardCandidate(_ candidate: NamingCandidate) {
         for url in candidate.audioClipURLs {
             try? FileManager.default.removeItem(at: url)
         }
         namingCandidates.removeAll { $0.id == candidate.id }
         if namingCandidates.isEmpty {
-            namingDismissTask?.cancel()
-            namingDismissTask = nil
-            showNamingPrompt = false
             phase = queueStore.processingJob == nil ? .dormant : .processing
         }
     }
@@ -770,6 +870,11 @@ public var filteredSpeakers: [SpeakerProfile] {
         // Store remaining unnamed candidates with generic names (preserving embeddings + clips).
         for candidate in namingCandidates {
             let persistedClips = candidate.audioClipURLs.compactMap { AudioClipExtractor.persistClip($0) }
+            // A placeholder profile with no playable clip can never be identified —
+            // placeholders are excluded from voice matching, so without audio there is
+            // no path to a name, by voice or by ear. Persisting it would only clutter
+            // the Speakers list.
+            guard !persistedClips.isEmpty else { continue }
             speakerStore.upsert(
                 SpeakerProfile(
                     id: UUID(),
@@ -780,12 +885,12 @@ public var filteredSpeakers: [SpeakerProfile] {
                     meetingCount: 1,
                     totalMeetingDuration: candidate.totalMeetingDuration,
                     totalWordCount: candidate.totalWordCount,
+                    totalSpeakingTime: candidate.totalSpeakingTime,
                     audioClipURLs: persistedClips
                 )
             )
         }
         namingCandidates.removeAll()
-        showNamingPrompt = false
         // processingJob (not activeJob) — a stale .failed job in the queue must
         // not pin the phase at .processing after the prompt closes.
         phase = queueStore.processingJob == nil ? .dormant : .processing
@@ -802,34 +907,32 @@ public var filteredSpeakers: [SpeakerProfile] {
         speakerStore.rename(id: id, to: trimmed)
 
         // Prompt the user before retroactively renaming
-        if askUserToUpdateTranscripts(oldName: oldName, newName: trimmed) {
+        if askUserToUpdateTranscripts(oldNames: [oldName], newName: trimmed) {
             rewriteSpeakerAcrossTranscripts(from: oldName, to: trimmed)
         }
     }
 
+    /// Merge every selected profile (2 or more) into one. The survivor is chosen by
+    /// `SpeakerMatcher.mergePrimary`: a human-given name beats a placeholder, then
+    /// most meetings, then oldest profile.
     public func mergeSelectedSpeakers() {
-        let ids = Array(mergeSelection)
-        guard ids.count == 2 else { return }
+        let selected = speakerStore.speakers.filter { mergeSelection.contains($0.id) }
+        guard selected.count >= 2, let primary = SpeakerMatcher.mergePrimary(of: selected) else { return }
+        let secondaries = selected.filter { $0.id != primary.id }
 
-        // Prefer the human-given name: if ids[0] is a placeholder but ids[1] is not,
-        // swap so the real name survives as primary.
-        var primaryID = ids[0]
-        var secondaryID = ids[1]
-        if let p0 = speakerStore.speakers.first(where: { $0.id == ids[0] }),
-           let p1 = speakerStore.speakers.first(where: { $0.id == ids[1] }),
-           SpeakerMatcher.isPlaceholderName(p0.name) && !SpeakerMatcher.isPlaceholderName(p1.name) {
-            primaryID = ids[1]
-            secondaryID = ids[0]
-        }
+        // One prompt covers every explicitly-named profile being folded in;
+        // placeholder names are rewritten without asking (nothing user-authored
+        // is being replaced).
+        let namedSecondaries = secondaries.map(\.name).filter { !SpeakerMatcher.isPlaceholderName($0) }
+        let rewriteNamed = namedSecondaries.isEmpty
+            || askUserToUpdateTranscripts(oldNames: namedSecondaries, newName: primary.name)
 
-        if let primary = speakerStore.speakers.first(where: { $0.id == primaryID }),
-           let secondary = speakerStore.speakers.first(where: { $0.id == secondaryID }) {
-            if askUserToUpdateTranscripts(oldName: secondary.name, newName: primary.name) {
+        for secondary in secondaries {
+            if SpeakerMatcher.isPlaceholderName(secondary.name) || rewriteNamed {
                 rewriteSpeakerAcrossTranscripts(from: secondary.name, to: primary.name)
             }
+            speakerStore.merge(primaryID: primary.id, secondaryID: secondary.id)
         }
-
-        speakerStore.merge(primaryID: primaryID, secondaryID: secondaryID)
         mergeSelection.removeAll()
     }
 
@@ -850,20 +953,22 @@ public var filteredSpeakers: [SpeakerProfile] {
         }
     }
 
-    private func askUserToUpdateTranscripts(oldName: String, newName: String) -> Bool {
-        // If it's a generated placeholder, there's no need to ask, just do it.
-        // The user only needs to be asked if they are renaming an already explicitly named speaker.
-        if SpeakerMatcher.isPlaceholderName(oldName) {
+    private func askUserToUpdateTranscripts(oldNames: [String], newName: String) -> Bool {
+        // Generated placeholders don't need consent — nothing user-authored is
+        // being replaced. Only ask when an explicitly named speaker is affected.
+        let named = oldNames.filter { !SpeakerMatcher.isPlaceholderName($0) }
+        if named.isEmpty {
             return true
         }
 
+        let list = named.map { "'\($0)'" }.joined(separator: ", ")
         let alert = NSAlert()
         alert.messageText = "Update past transcripts?"
-        alert.informativeText = "Would you like to retroactively replace '\(oldName)' with '\(newName)' in all previously saved transcripts?"
+        alert.informativeText = "Would you like to retroactively replace \(list) with '\(newName)' in all previously saved transcripts?"
         alert.addButton(withTitle: "Update Transcripts")
         alert.addButton(withTitle: "Skip")
         alert.alertStyle = .informational
-        
+
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
         return response == .alertFirstButtonReturn

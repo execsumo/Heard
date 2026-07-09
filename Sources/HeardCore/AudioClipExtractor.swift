@@ -210,6 +210,14 @@ public enum AudioClipExtractor {
         return clipped
     }
 
+    /// One extracted voice sample: the saved WAV plus the original-audio time region it
+    /// was cut from, so callers can correlate the clip back to diarizer chunk data.
+    public struct ExtractedClip {
+        public let url: URL
+        public let startTime: TimeInterval
+        public let endTime: TimeInterval
+    }
+
     /// Extract clips for all unmatched speakers and return candidate info.
     /// Each speaker gets up to `clipsPerSpeaker` distinct samples saved to the recordings
     /// directory, ordered best-first.
@@ -218,15 +226,15 @@ public enum AudioClipExtractor {
     /// When provided, silence gaps within each extracted clip are skipped so every playback
     /// is continuous speech rather than a raw time slice that may include long pauses.
     public static func extractSpeakerClips(
-        unmatchedSpeakers: [(speakerID: String, temporaryName: String, embedding: [Float], duration: TimeInterval, words: Int)],
+        unmatchedSpeakers: [UnmatchedSpeaker],
         diarizationSegments: [(speakerID: String, startTime: TimeInterval, endTime: TimeInterval)],
         speechSegments: [(startTime: TimeInterval, endTime: TimeInterval)]? = nil,
         sourceAudioURL: URL,
         outputDirectory: URL,
         clipsPerSpeaker: Int = 3,
         vadSpeechSegments: [(startTime: TimeInterval, endTime: TimeInterval)] = []
-    ) -> [(temporaryName: String, clipURLs: [URL], embedding: [Float], duration: TimeInterval, words: Int)] {
-        var results: [(temporaryName: String, clipURLs: [URL], embedding: [Float], duration: TimeInterval, words: Int)] = []
+    ) -> [(speaker: UnmatchedSpeaker, clips: [ExtractedClip])] {
+        var results: [(speaker: UnmatchedSpeaker, clips: [ExtractedClip])] = []
 
         for speaker in unmatchedSpeakers {
             let regions = bestClipRegions(
@@ -236,7 +244,7 @@ public enum AudioClipExtractor {
                 maxCount: clipsPerSpeaker
             )
 
-            var savedURLs: [URL] = []
+            var saved: [ExtractedClip] = []
             for region in regions {
                 let clipFilename = "clip_\(UUID().uuidString.prefix(8)).wav"
                 let clipURL = outputDirectory.appendingPathComponent(clipFilename)
@@ -248,11 +256,11 @@ public enum AudioClipExtractor {
                     outputURL: clipURL,
                     vadSpeechSegments: vadSpeechSegments
                 ) {
-                    savedURLs.append(savedURL)
+                    saved.append(ExtractedClip(url: savedURL, startTime: region.startTime, endTime: region.endTime))
                 }
             }
 
-            results.append((speaker.temporaryName, savedURLs, speaker.embedding, speaker.duration, speaker.words))
+            results.append((speaker, saved))
         }
 
         return results
