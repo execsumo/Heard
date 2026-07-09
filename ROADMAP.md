@@ -22,7 +22,7 @@ These represent the remaining areas of focus to clean up and stabilize:
 - ~~**App-audio self-test rebuild invalidates `micDelaySeconds`.**~~ Done — `attemptAppAudioRebuild` recomputes `mic.start − app.start` from the post-rebuild `appStartTime` and updates the active session, so bleed dedup and interleaving stay aligned.
 - ~~**`SlidingWindowAsrConfig` doesn't expose `TdtConfig`.**~~ Done — FluidAudio updated to 0.14.7. We now pass the explicit `TdtConfig(blankId: modelVersion.blankId)` when initializing `SlidingWindowAsrManager` inside `DictationManager.start()`, avoiding reliance on internal blank-token auto-adaptation.
 - ~~**DMG packaging.**~~ Done — `scripts/dmg.sh` builds, signs, notarizes, and packages.
-- ~~**Homebrew Cask.**~~ Done — `brew tap execsumo/heard && brew install --cask heard`.
+- ~~**Homebrew Cask.**~~ Done — `brew tap execsumo/tap && brew install --cask heard`.
 - ~~**CI publish step.**~~ Done — on tag push, CI builds a release bundle, zips it, and uploads to GitHub Releases.
 - ~~**Update checker.**~~ Done — lightweight GitHub Releases poll on startup (24h interval). Shows banner in menu bar dropdown and Settings when a newer version is available.
 - ~~**Preprocessing concurrency guard.**~~ Done — "Low Memory Mode" toggle in Settings → Advanced → Memory serializes preprocessing to halve peak RAM (~400 MB vs ~800 MB).

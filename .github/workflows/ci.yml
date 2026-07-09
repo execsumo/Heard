@@ -162,7 +162,7 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           VERSION="${{ steps.meta.outputs.version }}"
-          git clone "https://execsumo:${GH_PAT}@github.com/execsumo/homebrew-heard.git" homebrew-tap
+          git clone "https://execsumo:${GH_PAT}@github.com/execsumo/homebrew-tap.git" homebrew-tap
           mkdir -p homebrew-tap/Casks
           cp Casks/heard.rb homebrew-tap/Casks/heard.rb
           cd homebrew-tap

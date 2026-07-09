@@ -102,9 +102,11 @@ The first time Heard hears someone new, it surfaces a ~10-second sample of their
 **Homebrew (recommended):**
 
 ```bash
-brew tap execsumo/heard
+brew tap execsumo/tap
 brew install --cask heard
 ```
+
+To update later, on any device: `brew upgrade --cask heard` (or just `brew upgrade`). The tap's cask is republished automatically on every release, so this always tracks latest.
 
 **Direct download:** Grab the latest `Heard-x.x.x.dmg` from [GitHub Releases](https://github.com/execsumo/Heard/releases), open it, and drag Heard to `/Applications`.
 
@@ -314,7 +316,7 @@ Releases are built locally with `scripts/dmg.sh`:
 ./scripts/dmg.sh --sign "Developer ID Application: Your Name (TEAMID)"
 ```
 
-The script: builds a hardened release `.app` → notarizes it via `xcrun notarytool` → assembles a DMG with an `/Applications` symlink → signs and notarizes the DMG → prints the SHA256. The SHA256 is needed to update `Casks/heard.rb` in [execsumo/homebrew-heard](https://github.com/execsumo/homebrew-heard) after publishing the GitHub Release.
+The script: builds a hardened release `.app` → notarizes it via `xcrun notarytool` → assembles a DMG with an `/Applications` symlink → signs and notarizes the DMG → prints the SHA256. The SHA256 is needed to update `Casks/heard.rb` in [execsumo/homebrew-tap](https://github.com/execsumo/homebrew-tap) after publishing the GitHub Release.
 
 Pass `--skip-notarize` for local testing without Apple Developer credentials.
 
@@ -326,7 +328,7 @@ Pass `--skip-notarize` for local testing without Apple Developer credentials.
 
 ### Homebrew Cask
 
-After a notarized DMG is published to GitHub Releases, update `Casks/heard.rb` in [execsumo/homebrew-heard](https://github.com/execsumo/homebrew-heard) with the new `version` and `sha256` from the `dmg.sh` output.
+After a notarized DMG is published to GitHub Releases, update `Casks/heard.rb` in [execsumo/homebrew-tap](https://github.com/execsumo/homebrew-tap) with the new `version` and `sha256` from the `dmg.sh` output.
 
 ## Acknowledgements
 

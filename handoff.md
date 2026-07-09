@@ -4,7 +4,9 @@
 
 The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15.0+. Core infrastructure is complete — meeting detection, dual-track audio capture, on-device transcription (Parakeet TDT V2), VAD (Silero), speaker diarization (LS-EEND + WeSpeaker), and speaker assignment are all functional via the FluidAudio framework. An `.app` bundle is available via `./scripts/bundle.sh`.
 
-**v0.1.0 is released** — notarized DMG published to [GitHub Releases](https://github.com/execsumo/Heard/releases/tag/v0.1.0) and installable via `brew tap execsumo/heard && brew install --cask heard`.
+**v0.1.0 is released** — notarized DMG published to [GitHub Releases](https://github.com/execsumo/Heard/releases/tag/v0.1.0) and installable via `brew tap execsumo/tap && brew install --cask heard`.
+
+**Homebrew tap renamed (2026-07-08):** `homebrew-heard` → `homebrew-tap`, so the same tap can host formulas/casks for other projects (e.g. Dossier) alongside Heard's cask. `ci.yml`'s release job and `update-tap.yml` now clone/push to `homebrew-tap.git`; install/update commands are `brew tap execsumo/tap` and `brew upgrade --cask heard`.
 
 **Dictation feature is fully functional** — speech recognition, text injection via clipboard paste (Cmd+V), and global hotkey (Ctrl+Shift+D) all working. Requires a stable (non-ad-hoc) code signing identity so Accessibility permission persists across rebuilds; `./scripts/bundle.sh` auto-signs with the available `Developer ID Application` cert (else `Dev Cert`), so a bare `./scripts/bundle.sh` is sufficient.
 
@@ -230,7 +232,7 @@ The dictation feature captures mic audio, transcribes in real-time, and injects 
 - `scripts/bundle.sh` builds via SPM, creates `.app` bundle, auto-signs with the `Developer ID Application` cert if available, else `Dev Cert`, else ad-hoc. When the identity is a `Developer ID Application:` cert, automatically adds `--options runtime --timestamp` (required for notarization); self-signed local certs are left unchanged.
 - Flags: `--release`, `--sign IDENTITY`, `--output DIR`, `--install` (quit running app, replace `/Applications/Heard.app`, relaunch — anchors TCC grants to a stable path), `--reset` (also `tccutil reset` Microphone/ScreenCapture/Accessibility before install — implies `--install`)
 - `scripts/dmg.sh` — distribution pipeline: release build → zip → notarize `.app` via `xcrun notarytool` → staple → create DMG with `/Applications` symlink → sign DMG → notarize DMG → staple DMG → print SHA256. Uses `--keychain-profile heard-notary` (stored via `notarytool store-credentials`). Pass `--skip-notarize` for local testing.
-- **v0.1.0 released**: `dist/Heard-0.1.0.dmg` (notarized, stapled). GitHub Release at `github.com/execsumo/Heard/releases/tag/v0.1.0`. Homebrew tap at `github.com/execsumo/homebrew-heard` (`brew tap execsumo/heard && brew install --cask heard`).
+- **v0.1.0 released**: `dist/Heard-0.1.0.dmg` (notarized, stapled). GitHub Release at `github.com/execsumo/Heard/releases/tag/v0.1.0`. Homebrew tap at `github.com/execsumo/homebrew-tap` (`brew tap execsumo/tap && brew install --cask heard`).
 
 ### Testing
 - `HeardTests` executable target with 196 tests across: VadSegmentMap, cosine distance, SpeakerMatcher (incl. threshold/margin edge cases), SegmentMerger, AudioPreprocessor, TranscriptWriter (incl. chat/note interleaving), SpeakerStore, PipelineQueueStore, pipeline resume/recovery (`prepareForResume`), meeting detection state machine (`MeetingDetectionState`), retry executor (`PipelineProcessor.executeWithRetry`) incl. lifetime cap, Teams identification, MeetingDetector lifecycle, RosterReader (window-title parser + filter + AX traversal), and ChatReader (AX traversal)
@@ -291,7 +293,7 @@ See [`ROADMAP.md`](./ROADMAP.md) for the full list of planned improvements, orga
 ### 1. Distribution (done for v0.1.0)
 - ✅ DMG packaging — `scripts/dmg.sh` (build, sign, notarize, staple, package)
 - ✅ GitHub Release — `github.com/execsumo/Heard/releases/tag/v0.1.0`
-- ✅ Homebrew Cask — `brew tap execsumo/heard && brew install --cask heard`
+- ✅ Homebrew Cask — `brew tap execsumo/tap && brew install --cask heard`
 - ✅ CI pipeline — `.github/workflows/ci.yml` builds + tests on all pushes; on tag push, builds a release bundle, zips with `ditto`, and uploads to GitHub Releases via `softprops/action-gh-release`. Notarization is stubbed (commented) pending Apple Developer secrets (`APPLE_ID`, `APPLE_APP_PASSWORD`, `APPLE_TEAM_ID`).
 - ✅ Update checker — `UpdateChecker` polls `api.github.com/repos/execsumo/Heard/releases/latest` at startup (rate-limited to once per 24 hours). When a newer version is detected, a banner appears in the menu bar dropdown and in Settings → About with a link to the GitHub release. No new dependencies; no auto-install (user re-runs the DMG or `brew upgrade --cask heard`).
 
