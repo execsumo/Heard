@@ -138,6 +138,7 @@ enum HotkeyTarget: Identifiable {
             case .recording:     recordingSection
             case .dictation:     dictationSection
             case .speakers:      speakersSection
+            case .meetings:      meetingsSection
             case .advanced:      advancedSection
             case .about:         aboutSection
             }

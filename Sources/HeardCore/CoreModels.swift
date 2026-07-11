@@ -719,6 +719,7 @@ public enum SettingsTab: String, CaseIterable, Identifiable {
     case recording
     case dictation
     case speakers
+    case meetings
     case advanced
     case about
 
@@ -730,6 +731,7 @@ public enum SettingsTab: String, CaseIterable, Identifiable {
         case .recording: return "Recording"
         case .dictation: return "Dictation"
         case .speakers: return "Speakers"
+        case .meetings: return "Meetings"
         case .advanced: return "Advanced"
         case .about: return "About"
         }
@@ -741,6 +743,7 @@ public enum SettingsTab: String, CaseIterable, Identifiable {
         case .recording: return "record.circle"
         case .dictation: return "mic.badge.plus"
         case .speakers: return "person.3"
+        case .meetings: return "doc.text.magnifyingglass"
         case .advanced: return "cpu"
         case .about: return "info.circle"
         }

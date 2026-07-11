@@ -363,6 +363,12 @@ extension SettingsView {
         }
     }
 
+    // MARK: Meetings
+
+    var meetingsSection: some View {
+        TranscriptLibraryView(model: model)
+    }
+
     // MARK: Speakers
 
     var speakersSection: some View {
