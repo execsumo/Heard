@@ -335,6 +335,19 @@ No audio playback or embedding visualization — keep it simple. The data shown 
 
 ---
 
+## Transcript Library UI
+
+A "Meetings" tab in the Settings window listing prior meeting transcripts. Transcripts do **not** render in-app — activating a row opens the `.md` file in the user's default Markdown editor (`NSWorkspace.open`).
+
+- **Data source:** on-demand scan of the configured output directory (no index file, no new persistence). Metadata is parsed from the first ~1 KB of each transcript's header (`# Title`, `**Date:**`, `**Duration:**`, `**Participants:**`), falling back to the filename-derived title and file modification date for malformed or pre-format files. Standalone note files (`*_note.md`) are excluded.
+- **List view:** sortable table (Title, Date, Duration, Participants), newest-first by default; text filter on title + participants.
+- **Actions:** double-click or per-row Open button opens the file; context menu adds Reveal in Finder and Move to Trash (with confirmation).
+- **States:** empty state when no transcripts exist; missing-folder state when the output directory is gone.
+- **Refresh:** on tab appearance, on output-directory change, and via a manual refresh button. No live file watching.
+- **Menu bar:** the dropdown's "Transcripts…" row opens Settings pre-selected to this tab.
+
+---
+
 ## Menu Bar UI
 
 ### Menu Bar Icon
