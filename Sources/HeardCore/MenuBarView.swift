@@ -119,8 +119,10 @@ public struct MenuBarView: View {
                     }
                 }
 
-                MenuBarRow(title: "Open Transcripts", icon: "folder") {
-                    model.openOutputDirectory()
+                MenuBarRow(title: "Transcripts…", icon: "doc.text.magnifyingglass") {
+                    model.selectedSettingsTab = .meetings
+                    openWindow(id: "settings")
+                    NSApp.activate(ignoringOtherApps: true)
                 }
             }
             .padding(.horizontal, 6)
