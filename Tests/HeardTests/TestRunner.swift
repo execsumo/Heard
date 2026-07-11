@@ -2656,6 +2656,7 @@ struct TestRunner {
         runSegmentDeduplicatorTests()
         runSystemMemoryTests()
         runPermissionCenterTests()
+        runTranscriptLibraryTests()
 
         print("\n" + String(repeating: "─", count: 50))
         print("Results: \(passedTests)/\(totalTests) passed")
