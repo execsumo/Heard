@@ -1837,6 +1837,82 @@ private struct FakeFailure: Error {
     }
 }
 
+// MARK: - Self Profile
+
+@MainActor
+func runSelfProfileTests() {
+    print("\n👤 Self Profile Tests")
+
+    func uniqueFile() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("self_profile_test_\(UUID().uuidString).json")
+    }
+
+    test("Self profile created when absent") {
+        let testFile = uniqueFile()
+        defer { try? FileManager.default.removeItem(at: testFile) }
+        let store = SpeakerStore(url: testFile)
+        let vector: [Float] = Array(repeating: 0.1, count: 256)
+        SpeakerMatcher.updateSelfProfile(userName: "Alice", embedding: vector, speakerStore: store)
+        try expectEqual(store.speakers.count, 1)
+        try expectEqual(store.speakers[0].name, "Alice")
+        try expectEqual(store.speakers[0].embeddings.count, 1)
+    }
+
+    test("Self profile skipped when userName is empty") {
+        let testFile = uniqueFile()
+        defer { try? FileManager.default.removeItem(at: testFile) }
+        let store = SpeakerStore(url: testFile)
+        let vector: [Float] = Array(repeating: 0.1, count: 256)
+        SpeakerMatcher.updateSelfProfile(userName: "   ", embedding: vector, speakerStore: store)
+        try expectEqual(store.speakers.count, 0)
+    }
+
+    test("Self profile merged case-insensitively when present") {
+        let testFile = uniqueFile()
+        defer { try? FileManager.default.removeItem(at: testFile) }
+        let store = SpeakerStore(url: testFile)
+        store.upsert(SpeakerProfile(
+            id: UUID(),
+            name: "Alice",
+            embeddings: [Array(repeating: 0.1, count: 256)],
+            firstSeen: Date(),
+            lastSeen: Date(),
+            meetingCount: 0,
+            audioClipURLs: []
+        ))
+        
+        let newVector: [Float] = Array(repeating: 0.2, count: 256)
+        SpeakerMatcher.updateSelfProfile(userName: "aLiCe", embedding: newVector, speakerStore: store)
+        try expectEqual(store.speakers.count, 1)
+        try expectEqual(store.speakers[0].name, "Alice") // keeps original casing
+        try expectEqual(store.speakers[0].embeddings.count, 2)
+    }
+
+    test("Self profile embedding cap respected") {
+        let testFile = uniqueFile()
+        defer { try? FileManager.default.removeItem(at: testFile) }
+        let store = SpeakerStore(url: testFile)
+        var initialEmbeddings: [[Float]] = []
+        for i in 0..<SpeakerMatcher.maxEmbeddingsPerSpeaker {
+            initialEmbeddings.append(Array(repeating: Float(i)*0.1, count: 256))
+        }
+        store.upsert(SpeakerProfile(
+            id: UUID(),
+            name: "Bob",
+            embeddings: initialEmbeddings,
+            firstSeen: Date(),
+            lastSeen: Date(),
+            meetingCount: 0,
+            audioClipURLs: []
+        ))
+        
+        let newVector: [Float] = Array(repeating: 0.5, count: 256)
+        SpeakerMatcher.updateSelfProfile(userName: "Bob", embedding: newVector, speakerStore: store)
+        try expectEqual(store.speakers.count, 1)
+        try expectEqual(store.speakers[0].embeddings.count, SpeakerMatcher.maxEmbeddingsPerSpeaker)
+    }
+}
+
 // MARK: - SpeakerMatcher Threshold Edge Cases
 
 func runSpeakerMatcherEdgeTests() {
@@ -2668,6 +2744,7 @@ struct TestRunner {
         runMeetingDetectorLifecycleTests()
         await runRetryExecutorTests()
         await runLifetimeRetryCapTests()
+        runSelfProfileTests()
         runSpeakerMatcherEdgeTests()
         runSpeakerEmbeddingAggregatorTests()
         runRosterReaderTests()

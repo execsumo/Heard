@@ -217,6 +217,35 @@ public enum SpeakerMatcher {
         }
     }
 
+    /// Build or refresh the self-profile for the local user.
+    /// Uses case-insensitive name matching to fold into an existing profile.
+    @MainActor public static func updateSelfProfile(
+        userName: String,
+        embedding: [Float]?,
+        speakerStore: SpeakerStore
+    ) {
+        let name = userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let emb = embedding, !emb.isEmpty else { return }
+
+        if let existingIndex = speakerStore.speakers.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            var profile = speakerStore.speakers[existingIndex]
+            profile.lastSeen = Date()
+            addEmbedding(emb, to: &profile.embeddings)
+            speakerStore.upsert(profile)
+        } else {
+            let profile = SpeakerProfile(
+                id: UUID(),
+                name: name,
+                embeddings: [emb],
+                firstSeen: Date(),
+                lastSeen: Date(),
+                meetingCount: 0,
+                audioClipURLs: []
+            )
+            speakerStore.upsert(profile)
+        }
+    }
+
     /// Pick the profile that should survive an N-way merge: a human-given name always
     /// beats a placeholder; within the same tier, the profile seen in the most meetings
     /// wins (its stats and embeddings are the best-established), with the oldest

@@ -2232,6 +2232,7 @@ public final class PipelineProcessor: ObservableObject {
     private var appTranscription: ASRResult?
     private var micTranscription: ASRResult?
     private var appDiarization: DiarizationResult?
+    private var micDiarization: DiarizationResult?
 
     /// Cached models for keep-alive between jobs.
     private var cachedAsrModels: AsrModels?
@@ -2427,6 +2428,7 @@ public final class PipelineProcessor: ObservableObject {
         appTranscription = nil
         micTranscription = nil
         appDiarization = nil
+        micDiarization = nil
         transcriptionProgress = nil
 
         // Default keepAlive is 0: unload immediately. Back-to-back meetings don't
@@ -2808,10 +2810,8 @@ public final class PipelineProcessor: ObservableObject {
             micTranscription = TextNormalizer.shared.normalize(result: result)
         }
 
-        // The mic track is never diarized — transcription (incl. vocab boosting)
-        // was its last audio consumer, so free the sample buffer now. Done only
-        // on the success path so a within-session retry still has the samples.
-        micTrack = micTrack?.releasingSamples()
+        // The mic track will be diarized in runDiarization to extract a user self-profile.
+        // It will be released there.
 
         // Models stay cached for keep-alive; unloaded by clearJobState() or forceUnload()
     }
@@ -2917,31 +2917,48 @@ public final class PipelineProcessor: ObservableObject {
     // segment, and convert to DiarizationResult before passing downstream.
 
     private func runDiarization(_ job: PipelineJob, generation: Int) async throws {
-        // Diarization only applies to the app track (remote speakers).
-        // The mic track is a single known speaker (the local user) so diarization adds no value.
         let minSamples = 16_000 * 2 // 2 seconds at 16kHz
 
-        guard let track = appTrack, track.samples.count >= minSamples else {
-            // Too short or missing — skip, speaker assignment will use defaults
-            return
+        if let track = appTrack, track.samples.count >= minSamples {
+            // FluidAudio's clusteringThreshold is a cosine *similarity* (despite the
+            // name) — AHC merges when cos_sim ≥ threshold. Higher = stricter
+            // separation (more clusters); lower = more merging. The Speakers tab
+            // supports merging, but recovering from a merged embedding is harder,
+            // so we default to stricter than FluidAudio's 0.6.
+            let similarity = settingsStore.settings.diarizationClusteringSimilarity
+            var config = OfflineDiarizerConfig(clusteringThreshold: similarity)
+            // Surface per-chunk speaker embeddings so speaker assignment can build a robust
+            // duration-weighted centroid per speaker instead of relying on one arbitrary
+            // segment. Off by default in FluidAudio (~1–2 MB/hour of audio); negligible here.
+            config.exposeChunkEmbeddings = true
+            let diarizer = OfflineDiarizerManager(config: config)
+            try await diarizer.prepareModels()
+            let result = try await diarizer.process(audio: track.samples)
+            try ensureCurrent(generation)
+            appDiarization = result
         }
 
-        // FluidAudio's clusteringThreshold is a cosine *similarity* (despite the
-        // name) — AHC merges when cos_sim ≥ threshold. Higher = stricter
-        // separation (more clusters); lower = more merging. The Speakers tab
-        // supports merging, but recovering from a merged embedding is harder,
-        // so we default to stricter than FluidAudio's 0.6.
-        let similarity = settingsStore.settings.diarizationClusteringSimilarity
-        var config = OfflineDiarizerConfig(clusteringThreshold: similarity)
-        // Surface per-chunk speaker embeddings so speaker assignment can build a robust
-        // duration-weighted centroid per speaker instead of relying on one arbitrary
-        // segment. Off by default in FluidAudio (~1–2 MB/hour of audio); negligible here.
-        config.exposeChunkEmbeddings = true
-        let diarizer = OfflineDiarizerManager(config: config)
-        try await diarizer.prepareModels()
-        let result = try await diarizer.process(audio: track.samples)
-        try ensureCurrent(generation)
-        appDiarization = result
+        let userName = settingsStore.settings.userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !userName.isEmpty, let track = micTrack, track.samples.count >= minSamples {
+            do {
+                // Bound the cost: diarize at most 10 minutes (600s) of mic audio.
+                // One robust centroid is easily built from early samples; processing hours would stall the pipeline.
+                let maxMicSamples = 600 * 16_000
+                let micSamples = Array(track.samples.prefix(maxMicSamples))
+                var config = OfflineDiarizerConfig(clusteringThreshold: 0.6)
+                config.exposeChunkEmbeddings = true
+                let diarizer = OfflineDiarizerManager(config: config)
+                try await diarizer.prepareModels()
+                let result = try await diarizer.process(audio: micSamples)
+                try ensureCurrent(generation)
+                micDiarization = result
+            } catch {
+                NSLog("Heard: Mic track diarization for user self-profile failed (best-effort): \(error)")
+            }
+        }
+
+        // We can now release the mic track samples
+        micTrack = micTrack?.releasingSamples()
 
         // Models are released when diarizer goes out of scope
     }
@@ -3219,6 +3236,25 @@ public final class PipelineProcessor: ObservableObject {
             }
         }
 
+        let userName = settingsStore.settings.userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !userName.isEmpty, let micDiar = micDiarization {
+            var userEmbedding: [Float]? = nil
+            if let chunks = micDiar.chunkEmbeddings, !chunks.isEmpty {
+                let validChunks = chunks.filter { !$0.embedding256.isEmpty }
+                if !validChunks.isEmpty {
+                    let aggChunks = validChunks.map { chunk -> SpeakerEmbeddingAggregator.Chunk in
+                        let seconds = Float(chunk.endTimeSeconds - chunk.startTimeSeconds)
+                        return SpeakerEmbeddingAggregator.Chunk(vector: chunk.embedding256, weight: seconds > 0 ? seconds : 1)
+                    }
+                    userEmbedding = SpeakerEmbeddingAggregator.centroid(of: aggChunks)
+                }
+            }
+            if userEmbedding == nil, let first = micDiar.segments.first(where: { !$0.embedding.isEmpty }) {
+                userEmbedding = first.embedding
+            }
+            SpeakerMatcher.updateSelfProfile(userName: userName, embedding: userEmbedding, speakerStore: speakerStore)
+        }
+
         // Sort by start time and merge consecutive same-speaker segments
         allSegments.sort { $0.startTime < $1.startTime }
         let merged = SegmentMerger.mergeConsecutive(allSegments)
@@ -3264,7 +3300,7 @@ public final class PipelineProcessor: ObservableObject {
             unmatchedSpeakerInfo[i].totalSpeakingTime = speakingPerSpeaker[name] ?? 0
         }
 
-        let userName = settingsStore.settings.userName.trimmingCharacters(in: .whitespacesAndNewlines)
+
         return TranscriptDocument(
             title: job.meetingTitle.isEmpty ? "Meeting" : job.meetingTitle,
             startTime: job.startTime,
