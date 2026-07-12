@@ -38,7 +38,7 @@ public final class ModelDownloadManager: ObservableObject {
         let parakeetRepo: Repo = transcriptionModel == .v2 ? .parakeetV2 : .parakeetV3
         let asrCustomDir = FileManager.default.heardAppSupportDirectory
             .appendingPathComponent(parakeetRepo.folderName, isDirectory: true)
-        if fm.fileExists(atPath: asrDefaultDir.path) || fm.fileExists(atPath: asrCustomDir.path) {
+        if AsrModels.modelsExist(at: asrDefaultDir) || AsrModels.modelsExist(at: asrCustomDir) {
             catalog.markReady(.batchParakeet)
         }
 

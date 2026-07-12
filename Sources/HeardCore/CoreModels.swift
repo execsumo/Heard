@@ -749,3 +749,18 @@ public enum SettingsTab: String, CaseIterable, Identifiable {
         }
     }
 }
+
+extension String {
+    /// Recommended similarity threshold for custom vocabulary terms based on their character length.
+    /// Short terms require higher similarity to reduce false positives, while longer terms
+    /// have more phonetic uniqueness and can tolerate looser matching.
+    public var defaultVocabularySimilarityThreshold: Float {
+        switch self.count {
+        case 0...3: return 0.90
+        case 4: return 0.85
+        case 5: return 0.80
+        case 6: return 0.75
+        default: return 0.70
+        }
+    }
+}

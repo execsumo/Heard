@@ -2841,7 +2841,8 @@ public final class PipelineProcessor: ObservableObject {
                 return CustomVocabularyTerm(
                     text: term,
                     weight: 10.0,
-                    ctcTokenIds: tokenIds.isEmpty ? nil : tokenIds
+                    ctcTokenIds: tokenIds.isEmpty ? nil : tokenIds,
+                    minSimilarity: term.defaultVocabularySimilarityThreshold
                 )
             }
             let context = CustomVocabularyContext(terms: vocabularyTerms)

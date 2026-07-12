@@ -2629,6 +2629,26 @@ func runSystemMemoryTests() {
     }
 }
 
+func runCustomVocabularyThresholdTests() {
+    print("\n📚 Custom Vocabulary Threshold Tests")
+
+    test("Similarity Threshold Scales With Length") {
+        try expectClose(Double("".defaultVocabularySimilarityThreshold), 0.90)
+        try expectClose(Double("a".defaultVocabularySimilarityThreshold), 0.90)
+        try expectClose(Double("ab".defaultVocabularySimilarityThreshold), 0.90)
+        try expectClose(Double("abc".defaultVocabularySimilarityThreshold), 0.90)
+        
+        try expectClose(Double("abcd".defaultVocabularySimilarityThreshold), 0.85)
+        
+        try expectClose(Double("abcde".defaultVocabularySimilarityThreshold), 0.80)
+        
+        try expectClose(Double("abcdef".defaultVocabularySimilarityThreshold), 0.75)
+        
+        try expectClose(Double("abcdefg".defaultVocabularySimilarityThreshold), 0.70)
+        try expectClose(Double("abcdefghijkl".defaultVocabularySimilarityThreshold), 0.70)
+    }
+}
+
 @main
 struct TestRunner {
     @MainActor static func main() async {
@@ -2657,6 +2677,7 @@ struct TestRunner {
         runSystemMemoryTests()
         runPermissionCenterTests()
         runTranscriptLibraryTests()
+        runCustomVocabularyThresholdTests()
 
         print("\n" + String(repeating: "─", count: 50))
         print("Results: \(passedTests)/\(totalTests) passed")
