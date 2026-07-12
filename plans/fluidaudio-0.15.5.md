@@ -2,6 +2,21 @@
 
 Owner: orchestrator (Claude) · Delegates: agy (Antigravity) · Started 2026-07-11
 
+## OUTCOME (2026-07-12) — plan closed
+
+- **Phase A shipped** (merged `d1c9faf`): 0.15.5 bump, per-term vocab thresholds
+  (`minSimilarity`, length-scaled), `AsrModels.modelsExist` cache check. Fused decoder /
+  deterministic clustering / compute units turned out to be N/A or already-default.
+- **Phase C shipped reduced** (merged `9a716ba`): user self-profile from mic-track
+  embeddings (best-effort, 10-min bound). Offline pre-enrollment impossible — 0.15.5's
+  `enrollSpeaker` is streaming-diarizer-only.
+- **Phase B cancelled by user decision**: Unified batch returns no token timings
+  (pipeline migration would break speaker attribution) and Unified streaming has no
+  vocab boosting or confirmed/volatile split. Dictation stays batch TDT — one model
+  family for meetings + dictation with custom vocab working in both. See handoff.md
+  ("Parakeet Unified / streaming dictation evaluated and rejected") for revisit
+  conditions.
+
 ## Goal
 
 Upgrade FluidAudio 0.15.2 → 0.15.5 and adopt everything notable except word-level
