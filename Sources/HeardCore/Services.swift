@@ -2940,13 +2940,21 @@ public final class PipelineProcessor: ObservableObject {
 
         let userName = settingsStore.settings.userName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !userName.isEmpty, let track = micTrack, track.samples.count >= minSamples {
-            var config = OfflineDiarizerConfig(clusteringThreshold: 0.6)
-            config.exposeChunkEmbeddings = true
-            let diarizer = OfflineDiarizerManager(config: config)
-            try await diarizer.prepareModels()
-            let result = try await diarizer.process(audio: track.samples)
-            try ensureCurrent(generation)
-            micDiarization = result
+            do {
+                // Bound the cost: diarize at most 10 minutes (600s) of mic audio.
+                // One robust centroid is easily built from early samples; processing hours would stall the pipeline.
+                let maxMicSamples = 600 * 16_000
+                let micSamples = Array(track.samples.prefix(maxMicSamples))
+                var config = OfflineDiarizerConfig(clusteringThreshold: 0.6)
+                config.exposeChunkEmbeddings = true
+                let diarizer = OfflineDiarizerManager(config: config)
+                try await diarizer.prepareModels()
+                let result = try await diarizer.process(audio: micSamples)
+                try ensureCurrent(generation)
+                micDiarization = result
+            } catch {
+                NSLog("Heard: Mic track diarization for user self-profile failed (best-effort): \(error)")
+            }
         }
 
         // We can now release the mic track samples
