@@ -14,6 +14,11 @@ The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15
 
 **In-meeting notes are fully functional** — global hotkey (Ctrl+Shift+N by default) opens a focused composer panel during recording; notes interleave chronologically into the rendered transcript as italicized `**Note from <userName>:**` lines. See "In-Meeting Notes" below.
 
+**FluidAudio upgraded to 0.15.5** (2026-07-11). Brings long-form chunk-merge fixes, Silero VAD v6.2.1, per-term custom-vocabulary thresholds, and the new `ModelHub` download layer. (The 0.15.5 fused decoder is streaming-only and does not apply to Heard's batch `AsrManager`.)
+- **ModelHub migration:** `ModelDownloadManager` now uses `AsrModels.modelsExist` to verify Parakeet cache presence instead of manual directory peeking; the VAD/CTC/diarizer presence checks are unchanged (the upgrade was otherwise non-breaking, so a full ModelHub rewrite was deliberately skipped).
+- **Custom Vocabulary Thresholding:** Added a length-based similarity threshold policy (`String.defaultVocabularySimilarityThreshold`) to reduce false positives on short custom terms. Dictation and batch rescoring now construct `CustomVocabularyTerm` with this dynamic `minSimilarity`.
+- Note: Fused decoder and Compute Units features from 0.15.5 were evaluated but not adopted (fused decoder is streaming-only; compute units are automatic in `loadModels`).
+
 **FluidAudio upgraded to 0.15.2** (from 0.14.7). Brings Parakeet v3 ASR throughput gains for free and exposes per-chunk speaker embeddings. Speaker assignment now builds a **duration-weighted, outlier-trimmed centroid per speaker** from `DiarizationResult.chunkEmbeddings` instead of the previous "first segment per speaker" embedding — more stable cross-meeting identity. The aggregation lives in pure, unit-tested code (`SpeakerEmbeddingAggregator` in `SpeakerAssignment.swift`); the diarizer is configured with `exposeChunkEmbeddings = true` in `runDiarization`, and `buildSpeakerEmbeddings(from:)` in `Services.swift` falls back to the legacy per-segment path when chunk embeddings are unavailable (very short audio / older model builds).
 
 **Robustness/efficiency hardening pass (post-v0.2.3):**

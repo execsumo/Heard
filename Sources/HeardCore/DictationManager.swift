@@ -331,7 +331,8 @@ public final class DictationManager: ObservableObject {
                 let ids = tokenizer.encode(term)
                 return CustomVocabularyTerm(
                     text: term, weight: 10.0,
-                    ctcTokenIds: ids.isEmpty ? nil : ids
+                    ctcTokenIds: ids.isEmpty ? nil : ids,
+                    minSimilarity: term.defaultVocabularySimilarityThreshold
                 )
             }
             let context = CustomVocabularyContext(terms: terms)
