@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 
-// MARK: - TranscriptRecord
+// MARK: - PersistedTranscriptRecord
 //
 // One archive record per completed meeting. This is the Library's backing
 // store, decoupled from the ephemeral `PipelineQueueStore` (a *processing*
@@ -14,7 +14,7 @@ import Foundation
 // deferred (the Library "Open" action launches the `.md` in the default app).
 // Phase 2 adds `participantSpeakerIDs` to power the People cross-link.
 
-public struct TranscriptRecord: Codable, Identifiable, Equatable {
+public struct PersistedTranscriptRecord: Codable, Identifiable, Equatable {
     /// Matches the originating `PipelineJob.id` for traceability and idempotent
     /// upserts (a retry/rewrite updates the existing record, never duplicates).
     public let id: UUID
@@ -107,13 +107,13 @@ public struct TranscriptRecord: Codable, Identifiable, Equatable {
 // Filtering/sorting kept independent of the store and any view so it can be
 // unit-tested directly.
 
-public enum TranscriptLibrary {
+public enum PersistedTranscriptLibrary {
     /// Newest-first, optionally filtered by a case-insensitive query over the
     /// meeting title and participant names. An empty/whitespace query returns
     /// everything (still newest-first).
-    public static func meetings(from records: [TranscriptRecord], search: String = "") -> [TranscriptRecord] {
+    public static func meetings(from records: [PersistedTranscriptRecord], search: String = "") -> [PersistedTranscriptRecord] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let filtered: [TranscriptRecord]
+        let filtered: [PersistedTranscriptRecord]
         if query.isEmpty {
             filtered = records
         } else {
@@ -130,20 +130,20 @@ public enum TranscriptLibrary {
 
 @MainActor
 public final class TranscriptStore: ObservableObject {
-    @Published public private(set) var records: [TranscriptRecord]
+    @Published public private(set) var records: [PersistedTranscriptRecord]
 
     private let store = JSONStore()
     private let url: URL
 
     public init(url: URL = AppPaths.transcriptsFile) {
         self.url = url
-        records = store.load([TranscriptRecord].self, from: url, defaultValue: [])
+        records = store.load([PersistedTranscriptRecord].self, from: url, defaultValue: [])
     }
 
     /// Insert a new record or update the existing one with the same `id`.
     /// Idempotent: re-running a finished job's write path overwrites in place
     /// rather than duplicating.
-    public func upsert(_ record: TranscriptRecord) {
+    public func upsert(_ record: PersistedTranscriptRecord) {
         if let index = records.firstIndex(where: { $0.id == record.id }) {
             records[index] = record
         } else {

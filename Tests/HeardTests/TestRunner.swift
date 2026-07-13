@@ -2736,8 +2736,8 @@ private func makeRecord(
     rosterNames: [String] = [],
     notesCount: Int = 0,
     hasUnnamedSpeakers: Bool = false
-) -> TranscriptRecord {
-    TranscriptRecord(
+) -> PersistedTranscriptRecord {
+    PersistedTranscriptRecord(
         id: id,
         title: title,
         start: start,
@@ -2861,7 +2861,7 @@ private func makeRecord(
         try expect(FileManager.default.fileExists(atPath: url.appendingPathExtension("corrupt").path))
     }
 
-    test("TranscriptRecord(completedJob:) maps fields and rejects unfinished jobs") {
+    test("PersistedTranscriptRecord(completedJob:) maps fields and rejects unfinished jobs") {
         let start = Date(timeIntervalSince1970: 2_000_000)
         let end = start.addingTimeInterval(1800)
         let path = URL(fileURLWithPath: "/tmp/heard-test/done.md")
@@ -2874,7 +2874,7 @@ private func makeRecord(
             error: nil, retryCount: 0, rosterNames: ["Alice", "Bob"],
             notes: [MeetingNote(offsetSeconds: 5, text: "todo")]
         )
-        let record = try unwrap(TranscriptRecord(completedJob: finished, hasUnnamedSpeakers: true))
+        let record = try unwrap(PersistedTranscriptRecord(completedJob: finished, hasUnnamedSpeakers: true))
         try expectEqual(record.id, id)
         try expectEqual(record.title, "Standup")
         try expectEqual(record.transcriptPath, path)
@@ -2890,26 +2890,26 @@ private func makeRecord(
             transcriptPath: nil, stage: .transcribing, stageStartTime: nil,
             error: nil, retryCount: 0
         )
-        try expect(TranscriptRecord(completedJob: unfinished, hasUnnamedSpeakers: false) == nil)
+        try expect(PersistedTranscriptRecord(completedJob: unfinished, hasUnnamedSpeakers: false) == nil)
     }
 
-    test("TranscriptLibrary.meetings sorts newest-first") {
+    test("PersistedTranscriptLibrary.meetings sorts newest-first") {
         let old = makeRecord(title: "Old", start: Date(timeIntervalSince1970: 1_000))
         let mid = makeRecord(title: "Mid", start: Date(timeIntervalSince1970: 2_000))
         let new = makeRecord(title: "New", start: Date(timeIntervalSince1970: 3_000))
-        let result = TranscriptLibrary.meetings(from: [old, new, mid])
+        let result = PersistedTranscriptLibrary.meetings(from: [old, new, mid])
         try expectEqual(result.map(\.title), ["New", "Mid", "Old"])
     }
 
-    test("TranscriptLibrary.meetings filters by title and roster, case-insensitively") {
+    test("PersistedTranscriptLibrary.meetings filters by title and roster, case-insensitively") {
         let a = makeRecord(title: "Q1 Planning", start: Date(timeIntervalSince1970: 3_000), rosterNames: ["Alice"])
         let b = makeRecord(title: "Standup", start: Date(timeIntervalSince1970: 2_000), rosterNames: ["Bob", "Carol"])
         let all = [a, b]
 
-        try expectEqual(TranscriptLibrary.meetings(from: all, search: "plan").map(\.title), ["Q1 Planning"])
-        try expectEqual(TranscriptLibrary.meetings(from: all, search: "CAROL").map(\.title), ["Standup"])
-        try expectEqual(TranscriptLibrary.meetings(from: all, search: "   ").count, 2) // blank = all
-        try expect(TranscriptLibrary.meetings(from: all, search: "zzz").isEmpty)
+        try expectEqual(PersistedTranscriptLibrary.meetings(from: all, search: "plan").map(\.title), ["Q1 Planning"])
+        try expectEqual(PersistedTranscriptLibrary.meetings(from: all, search: "CAROL").map(\.title), ["Standup"])
+        try expectEqual(PersistedTranscriptLibrary.meetings(from: all, search: "   ").count, 2) // blank = all
+        try expect(PersistedTranscriptLibrary.meetings(from: all, search: "zzz").isEmpty)
     }
 }
 
