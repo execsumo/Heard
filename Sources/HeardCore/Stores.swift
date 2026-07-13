@@ -38,6 +38,10 @@ public enum AppPaths {
     public static var namingCandidatesFile: URL {
         FileManager.default.heardAppSupportDirectory.appendingPathComponent("naming_candidates.json")
     }
+
+    public static var transcriptsFile: URL {
+        FileManager.default.heardAppSupportDirectory.appendingPathComponent("transcripts.json")
+    }
 }
 
 public enum Formatting {

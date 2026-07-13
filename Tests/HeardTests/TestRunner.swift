@@ -2725,6 +2725,194 @@ func runCustomVocabularyThresholdTests() {
     }
 }
 
+// MARK: - TranscriptStore Tests
+
+private func makeRecord(
+    id: UUID = UUID(),
+    title: String = "Meeting",
+    start: Date = Date(timeIntervalSince1970: 1_000_000),
+    durationSeconds: TimeInterval = 600,
+    path: URL = URL(fileURLWithPath: "/tmp/heard-test/meeting.md"),
+    rosterNames: [String] = [],
+    notesCount: Int = 0,
+    hasUnnamedSpeakers: Bool = false
+) -> TranscriptRecord {
+    TranscriptRecord(
+        id: id,
+        title: title,
+        start: start,
+        end: start.addingTimeInterval(durationSeconds),
+        duration: durationSeconds,
+        transcriptPath: path,
+        rosterNames: rosterNames,
+        notesCount: notesCount,
+        hasUnnamedSpeakers: hasUnnamedSpeakers
+    )
+}
+
+@MainActor func runTranscriptStoreTests() {
+    print("\n📚 TranscriptStore Tests")
+
+    func withTempStore(_ body: (TranscriptStore, URL) throws -> Void) {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        let url = tmpDir.appendingPathComponent("transcripts.json")
+        do { try body(TranscriptStore(url: url), url) } catch {
+            failedTests.append(("withTempStore", "\(error)"))
+        }
+    }
+
+    test("TranscriptStore upsert persists and reloads") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        let url = tmpDir.appendingPathComponent("transcripts.json")
+
+        let store = TranscriptStore(url: url)
+        store.upsert(makeRecord(title: "Q1 Planning"))
+        try expectEqual(store.records.count, 1)
+
+        let reloaded = TranscriptStore(url: url)
+        try expectEqual(reloaded.records.count, 1)
+        try expectEqual(reloaded.records.first?.title, "Q1 Planning")
+    }
+
+    test("TranscriptStore upsert is idempotent on id (updates, no duplicate)") {
+        withTempStore { store, _ in
+            let id = UUID()
+            store.upsert(makeRecord(id: id, title: "Draft"))
+            store.upsert(makeRecord(id: id, title: "Final"))
+            try expectEqual(store.records.count, 1)
+            try expectEqual(store.records.first?.title, "Final")
+        }
+    }
+
+    test("TranscriptStore rename updates the record") {
+        withTempStore { store, _ in
+            let id = UUID()
+            store.upsert(makeRecord(id: id, title: "Untitled"))
+            store.rename(id: id, to: "Sprint Review")
+            try expectEqual(store.records.first?.title, "Sprint Review")
+        }
+    }
+
+    test("TranscriptStore remove drops only the record") {
+        withTempStore { store, _ in
+            let id = UUID()
+            store.upsert(makeRecord(id: id))
+            store.upsert(makeRecord())
+            store.remove(id: id)
+            try expectEqual(store.records.count, 1)
+            try expect(!store.records.contains { $0.id == id })
+        }
+    }
+
+    test("TranscriptStore reconcile flags missing files without deleting") {
+        withTempStore { store, _ in
+            let present = URL(fileURLWithPath: "/tmp/heard-test/here.md")
+            let gone = URL(fileURLWithPath: "/tmp/heard-test/gone.md")
+            store.upsert(makeRecord(title: "Here", path: present))
+            store.upsert(makeRecord(title: "Gone", path: gone))
+
+            let changed = store.reconcile { $0 == present }
+            try expectEqual(changed.count, 1)
+            try expectEqual(store.records.count, 2) // nothing deleted
+            let goneRecord = try unwrap(store.records.first { $0.transcriptPath == gone })
+            try expect(goneRecord.fileMissing)
+            let hereRecord = try unwrap(store.records.first { $0.transcriptPath == present })
+            try expect(!hereRecord.fileMissing)
+        }
+    }
+
+    test("TranscriptStore reconcile is idempotent when nothing changed") {
+        withTempStore { store, _ in
+            store.upsert(makeRecord(path: URL(fileURLWithPath: "/tmp/heard-test/x.md")))
+            _ = store.reconcile { _ in true }       // first pass: present, no change
+            let changed = store.reconcile { _ in true } // second pass: still present
+            try expect(changed.isEmpty)
+        }
+    }
+
+    test("TranscriptStore reconcile clears the flag when a file reappears") {
+        withTempStore { store, _ in
+            let path = URL(fileURLWithPath: "/tmp/heard-test/y.md")
+            store.upsert(makeRecord(path: path))
+            _ = store.reconcile { _ in false }      // mark missing
+            try expect(store.records.first?.fileMissing == true)
+            let changed = store.reconcile { _ in true } // reappeared
+            try expectEqual(changed.count, 1)
+            try expect(store.records.first?.fileMissing == false)
+        }
+    }
+
+    test("TranscriptStore quarantines a corrupt file and starts fresh") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        let url = tmpDir.appendingPathComponent("transcripts.json")
+        try Data("{ not valid json".utf8).write(to: url)
+
+        let store = TranscriptStore(url: url)
+        try expect(store.records.isEmpty)
+        try expect(FileManager.default.fileExists(atPath: url.appendingPathExtension("corrupt").path))
+    }
+
+    test("TranscriptRecord(completedJob:) maps fields and rejects unfinished jobs") {
+        let start = Date(timeIntervalSince1970: 2_000_000)
+        let end = start.addingTimeInterval(1800)
+        let path = URL(fileURLWithPath: "/tmp/heard-test/done.md")
+        let id = UUID()
+        let finished = PipelineJob(
+            id: id, meetingTitle: "Standup", startTime: start, endTime: end,
+            appAudioPath: URL(fileURLWithPath: "/tmp/a.wav"),
+            micAudioPath: URL(fileURLWithPath: "/tmp/m.wav"),
+            transcriptPath: path, stage: .complete, stageStartTime: nil,
+            error: nil, retryCount: 0, rosterNames: ["Alice", "Bob"],
+            notes: [MeetingNote(offsetSeconds: 5, text: "todo")]
+        )
+        let record = try unwrap(TranscriptRecord(completedJob: finished, hasUnnamedSpeakers: true))
+        try expectEqual(record.id, id)
+        try expectEqual(record.title, "Standup")
+        try expectEqual(record.transcriptPath, path)
+        try expectEqual(record.rosterNames, ["Alice", "Bob"])
+        try expectEqual(record.notesCount, 1)
+        try expect(record.hasUnnamedSpeakers)
+        try expectClose(record.duration, 1800)
+
+        let unfinished = PipelineJob(
+            id: UUID(), meetingTitle: "Mid", startTime: start, endTime: end,
+            appAudioPath: URL(fileURLWithPath: "/tmp/a.wav"),
+            micAudioPath: URL(fileURLWithPath: "/tmp/m.wav"),
+            transcriptPath: nil, stage: .transcribing, stageStartTime: nil,
+            error: nil, retryCount: 0
+        )
+        try expect(TranscriptRecord(completedJob: unfinished, hasUnnamedSpeakers: false) == nil)
+    }
+
+    test("TranscriptLibrary.meetings sorts newest-first") {
+        let old = makeRecord(title: "Old", start: Date(timeIntervalSince1970: 1_000))
+        let mid = makeRecord(title: "Mid", start: Date(timeIntervalSince1970: 2_000))
+        let new = makeRecord(title: "New", start: Date(timeIntervalSince1970: 3_000))
+        let result = TranscriptLibrary.meetings(from: [old, new, mid])
+        try expectEqual(result.map(\.title), ["New", "Mid", "Old"])
+    }
+
+    test("TranscriptLibrary.meetings filters by title and roster, case-insensitively") {
+        let a = makeRecord(title: "Q1 Planning", start: Date(timeIntervalSince1970: 3_000), rosterNames: ["Alice"])
+        let b = makeRecord(title: "Standup", start: Date(timeIntervalSince1970: 2_000), rosterNames: ["Bob", "Carol"])
+        let all = [a, b]
+
+        try expectEqual(TranscriptLibrary.meetings(from: all, search: "plan").map(\.title), ["Q1 Planning"])
+        try expectEqual(TranscriptLibrary.meetings(from: all, search: "CAROL").map(\.title), ["Standup"])
+        try expectEqual(TranscriptLibrary.meetings(from: all, search: "   ").count, 2) // blank = all
+        try expect(TranscriptLibrary.meetings(from: all, search: "zzz").isEmpty)
+    }
+}
+
 @main
 struct TestRunner {
     @MainActor static func main() async {
@@ -2737,6 +2925,7 @@ struct TestRunner {
         runAudioClipExtractorTests()
         runTranscriptWriterTests()
         runStoreTests()
+        runTranscriptStoreTests()
         runPipelineResumeTests()
         runMeetingDetectionTests()
         runTeamsIdentificationTests()
