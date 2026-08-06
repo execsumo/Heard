@@ -464,7 +464,14 @@ public final class NamingCandidateStore {
             kept.clipEmbeddings = pairs.compactMap { index, _ in
                 index < candidate.clipEmbeddings.count ? candidate.clipEmbeddings[index] : nil
             }
-            return kept.audioClipURLs.isEmpty ? nil : kept
+            if kept.audioClipURLs.isEmpty {
+                DebugFileLog.log("NamingCandidateStore.load() dropping candidate '\(candidate.temporaryName)' — all \(candidate.audioClipURLs.count) clip file(s) missing on disk")
+                return nil
+            }
+            if kept.audioClipURLs.count < candidate.audioClipURLs.count {
+                DebugFileLog.log("NamingCandidateStore.load() kept candidate '\(candidate.temporaryName)' but \(candidate.audioClipURLs.count - kept.audioClipURLs.count) of \(candidate.audioClipURLs.count) clip file(s) were missing")
+            }
+            return kept
         }
     }
 
