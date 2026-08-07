@@ -2599,7 +2599,9 @@ public final class PipelineProcessor: ObservableObject {
             job.error = nil
             queueStore.update(job)
 
-            NSLog("Heard: Pipeline finished → unmatchedSpeakers=\(transcript.unmatchedSpeakers.count), participants=\(transcript.participants.joined(separator: ", "))")
+            let finishedMsg = "Pipeline finished → unmatchedSpeakers=\(transcript.unmatchedSpeakers.count), participants=\(transcript.participants.joined(separator: ", "))"
+            NSLog("Heard: \(finishedMsg)")
+            DebugFileLog.log(finishedMsg)
             if !transcript.unmatchedSpeakers.isEmpty {
                 // Extract audio clips for each unmatched speaker.
                 // Pass VAD speech segments so silence gaps within each clip are skipped,
@@ -2626,7 +2628,9 @@ public final class PipelineProcessor: ObservableObject {
                 // speakers here; their transcript keeps the "Speaker N" label.
                 let audible = clips.filter { !$0.clips.isEmpty }
                 for silent in clips where silent.clips.isEmpty {
-                    NSLog("Heard: Skipping naming candidate '\(silent.speaker.temporaryName)' — no playable clip could be extracted")
+                    let skipMsg = "Skipping naming candidate '\(silent.speaker.temporaryName)' — no playable clip could be extracted (speakingTime=\(String(format: "%.1f", silent.speaker.totalSpeakingTime))s, words=\(silent.speaker.totalWordCount))"
+                    NSLog("Heard: \(skipMsg)")
+                    DebugFileLog.log(skipMsg)
                 }
 
                 // Build candidates with audio clips, embeddings, and roster suggestions.
@@ -2652,7 +2656,9 @@ public final class PipelineProcessor: ObservableObject {
                     )
                 }
                 if !candidates.isEmpty {
-                    NSLog("Heard: Triggering naming prompt for \(candidates.count) candidate(s)")
+                    let triggerMsg = "Triggering naming prompt for \(candidates.count) candidate(s)"
+                    NSLog("Heard: \(triggerMsg)")
+                    DebugFileLog.log(triggerMsg)
                     onNamingRequired(candidates)
                 }
             }
@@ -3152,6 +3158,9 @@ public final class PipelineProcessor: ObservableObject {
             }
 
             // Roster-based auto-naming: use Teams participant list to fill in unmatched speakers
+            if job.rosterNames.isEmpty {
+                DebugFileLog.log("Roster empty for this job — Teams roster read returned no names (AX permission or window state)")
+            }
             if !job.rosterNames.isEmpty {
                 let rosterSet = Set(job.rosterNames)
                 let knownNames = Set(matches.filter { !$0.isNewSpeaker }.map(\.assignedName))
@@ -3165,8 +3174,13 @@ public final class PipelineProcessor: ObservableObject {
                     let speakerID = unmatchedSpeakers[0].detectedSpeakerID
                     let rosterName = unmatchedRosterNames.first!
                     nameMap[speakerID] = rosterName
-                    NSLog("Heard: Auto-assigned roster name '\(rosterName)' to \(speakerID)")
+                    let autoMsg = "Auto-assigned roster name '\(rosterName)' to \(speakerID)"
+                    NSLog("Heard: \(autoMsg)")
+                    DebugFileLog.log(autoMsg)
                 } else {
+                    let rosterMsg = "Roster present (\(job.rosterNames.count) names) but not 1:1 with unmatched speakers (unmatched=\(unmatchedSpeakers.count), unmatchedRoster=\(unmatchedRosterNames.count)) — offering as suggestions instead of auto-assigning"
+                    NSLog("Heard: \(rosterMsg)")
+                    DebugFileLog.log(rosterMsg)
                     // Two or more unknown voices: pairing sorted roster names to diarizer
                     // cluster order would be a coin flip that silently writes wrong
                     // name↔voice pairs into transcripts and poisons the speaker database

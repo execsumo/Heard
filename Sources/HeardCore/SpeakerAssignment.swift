@@ -117,7 +117,9 @@ public enum SpeakerMatcher {
 
             if let match {
                 usedProfileIDs.insert(match.profileID)
-                NSLog("Heard: matchSpeakers → '\(detected.speakerID)' matched profile '\(match.name)' (distance=\(String(format: "%.3f", match.distance)), margin=\(String(format: "%.3f", match.margin)))")
+                let matchMsg = "matchSpeakers → '\(detected.speakerID)' matched profile '\(match.name)' (distance=\(String(format: "%.3f", match.distance)), margin=\(String(format: "%.3f", match.margin)))"
+                NSLog("Heard: \(matchMsg)")
+                DebugFileLog.log(matchMsg)
                 results.append(MatchResult(
                     detectedSpeakerID: detected.speakerID,
                     assignedName: match.name,
@@ -128,7 +130,9 @@ public enum SpeakerMatcher {
             } else {
                 let idSuffix = UUID().uuidString.prefix(6).uppercased()
                 let name = "Speaker_\(idSuffix)"
-                NSLog("Heard: matchSpeakers → '\(detected.speakerID)' has no confident match → '\(name)' (will trigger naming prompt)")
+                let unmatchedMsg = "matchSpeakers → '\(detected.speakerID)' has no confident match → '\(name)' (will trigger naming prompt)"
+                NSLog("Heard: \(unmatchedMsg)")
+                DebugFileLog.log(unmatchedMsg)
                 results.append(MatchResult(
                     detectedSpeakerID: detected.speakerID,
                     assignedName: name,

@@ -139,7 +139,9 @@ public final class AppModel: ObservableObject {
         // Surface candidates deferred from a previous session: badge + menu row
         // come back exactly as they were when the app quit.
         if !pendingCandidates.isEmpty {
-            NSLog("Heard: restored \(pendingCandidates.count) pending naming candidate(s) from disk")
+            let restoredMsg = "restored \(pendingCandidates.count) pending naming candidate(s) from disk: \(pendingCandidates.map(\.temporaryName).joined(separator: ", "))"
+            NSLog("Heard: \(restoredMsg)")
+            DebugFileLog.log(restoredMsg)
             model.namingCandidates = pendingCandidates
             model.phase = .userAction
         }
@@ -209,7 +211,9 @@ public final class AppModel: ObservableObject {
             settingsStore: settingsStore,
             modelCatalog: modelCatalog,
             onNamingRequired: { [weak self] candidates in
-                NSLog("Heard: AppModel.onNamingRequired received \(candidates.count) candidate(s)")
+                let receivedMsg = "AppModel.onNamingRequired received \(candidates.count) candidate(s): \(candidates.map(\.temporaryName).joined(separator: ", "))"
+                NSLog("Heard: \(receivedMsg)")
+                DebugFileLog.log(receivedMsg)
                 // Append, don't replace — naming is user-paced (no auto-open, no
                 // countdown), so a batch from an earlier meeting may still be pending
                 // when the next meeting's pipeline finishes.
