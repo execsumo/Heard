@@ -37,7 +37,10 @@ swift package clean --package-path "$REPO_ROOT"
 
 echo "==> Building $APP_NAME ($BUILD_CONFIG)..."
 if [[ "$BUILD_CONFIG" == "release" ]]; then
-    swift build -c release --package-path "$REPO_ROOT"
+    # --product Heard: a bare `swift build` also builds HeardTests, whose
+    # @testable import HeardCore fails to compile in release mode (testability
+    # isn't enabled), which previously broke every release build silently.
+    swift build -c release --product "$APP_NAME" --package-path "$REPO_ROOT"
     BINARY="$REPO_ROOT/.build/release/$APP_NAME"
 else
     swift build --package-path "$REPO_ROOT"
