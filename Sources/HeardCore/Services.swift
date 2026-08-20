@@ -37,7 +37,15 @@ public enum MeetingApp: String, CaseIterable, Codable, Sendable {
                 "Microsoft Teams (work or school)",
                 "Microsoft Teams classic",
             ]
-        case .zoom, .webex:
+        case .zoom:
+            return [
+                "Zoom Meeting",
+                "Zoom",
+                "Zoom Meetings",
+                "Zoom Workplace",
+                "zoom.us",
+            ]
+        case .webex:
             return []
         }
     }
@@ -223,12 +231,18 @@ public final class MeetingDetector: ObservableObject {
     /// return that `MeetingApp`. Helpers (e.g. `com.microsoft.teams2.helper`) return nil.
     /// Bundle-ID matching is locale-independent; localized-name fallback covers builds with unfamiliar IDs.
     nonisolated public static func meetingAppFor(bundleID: String?, localizedName: String?) -> MeetingApp? {
-        if let bundleID, bundleID.contains(".helper") { return nil }
+        let normalizedBundleID = bundleID?.lowercased() ?? ""
+        let normalizedName = localizedName?.lowercased() ?? ""
+        if normalizedBundleID.contains(".helper") { return nil }
         for app in MeetingApp.allCases {
-            if let bundleID, app.bundleIDs.contains(bundleID) { return app }
+            if app.bundleIDs.contains(where: { $0.lowercased() == normalizedBundleID }) {
+                return app
+            }
         }
         for app in MeetingApp.allCases {
-            if let localizedName, app.processNames.contains(localizedName) { return app }
+            if app.processNames.contains(where: { $0.lowercased() == normalizedName }) {
+                return app
+            }
         }
         return nil
     }
@@ -361,27 +375,47 @@ public final class MeetingDetector: ObservableObject {
     /// older `NoDisplaySleepAssertion`) while a call is active. AssertName containing
     /// "call in progress" / "meeting in progress" is also accepted as a fallback.
     private static func detectMeeting(enabled: Set<MeetingApp>) -> (source: MeetingApp, pid: pid_t)? {
-        guard !enabled.isEmpty else { return nil }
-
-        let runningApps = NSWorkspace.shared.runningApplications
-        let candidates: [(NSRunningApplication, MeetingApp)] = runningApps.compactMap { app in
-            guard let source = meetingAppFor(bundleID: app.bundleIdentifier, localizedName: app.localizedName),
-                  enabled.contains(source)
-            else { return nil }
-            return (app, source)
-        }
-        guard !candidates.isEmpty else { return nil }
-
+        let runningAppsByPID = Dictionary(
+            uniqueKeysWithValues: NSWorkspace.shared.runningApplications.map {
+                ($0.processIdentifier, $0)
+            }
+        )
         var assertionsByPid: Unmanaged<CFDictionary>?
-        guard IOPMCopyAssertionsByProcess(&assertionsByPid) == kIOReturnSuccess,
+        let status = IOPMCopyAssertionsByProcess(&assertionsByPid)
+        guard status == kIOReturnSuccess,
               let dict = assertionsByPid?.takeRetainedValue() as NSDictionary?
         else {
+            DebugFileLog.log("meeting detection poll: assertions unavailable status=\(status) enabled=\(enabled.map(\.rawValue).sorted())")
             return nil
         }
 
-        for (app, source) in candidates {
-            let pid = app.processIdentifier
-            guard let assertions = dict[NSNumber(value: pid)] as? [[String: Any]] else { continue }
+        var diagnostics: [String] = []
+        for (key, value) in dict {
+            guard let pid = (key as? NSNumber)?.int32Value,
+                  let assertions = value as? [[String: Any]]
+            else { continue }
+            let app = runningAppsByPID[pid]
+            let bundleID = app?.bundleIdentifier ?? "<not-running>"
+            let localizedName = app?.localizedName ?? "<unknown>"
+            let directMatch = meetingAppFor(bundleID: app?.bundleIdentifier, localizedName: app?.localizedName)
+            let familyMatch = directMatch == nil
+                ? MeetingApp.allCases.first(where: {
+                    $0.isProcessFamilyMember(bundleID: app?.bundleIdentifier, localizedName: app?.localizedName)
+                })
+                : nil
+            let matched = directMatch ?? familyMatch
+            let assertionTypes = assertions.map { assertion in
+                let type = assertion["AssertionType"] as? String ?? ""
+                let trueType = assertion["AssertionTrueType"] as? String ?? ""
+                let name = assertion["AssertName"] as? String ?? ""
+                return "\(type.isEmpty ? trueType : type):\(name)"
+            }.joined(separator: "|")
+            diagnostics.append(
+                "pid=\(pid) bundleID=\(bundleID) localizedName=\(localizedName) " +
+                "meetingAppFor=\(directMatch?.rawValue ?? "nil") familyMatch=\(familyMatch?.rawValue ?? "nil") " +
+                "assertions=\(assertionTypes)"
+            )
+
             for assertion in assertions {
                 let assertionType = assertion["AssertionType"] as? String ?? ""
                 let assertionTrueType = assertion["AssertionTrueType"] as? String ?? ""
@@ -394,11 +428,18 @@ public final class MeetingDetector: ObservableObject {
                     || assertName.contains("meeting in progress")
                     || assertName.contains("in a meeting")
 
-                if isDisplaySleep || isCallInProgress {
-                    return (source, pid)
+                if (isDisplaySleep || isCallInProgress),
+                   let matched, enabled.contains(matched) {
+                    DebugFileLog.log(
+                        "meeting detection match: pid=\(pid) source=\(matched.rawValue) " +
+                        "meetingAppFor=\(directMatch?.rawValue ?? "nil") familyMatch=\(familyMatch?.rawValue ?? "nil")"
+                    )
+                    DebugFileLog.log("meeting detection poll: assertionsSeen=[\(diagnostics.joined(separator: " ; "))]")
+                    return (matched, pid)
                 }
             }
         }
+        DebugFileLog.log("meeting detection poll: assertionsSeen=[\(diagnostics.joined(separator: " ; "))]")
         return nil
     }
 
@@ -1144,9 +1185,13 @@ public final class RecordingManager: ObservableObject {
             )
             if err == noErr && objID != 0 {
                 result.append(objID)
+                let processName = meetingApps.first(where: { $0.processIdentifier == pid })?.localizedName ?? "?"
                 NSLog("Heard: Tapping %@ process pid=%d objectID=%u (%@)",
-                      source.displayName, pid, objID,
-                      meetingApps.first(where: { $0.processIdentifier == pid })?.localizedName ?? "?")
+                      source.displayName, pid, objID, processName)
+                DebugFileLog.log(
+                    "app audio tap process: source=\(source.rawValue) pid=\(pid) " +
+                    "objectID=\(objID) localizedName=\(processName)"
+                )
             }
         }
         return result
@@ -1204,11 +1249,21 @@ public final class RecordingManager: ObservableObject {
             if ctx.nonZeroFrames > 0 {
                 NSLog("Heard: Self-test PASSED at +%.1fs (%d non-zero of %d frames, peak=%.4f)",
                       elapsed, ctx.nonZeroFrames, ctx.totalFrames, ctx.peakAmplitude)
+                DebugFileLog.log(
+                    "app audio self-test: result=passed elapsedSeconds=\(String(format: "%.1f", elapsed)) " +
+                    "nonZeroSamples=\(ctx.nonZeroFrames) totalFrames=\(ctx.totalFrames) " +
+                    "peak=\(String(format: "%.4f", ctx.peakAmplitude))"
+                )
                 self?.onAppAudioCaptureConfirmed?()
             } else {
                 let reason = ctx.renderCycles == 0
                     ? "no render callbacks fired"
                     : "callbacks firing (cycles=\(ctx.renderCycles), frames=\(ctx.totalFrames)) but all-zero samples"
+                DebugFileLog.log(
+                    "app audio self-test: result=failed elapsedSeconds=\(String(format: "%.1f", elapsed)) " +
+                    "nonZeroSamples=0 totalFrames=\(ctx.totalFrames) renderCycles=\(ctx.renderCycles) " +
+                    "rebuild=\(allowRebuild) reason=\(reason)"
+                )
                 if allowRebuild {
                     NSLog("Heard: Self-test FAILED at +%.1fs — %@. Rebuilding tap with fresh helper enumeration (one attempt).",
                           elapsed, reason)
