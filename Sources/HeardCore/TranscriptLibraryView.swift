@@ -27,7 +27,10 @@ public struct TranscriptLibraryView: View {
         } else {
             return library.records.filter {
                 $0.title.lowercased().contains(text) ||
-                $0.participants.contains(where: { $0.lowercased().contains(text) })
+                TranscriptLibrary.participantsExcludingCurrentUser(
+                    $0.participants,
+                    userName: model.settingsStore.settings.userName
+                ).contains(where: { $0.lowercased().contains(text) })
             }
         }
     }
@@ -165,7 +168,11 @@ public struct TranscriptLibraryView: View {
             }
             .width(min: 60, ideal: 70, max: 90)
             TableColumn("Participants", value: \.sortableParticipants) { record in
-                Text(record.sortableParticipants)
+                let participants = TranscriptLibrary.participantsExcludingCurrentUser(
+                    record.participants,
+                    userName: model.settingsStore.settings.userName
+                )
+                Text(participants.joined(separator: ", "))
                     .lineLimit(1)
                     .truncationMode(.tail)
             }

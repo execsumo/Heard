@@ -121,4 +121,20 @@ func runTranscriptLibraryTests() {
         try expectEqual(results[0].url.lastPathComponent, "2026-07-11_Meet B.md")
         try expectEqual(results[1].url.lastPathComponent, "2026-07-11_Meet A.md")
     }
+
+    test("Meetings tab omits the current user from participants") {
+        let visible = TranscriptLibrary.participantsExcludingCurrentUser(
+            ["Alice", " Jane ", "Me", "jane", "Bob"],
+            userName: "Jane"
+        )
+        try expectEqual(visible, ["Alice", "Bob"])
+    }
+
+    test("Meetings tab omits the legacy Me label when no name is configured") {
+        let visible = TranscriptLibrary.participantsExcludingCurrentUser(
+            ["Me", "Alice"],
+            userName: ""
+        )
+        try expectEqual(visible, ["Alice"])
+    }
 }
