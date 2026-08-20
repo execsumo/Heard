@@ -43,6 +43,24 @@ public final class TranscriptLibrary: ObservableObject {
 
     public init() {}
 
+    /// Returns the participant names that should be shown in the Meetings tab.
+    /// The local speaker is always present in a recording, so keep both the
+    /// configured name and the legacy `Me` label out of this summary.
+    nonisolated static func participantsExcludingCurrentUser(
+        _ participants: [String],
+        userName: String
+    ) -> [String] {
+        let namesToHide = Set(["Me", userName].compactMap { name in
+            let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return normalized.isEmpty ? nil : normalized
+        })
+
+        return participants.filter { participant in
+            let normalized = participant.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return !namesToHide.contains(normalized)
+        }
+    }
+
     /// Rescan `directory` and publish the result, sorted newest-first.
     public func refresh(directory: URL) {
         records = Self.scan(directory: directory)
