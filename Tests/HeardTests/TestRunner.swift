@@ -1433,6 +1433,15 @@ func runMeetingAppIdentificationTests() {
             bundleID: "us.zoom.xos", localizedName: "zoom.us"), .zoom)
     }
 
+    test("Identifies Zoom by modern localized process names") {
+        for name in ["Zoom Meeting", "Zoom", "Zoom Meetings", "Zoom Workplace", "zoom.us"] {
+            try expectEqual(MeetingDetector.meetingAppFor(
+                bundleID: nil, localizedName: name), .zoom)
+        }
+        try expectEqual(MeetingDetector.meetingAppFor(
+            bundleID: "US.ZOOM.XOS", localizedName: "zoom.us"), .zoom)
+    }
+
     test("Identifies Webex from bundle ID") {
         try expectEqual(MeetingDetector.meetingAppFor(
             bundleID: "Cisco-Systems.Spark", localizedName: "Webex"), .webex)
