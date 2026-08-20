@@ -411,6 +411,12 @@ extension SettingsView {
 
                     Spacer()
 
+                    if !model.mergeSelection.isEmpty {
+                        Text("\(model.mergeSelection.count) selected")
+                            .font(.system(size: 11))
+                            .foregroundStyle(HeardTheme.Paper.mute)
+                    }
+
                     Button("Merge Selected") { model.mergeSelectedSpeakers() }
                         .disabled(model.mergeSelection.count < 2)
                 }
@@ -423,6 +429,28 @@ extension SettingsView {
             Table(model.filteredSpeakers.sorted(using: tableSortOrder),
                   selection: $model.mergeSelection,
                   sortOrder: $tableSortOrder) {
+                TableColumn("Select") { speaker in
+                    Button {
+                        if model.mergeSelection.contains(speaker.id) {
+                            model.mergeSelection.remove(speaker.id)
+                        } else {
+                            model.mergeSelection.insert(speaker.id)
+                        }
+                    } label: {
+                        Image(systemName: model.mergeSelection.contains(speaker.id)
+                              ? "checkmark.square.fill"
+                              : "square")
+                            .foregroundStyle(model.mergeSelection.contains(speaker.id)
+                                             ? HeardTheme.Paper.accent
+                                             : HeardTheme.Paper.muteSoft)
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
+                    .help("Select this speaker for merging")
+                    .accessibilityLabel("Select \(speaker.name) for merging")
+                    .accessibilityValue(model.mergeSelection.contains(speaker.id) ? "Selected" : "Not selected")
+                }
+                .width(min: 44, ideal: 50, max: 56)
                 TableColumn("Voice") { speaker in
                     SpeakerVoiceCell(speaker: speaker, controller: clipPlayer)
                 }
