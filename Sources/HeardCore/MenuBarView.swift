@@ -129,9 +129,8 @@ public struct MenuBarView: View {
             .padding(.vertical, 4)
 
             // Recent Transcripts — rendered directly (no ScrollView) so the
-            // section expands to show all rows naturally and avoids layout collapse
-            // in MenuBarExtra(.window). Content is strictly bounded by count (prefix 3)
-            // in PipelineQueueStore.recentTranscripts so panel height remains within bounds.
+            // section expands to show all rows naturally, matching the approach
+            // used for action rows above. recentTranscripts is already capped at 3.
             if !queueStore.recentTranscripts.isEmpty {
                 HeardTheme.Paper.borderSoft.frame(height: 0.5)
 
