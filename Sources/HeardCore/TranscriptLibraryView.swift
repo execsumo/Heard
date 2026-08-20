@@ -1,11 +1,21 @@
 import SwiftUI
 import AppKit
 
+private struct TranscriptLibraryRow: Identifiable {
+    let record: TranscriptRecord
+    let visibleParticipants: String
+
+    var id: URL { record.id }
+    var title: String { record.title }
+    var date: Date { record.date }
+    var sortableDuration: TimeInterval { record.duration ?? -1 }
+}
+
 public struct TranscriptLibraryView: View {
     @ObservedObject public var model: AppModel
     @StateObject private var library = TranscriptLibrary()
     @State private var filterText = ""
-    @State private var sortOrder: [KeyPathComparator<TranscriptRecord>] = [
+    @State private var sortOrder: [KeyPathComparator<TranscriptLibraryRow>] = [
         KeyPathComparator(\.date, order: .reverse)
     ]
     @State private var selection: Set<URL> = []
@@ -32,6 +42,19 @@ public struct TranscriptLibraryView: View {
                     userName: model.settingsStore.settings.userName
                 ).contains(where: { $0.lowercased().contains(text) })
             }
+        }
+    }
+
+    private var tableRows: [TranscriptLibraryRow] {
+        filteredRecords.map { record in
+            let participants = TranscriptLibrary.participantsExcludingCurrentUser(
+                record.participants,
+                userName: model.settingsStore.settings.userName
+            )
+            return TranscriptLibraryRow(
+                record: record,
+                visibleParticipants: participants.joined(separator: ", ")
+            )
         }
     }
 
@@ -135,17 +158,17 @@ public struct TranscriptLibraryView: View {
     }
 
     var table: some View {
-        Table(filteredRecords.sorted(using: sortOrder),
+        Table(tableRows.sorted(using: sortOrder),
               selection: $selection,
               sortOrder: $sortOrder) {
-            TableColumn("Title", value: \.title) { record in
+            TableColumn("Title", value: \.title) { row in
                 HStack(spacing: 8) {
-                    Text(record.title)
+                    Text(row.title)
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer()
                     Button("Open") {
-                        NSWorkspace.shared.open(record.url)
+                        NSWorkspace.shared.open(row.record.url)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(HeardTheme.Paper.accent)
@@ -155,24 +178,20 @@ public struct TranscriptLibraryView: View {
                     .background(HeardTheme.Paper.accentSoft, in: RoundedRectangle(cornerRadius: 4))
                 }
             }
-            TableColumn("Date", value: \.date) { record in
-                Text(record.date.formatted(date: .abbreviated, time: .shortened))
+            TableColumn("Date", value: \.date) { row in
+                Text(row.date.formatted(date: .abbreviated, time: .shortened))
             }
             .width(min: 100, ideal: 120, max: 150)
-            TableColumn("Duration", value: \.sortableDuration) { record in
-                if let duration = record.duration {
+            TableColumn("Duration", value: \.sortableDuration) { row in
+                if let duration = row.record.duration {
                     Text(SettingsView.durationText(duration)).monospacedDigit()
                 } else {
                     Text("—")
                 }
             }
             .width(min: 60, ideal: 70, max: 90)
-            TableColumn("Participants", value: \.sortableParticipants) { record in
-                let participants = TranscriptLibrary.participantsExcludingCurrentUser(
-                    record.participants,
-                    userName: model.settingsStore.settings.userName
-                )
-                Text(participants.joined(separator: ", "))
+            TableColumn("Participants", value: \.visibleParticipants) { row in
+                Text(row.visibleParticipants)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -202,9 +221,5 @@ public struct TranscriptLibraryView: View {
 extension TranscriptRecord {
     var sortableDuration: TimeInterval {
         duration ?? -1
-    }
-    
-    var sortableParticipants: String {
-        participants.joined(separator: ", ")
     }
 }
