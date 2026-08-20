@@ -9,9 +9,10 @@ To preserve the focus, performance, and simplicity of Heard as a lean, native, s
 These represent the remaining areas of focus to clean up and stabilize:
 
 ### Active Tech Debt & Known Issues
-- **Menu bar dropdown height clipping.** The menu bar dropdown uses `.window` style and has a fixed max height. The jobs list can clip when many jobs accumulate.
+None currently.
 
 ### Completed Technical Debt & Polish
+- ~~**Menu bar dropdown height clipping.**~~ Done — verified Recent Transcripts section layout and bounded job count (`prefix(3)`) rendered in a direct `VStack` (avoiding `ScrollView` layout collapse in `MenuBarExtra(.window)`), ensuring panel height stays strictly within macOS platform bounds and bottom actions (Settings, Quit) remain fully accessible.
 - ~~**`Views.swift` size.**~~ Done — the ~1.9 kLOC single file was split by view area into `DesignSystem.swift` (Paper tokens + `SettingsCard`/`StatusDot`/layout primitives), `MenuBarView.swift` (dropdown UI + menu-bar icon), `SpeakerNamingView.swift`, `SettingsView.swift` (window shell + sidebar nav), `SettingsTabs.swift` (General/Recording/Dictation/Speakers/Advanced/About tab bodies), and `SettingsComponents.swift` (reusable rows like `MicrophonePickerRow`/`HotkeyRecorderView`). Pure move — no logic changes; build clean and all tests green.
 - ~~**Silent corruption reset in JSON stores.**~~ Done — an existing-but-undecodable `queue.json`/`speakers.json` is quarantined to `<name>.corrupt` (logged) before resetting, instead of being silently discarded.
 - ~~**Persist amplification in `SpeakerStore`.**~~ Done — per-meeting stat updates and retention archiving now rewrite the JSON once per operation, not once per profile. (`SettingsStore.persist()` still rewrites all keys per change — left alone deliberately: UserDefaults writes are in-memory/coalesced and the JSON encodes are tiny.)

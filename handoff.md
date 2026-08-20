@@ -310,13 +310,11 @@ See [`ROADMAP.md`](./ROADMAP.md) for the full list of planned improvements, orga
 - ✅ DMG packaging — `scripts/dmg.sh` (build, sign, notarize, staple, package)
 - ✅ GitHub Release — `github.com/execsumo/Heard/releases/tag/v0.1.0`
 - ✅ Homebrew Cask — `brew tap execsumo/tap && brew install --cask heard`
-- ✅ CI pipeline — `.github/workflows/ci.yml` builds + tests on all pushes; on tag push, builds a release bundle, zips with `ditto`, and uploads to GitHub Releases via `softprops/action-gh-release`. Notarization is stubbed (commented) pending Apple Developer secrets (`APPLE_ID`, `APPLE_APP_PASSWORD`, `APPLE_TEAM_ID`).
+- ✅ CI pipeline — `.github/workflows/ci.yml` builds + tests on all pushes; on tag push, builds a release bundle, zips with `ditto`, and uploads to GitHub Releases via `softprops/action-gh-release`.
 - ✅ Update checker — `UpdateChecker` polls `api.github.com/repos/execsumo/Heard/releases/latest` at startup (rate-limited to once per 24 hours). When a newer version is detected, a banner appears in the menu bar dropdown and in Settings → About with a link to the GitHub release. No new dependencies; no auto-install (user re-runs the DMG or `brew upgrade --cask heard`).
 
 ### 2. Known rough edges
-- Menu bar dropdown uses `.window` style and has a fixed max height — jobs list can clip when many jobs accumulate
-- Dictation does not auto-resume after a meeting ends (auto-pauses on meeting start; user must restart manually)
-- Teams detection only matches localized app names — non-English macOS locales may miss Teams
+None currently.
 
 ## Attempted Approaches for Dictation (Historical)
 
@@ -338,5 +336,4 @@ These approaches were tried and failed, documented here to prevent re-attempting
 - ~~**Custom vocabulary is a no-op**~~: Resolved — dictation uses `SlidingWindowAsrManager.configureVocabularyBoosting`; batch transcription uses post-processing CTC rescoring (`CtcKeywordSpotter` + `VocabularyRescorer.ctcTokenRescore` + `ASRResult.withRescoring`) inside `PipelineProcessor.applyVocabularyBoosting`. Both require the CTC 110M model to be downloaded.
 - **TCC permissions on rebuild**: macOS ties Screen Recording / Accessibility grants to the code signature *and* the bundle path. Each rebuild changes the CDHash, and a copy in `build/` is treated as a different app from one in `/Applications/`. Use `./scripts/bundle.sh --install` to anchor to `/Applications/Heard.app`, or `--reset` to also wipe TCC grants first. After granting, **fully Quit Heard from the menu bar and relaunch** — Screen Recording grants do not propagate to a process that was already running.
 - Running via `swift run` in a terminal causes macOS to attribute microphone permission to the terminal app (e.g., Ghostty) rather than Heard. Use `./scripts/bundle.sh && open build/Heard.app` instead.
-- The `.window` style MenuBarExtra panel has a fixed max height; if many jobs accumulate, the bottom of the panel may clip.
 - Simulated meetings produce very short recordings that fail in the pipeline (expected — they exist for UI testing, not audio testing).
