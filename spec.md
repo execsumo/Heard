@@ -18,7 +18,7 @@ Single-process architecture. The menu bar app hosts everything: UI, meeting dete
 
 **Concurrency model:**
 - `@MainActor`: UI state, menu bar, settings, meeting detection polling
-- Background `Task`: All pipeline stages (VAD, transcription, diarization), dictation streaming
+- Background `Task`: All pipeline stages (VAD, transcription, diarization), and dictation batch transcription
 - Pipeline runs sequentially (one job at a time) to avoid ANE contention
 - Progress updates posted back to `@MainActor` via `AsyncStream` or `@Observable` properties
 
@@ -65,11 +65,13 @@ RAM:     ~80 MB          ~80 MB               ~80 MB         ~800 MB peak    ~80
 
 **Power assertion monitoring** is the sole detection method. Poll `IOPMCopyAssertionsByProcess()` every second. Look for `PreventUserIdleDisplaySleep` assertions from any of the supported meeting apps:
 
-- **Microsoft Teams** — bundle IDs `com.microsoft.teams` (classic), `com.microsoft.teams2` (new Teams)
-- **Zoom** — bundle ID `us.zoom.xos`
+- **Microsoft Teams** — bundle IDs `com.microsoft.teams` (classic), `com.microsoft.teams2` (new Teams), with localized-name fallbacks
+- **Zoom** — bundle ID `us.zoom.xos`, with case-insensitive localized-name and process-family fallbacks
 - **Webex** — bundle IDs `Cisco-Systems.Spark`, `com.cisco.webexmeetingsapp`
 
 Each source can be enabled/disabled independently in General settings. All three are on by default. This works without Screen Recording permission and is sandbox-safe.
+
+When Developer Mode is enabled, each detection poll records assertion and app-match diagnostics in `dict-debug.log`.
 
 - **Start recording** when 2 consecutive polls (2 seconds) detect a matching power assertion
 - **Stop recording** when the power assertion disappears. Stop immediately (no grace period). Apply a 5-second cooldown before allowing re-detection.
@@ -170,9 +172,9 @@ Use binary search for O(log n) lookups when remapping. Apply remapping to both t
 
 Transcribe each 16 kHz track separately in batch mode (passing the in-memory `[Float]` arrays for the app track, then the mic track). Transcribing per-track rather than a mix avoids crosstalk artifacts and produces cleaner text per source.
 
-**Model:** Parakeet TDT V2 0.6B (English only). Only one model variant — English is the only supported transcription language. This simplifies the settings UI (no language picker, no model variant picker) and avoids the accuracy penalty of multilingual models on English content.
+**Model:** Parakeet TDT V2/V3 (English speech recognition; V2 is the default). The selected model is used for both meeting transcription and dictation.
 
-**Custom vocabulary:** Pass user-defined terms to the CTC keyword spotter. Terms must be at least 4 characters, maximum 50 terms. Stored in UserDefaults. Applied during transcription to boost recognition of domain-specific jargon, project names, and acronyms.
+**Custom vocabulary:** Pass user-defined terms to the CTC keyword spotter. Terms must be at least 2 characters, maximum 50 terms. Stored in UserDefaults. Applied during transcription to boost recognition of domain-specific jargon, project names, and acronyms.
 
 **Output:** Array of `TimestampedSegment` (start seconds, end seconds, text). Timestamps are in trimmed-audio space — remap via VadSegmentMap before proceeding.
 
@@ -192,7 +194,7 @@ Two-stage pipeline running on the separate tracks:
 - Embeddings are 256-dimensional float vectors
 - Used for cross-meeting speaker identification
 - The mic track typically has one speaker (the local user) — extract their embedding for the speaker database
-- **Echo Cancellation / Speaker Bleed:** If the user isn't wearing a headset, the mic track might pick up speaker bleed from remote participants, causing LS-EEND to detect multiple speakers on the mic track. If this happens, assume the speaker with the longest accumulated duration on the mic track is the local user ("Me").
+- The mic track is diarized to extract a duration-weighted voice centroid for the user's self-profile; the local user remains identified by construction as the mic-track speaker.
 
 **Dual-track merge:**
 - Prefix app-track speaker IDs with `R_` (remote)
@@ -211,15 +213,15 @@ Map transcription segments to speakers:
 **Speaker identification (cross-meeting):**
 - Load the speaker database (`speakers.json`)
 - For each detected speaker's embedding, compute cosine distance to all stored speakers
-- Match threshold: 0.40 (cosine distance)
+- Match threshold: 0.30 (cosine distance; configurable in Advanced)
 - Confidence margin: 0.10 (minimum gap between best and second-best match to accept)
 - If matched: use the stored speaker's name
-- If unmatched: assign a temporary label ("Speaker 1", "Speaker 2", etc.) and store the embedding as a new speaker entry
+- If unmatched: assign a globally unique placeholder label (for example, `Speaker_1AB23C`) and store the embedding as a new speaker entry
 
 **Local user identification:**
 - The user configures their own name once in Settings (General tab → "Your Name")
 - This name is permanently bound to the mic track — no diarization needed to identify the local user
-- The mic track embedding (selected via the longest duration heuristic) is stored in the speaker database under this name and updated silently each meeting
+- A duration-weighted mic-track voice centroid is stored in the speaker database under this name and updated silently each meeting
 
 **Auto-learning behavior (known speakers):**
 - Every meeting updates embeddings for recognized speakers in the database
@@ -231,7 +233,7 @@ Map transcription segments to speakers:
 - When an unmatched speaker is detected, prompt the user after the meeting ends to name them
 - The prompt is a lightweight dialog listing only the new/unmatched speakers (not the ones already identified)
 - Each unmatched speaker shows a **playable audio clip** (~10 seconds of their clearest speech segment, extracted from the diarization results). The user clicks play to hear the voice, then types the name. This is essential — without hearing the voice, the user has no way to identify who "Speaker 2" is.
-- Auto-dismiss after 120 seconds — unmatched speakers are stored with generic names ("Speaker 1") and can be named later in Speaker Management
+- Naming is user-paced: the "Name Speakers" window is opened from the menu bar or Speakers settings banner, and pending candidates remain until the user saves, skips, splits, or discards them. Pending candidates persist across app restarts.
 - The menu bar icon shows a subtle indicator (user action badge) when naming is pending
 
 **Smart inference from Teams roster:**
@@ -329,9 +331,9 @@ A dedicated tab in the Settings window. Features:
 - **Delete:** Remove a speaker profile entirely (with confirmation)
 - **Merge:** Select two speakers and merge them (combines embeddings, keeps the first name). Useful when the same person was detected as two different speakers across meetings.
 - **Search/filter:** Text filter on speaker names
-- **Sort:** By name, last seen, or meeting count
+- **Sort:** By name, meetings, time in meetings, speaking time, or last seen
+- **Voice clips:** Play or stop the saved voice clip for a speaker when one is available
 
-No audio playback or embedding visualization — keep it simple. The data shown is purely metadata.
 
 ---
 
@@ -382,8 +384,8 @@ Standard `MenuBarExtra` dropdown. Contents:
 
 **Actions:**
 - Start/Stop Watching (⌘S)
-- Name Speakers... (⌘N) — only shown when naming is pending
-- Open Protocols Folder
+- Name Speakers... — only shown when naming is pending
+- Transcripts... — opens the Meetings settings tab
 - Settings... (⌘,)
 - Quit (⌘Q)
 
@@ -393,30 +395,32 @@ Standard `MenuBarExtra` dropdown. Contents:
 
 Minimal settings surface. Organized in a standard macOS Settings window with tabs.
 
-### General Tab
-- **Your Name:** Text field for the local user's display name (used for mic track speaker label in transcripts). Default: empty (falls back to "Me").
-- **Launch at Login:** Toggle (registers/unregisters login item via `SMAppService`)
-- **Auto-Watch:** Toggle (start watching for meetings on launch). Default: on.
-- **Output Folder:** Folder picker with "Choose..." and "Reset to Default" buttons. Default: `~/Documents/Heard/`. Persisted as a plain string path (no sandbox bookmarking required).
+The implementation exposes these tabs: **General**, **Recording**, **Dictation**, **Speakers**, **Meetings**, **Advanced**, and **About**. Advanced is hidden until **Show Advanced Settings** is enabled in General.
 
-### Transcription Tab
-- **Custom Vocabulary:** Text field + tag chips. Add terms (min 4 chars, max 50 terms). Removable chips.
-- **Model Status:** Read-only display of model download/load state. "Download Models" button if not yet downloaded.
+### General Tab
+- **Your Name:** Text field for the local user's display name (used for the mic-track speaker label in transcripts).
+- **Launch at Login** and **Show Dock Icon** toggles.
+- **Show Advanced Settings** toggle.
+- Permission status and grant controls for Microphone, System Audio, Screen Recording, and Accessibility.
+
+### Recording Tab
+- Meeting-app detection toggles for Microsoft Teams, Zoom, and Webex, plus Auto-Watch.
+- Microphone picker, transcription model picker, custom vocabulary, meeting-note hotkey, opt-in meeting-chat capture, and output-folder controls.
 
 ### Dictation Tab
-- **Placeholder for v2:** Reserve this UI real estate. Gray out the tab content and show a disabled "Coming in v2" badge to set user expectations naturally.
+- Working dictation controls: enable, HUD, push-to-talk, configurable global hotkey, custom formatting commands, and live status.
 
 ### Speakers Tab
-- Inline speaker management (the full list/rename/delete/merge UI described above)
+- Inline speaker management, including search, sorting, voice-clip playback, rename, merge, and delete.
 
-### Permissions Tab
-- Read-only status for: Screen Recording, Microphone, Accessibility
-- Each with a "Grant..." button linking to the relevant System Settings pane
-- Brief explanation of what each permission enables
+### Meetings Tab
+- On-demand transcript library with search, sorting, external open, Finder reveal, and trash actions.
+
+### Advanced Tab
+- Model download/unload controls, model keep-alive, memory mode, diarization and voice-matching tuning, speaker retention, and Developer Mode.
 
 ### About Tab
-- Version, build date, git commit hash
-- Distribution variant (Homebrew / App Store)
+- Version, update status, and application information.
 
 ---
 
@@ -425,8 +429,9 @@ Minimal settings surface. Organized in a standard macOS Settings window with tab
 | Permission | Required? | Used for |
 |-----------|-----------|----------|
 | Microphone | Yes | Recording local user's voice |
-| Screen Recording | Recommended | Window title–based meeting detection (enhances power assertion detection) |
-| Accessibility | Recommended | Teams roster reading (future dictation text injection) |
+| System Audio | Recommended | Capturing the meeting app's audio track |
+| Screen Recording | Recommended | Capturing the meeting app's audio track |
+| Accessibility | Recommended | Teams title/roster reading and dictation text injection |
 
 The app must function with only Microphone permission. Screen Recording and Accessibility enhance functionality but are not required for core meeting recording and transcription.
 
@@ -442,7 +447,7 @@ One build target, one binary. Without App Store distribution requirements, the a
 
 - `com.apple.security.device.audio-input` (microphone)
 
-**Sandbox Removed:** Building without the App Sandbox significantly simplifies file system access and future Accessibility API hooks (e.g., global hotkeys for v2 Dictation). 
+**Sandbox Removed:** Building without the App Sandbox simplifies file-system access and the Accessibility APIs used for roster reading and dictation text injection.
 
 **No `#if` flags.** No compile-time feature switches. No conditional compilation. One code path.
 
@@ -486,7 +491,7 @@ One build target, one binary. Without App Store distribution requirements, the a
 | `outputDirectory` | String | "~/Documents/Heard/" |
 | `customVocabulary` | [String] | [] |
 
-That's it — 6 settings. Everything else is either fixed (VAD threshold, speaker count, model variant, detection parameters) or managed through dedicated UI (speakers).
+These are the core persisted settings. Additional controls for recording, dictation, permissions, model management, speaker management, and tuning are exposed in the settings tabs above.
 
 ---
 
@@ -500,33 +505,16 @@ That's it — 6 settings. Everything else is either fixed (VAD threshold, speake
 | Audio capture (app) | CATapDescription (AudioToolbox, macOS 15.0+) |
 | Audio capture (mic) | AVAudioEngine |
 | Audio format | WAV (48 kHz native for recording, 16 kHz mono for processing) |
-| Transcription | FluidAudio Parakeet TDT V2 (CoreML/ANE) |
+| Transcription | FluidAudio Parakeet TDT V2/V3 (CoreML/ANE) |
 | VAD | FluidAudio Silero VAD v6 (CoreML) |
 | Diarization | FluidAudio LS-EEND + WeSpeaker (CoreML) |
 | Concurrency | Swift structured concurrency (async/await, Task, AsyncStream) |
 | Persistence | UserDefaults (settings), JSON files (speakers, queue) |
-| Global hotkey | Deferred to v2 |
-| Text injection | Deferred to v2 |
+| Global hotkey | Carbon `RegisterEventHotKey` |
+| Text injection | Clipboard paste via CGEvent Cmd+V (requires Accessibility) |
 | Distribution | GitHub Releases + Homebrew Cask |
 | CI | GitHub Actions |
 | Minimum OS | macOS 15.0 |
-
----
-
-## Roadmap (v2 Future-Proofing)
-
-Dictation has been explicitly deferred to v2 to significantly reduce the scope of v1. However, the v1 codebase MUST be written with the following architectural scaffolding in place. This ensures that adding Dictation in v2 is a trivial streaming mapping exercise rather than a dangerous CoreAudio rewrite.
-
-### 1. The Audio Publisher Pattern
-Instead of having the `MicrophoneManager` read `AVAudioEngine` buffers and write them directly to a `wav` file, configure the microphone tap to broadcast an `AsyncStream<AVAudioPCMBuffer>`.
-- **In v1:** The only subscriber to this stream is the disk writer that saves the `mic.wav` file.
-- **In v2:** The Dictation `StreamingEouAsrManager` will simply subscribe to this exact same stream. This guarantees that live audio processing can be added later without touching a single line of the CoreAudio/AVAudioEngine configuration.
-
-### 2. Model Download Extensibility
-Structure the Model Downloader to distinguish between "Batch Models" (Parakeet TDT standard, LS-EEND) and "Streaming Models" (Parakeet TDT `.ms320` EOU variant). While the streaming models do not need to be downloaded in v1, putting an enum or struct in place for model types makes extending the downloads for Dictation an easy one-line addition.
-
-### 3. UI Real Estate
-In the Settings window, leave a grayed-out **Dictation** tab. This prevents needing to rebuild the interface logic later and clearly communicates to the user that the feature is coming.
 
 ---
 
@@ -543,9 +531,7 @@ In the Settings window, leave a grayed-out **Dictation** tab. This prevents need
 - Configurable VAD threshold
 - Configurable speaker count
 - Live captions during meetings (models stay unloaded during recording)
-- Dictation voice commands ("scratch that", "new paragraph") — deferred to v2
-- Dictation spoken punctuation ("period", "comma") — deferred to v2
+- Arbitrary dictation voice actions such as "scratch that" (dictation does support configurable formatting commands and text normalization)
 - Grace period after meeting ends
 - System-wide audio capture
-- No-mic only recording mode
 - Pre-release update channels
