@@ -9,7 +9,7 @@ set -euo pipefail
 #   --sign ID     Code sign with the given identity (e.g., "Developer ID Application: ...")
 #   --output DIR  Output directory for the staging .app bundle (default: ./build)
 #   --reset       Reset Microphone, Screen Recording, Accessibility, and AudioCapture
-#                 grants for com.execsumo.heard before launch.
+#                 grants and saved window sizes for com.execsumo.heard before launch.
 
 BUNDLE_ID="com.execsumo.heard"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -139,6 +139,9 @@ if [[ "$RESET_TCC" -eq 1 ]]; then
     # after a --reset, because the cached UserDefaults values survive tccutil.
     defaults delete "$BUNDLE_ID" screenCaptureTCCGranted 2>/dev/null || true
     defaults delete "$BUNDLE_ID" audioCaptureTCCGranted 2>/dev/null || true
+    echo "==> Resetting saved window sizes for $BUNDLE_ID..."
+    defaults delete "$BUNDLE_ID" "NSWindow Frame settings" 2>/dev/null || true
+    defaults delete "$BUNDLE_ID" "NSWindow Frame speaker-naming" 2>/dev/null || true
 fi
 
 echo "==> Installing to $INSTALLED..."
