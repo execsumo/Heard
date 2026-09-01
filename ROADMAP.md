@@ -9,7 +9,8 @@ To preserve the focus, performance, and simplicity of Heard as a lean, native, s
 These represent the remaining areas of focus to clean up and stabilize:
 
 ### Active Tech Debt & Known Issues
-None currently.
+- **Terminal design-system conversion is visually unverified (2026-09-01).** The UI was converted from the "Paper" language to the terminal system in `DESIGN.md` (see `plans/terminal-design-conversion.md`) on the `design/terminal-design-system` branch. It compiles and passes the test suite on macOS (CI), but it has never been run or looked at — the work was authored on Linux, where `swift build` cannot run. `handoff.md` carries the visual checklist. Don't merge before that passes.
+- **Light-mode palette is derived, not specified.** `DESIGN.md` ships a dark-only palette. The light halves of `HeardTheme.Terminal` were invented to keep the System/Light/Dark preference working, and have not been contrast-checked against WCAG or eyeballed. Amber-on-white is the pair most likely to need adjustment.
 
 ### Completed Technical Debt & Polish
 - ~~**Menu bar dropdown height clipping.**~~ Obsolete — `PipelineQueueStore.recentTranscripts` bounds the list at 3 items (`prefix(3)`) by construction, so job accumulation cannot occur in the UI. Total panel height (~360 pt) fits comfortably within macOS `MenuBarExtra(.window)` max height bounds without clipping bottom actions (Settings, Quit).

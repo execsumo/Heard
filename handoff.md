@@ -2,6 +2,12 @@
 
 ## Current Status
 
+> ⚠️ **The terminal design-system conversion (2026-09-01) is on
+> `design/terminal-design-system`, not merged.** It compiles and passes tests on macOS
+> (verified in CI), but **nobody has looked at it** — no screenshot, no run. See
+> [Design System Conversion](#design-system-conversion-2026-09-01) for the visual
+> checklist that still has to pass.
+
 The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15.0+. Core infrastructure is complete — meeting detection, dual-track audio capture, on-device transcription (Parakeet TDT V2/V3), VAD (Silero), speaker diarization (LS-EEND + WeSpeaker), and speaker assignment are all functional via the FluidAudio framework. An `.app` bundle is available via `./scripts/bundle.sh`.
 
 **v0.1.0 is released** — notarized DMG published to [GitHub Releases](https://github.com/execsumo/Heard/releases/tag/v0.1.0) and installable via `brew tap execsumo/tap && brew install --cask heard`.
@@ -316,7 +322,141 @@ See [`ROADMAP.md`](./ROADMAP.md) for the current technical-debt status, complete
 - ✅ Update checker — `UpdateChecker` polls `api.github.com/repos/execsumo/Heard/releases/latest` at startup (rate-limited to once per 24 hours). When a newer version is detected, a banner appears in the menu bar dropdown and in Settings → About with a link to the GitHub release. No new dependencies; no auto-install (user re-runs the DMG or `brew upgrade --cask heard`).
 
 ### 2. Known rough edges
-None currently.
+
+**The terminal design-system conversion has not been compiled or seen.** See below.
+
+## Design System Conversion (2026-09-01)
+
+The UI was converted from the old "Paper" language (warm cream, rounded corners, SF Pro,
+soft shadows) to the "Modern Terminal Brutalism" system in [`DESIGN.md`](./DESIGN.md):
+ink-black surfaces, warm amber primary, JetBrains Mono throughout, 0px corner radius,
+1px structural borders instead of shadows. The plan and full palette/type tables are in
+[`plans/terminal-design-conversion.md`](./plans/terminal-design-conversion.md).
+
+**What changed**
+
+- `Sources/HeardCore/DesignSystem.swift` — rewritten. `HeardTheme.Paper` → `HeardTheme.Terminal`
+  (same member names, new values, so most call sites needed no color edits). New `HeardFont`
+  type scale, `HeardTheme.Stroke`, `TerminalButtonStyle`, `TerminalTextFieldStyle`,
+  `CardHeader`, `TerminalRule`. `HeardTheme.Radius.*` all resolve to `0`.
+- All seven view files converted: menu bar dropdown, settings window + sidebar, the settings
+  tabs, shared setting rows, speaker naming, transcript library, dictation HUD, note composer.
+- `Resources/Fonts/` — JetBrains Mono (OFL) Regular/Medium/SemiBold/Bold, ~1.05 MB.
+- `Info.plist` gained `ATSApplicationFontsPath = Fonts`; `scripts/bundle.sh` copies the fonts
+  into `Contents/Resources/Fonts`.
+- Settings → General gained an **Appearance** picker. `AppSettings.appearance` already existed
+  and was already applied in `MTApp.swift`; it simply had no UI control.
+
+**Decisions worth knowing**
+
+- `DESIGN.md` is a dark-only palette. Light-mode values are a *derived* counterpart, not spec,
+  chosen so the existing System/Light/Dark preference keeps working. If light mode looks wrong,
+  the light halves of `HeardTheme.Terminal` are the only thing to change.
+- Fonts resolve via the bundle only. Under `swift run Heard` there is no bundle, so
+  `HeardFont.isAvailable` is false and every role falls back to the system monospaced face.
+  Judge typography from `./scripts/bundle.sh`, not `swift run`.
+- SF Symbol glyphs keep `.font(.system(size:))` — `HeardFont` is a text-role scale, not an
+  icon-sizing scale.
+
+### ⚠️ Verification required
+
+The conversion was written on a Linux machine, where `swift build` fails at FluidAudio's
+`mach/mach.h`, so it was authored blind.
+
+| Check | Result | Catches | Misses |
+|---|---|---|---|
+| `swiftc -parse` on every touched file | clean | syntax, brace/paren balance | all type errors |
+| Every `HeardTheme.Terminal.*` / `HeardFont.*` reference resolves to a definition | clean | typo'd or invented tokens | wrong types, bad arg labels |
+| No residual `RoundedRectangle`/`Capsule`/`cornerRadius`/`.shadow(`/`roundedBorder`/raw `Color.red` etc. | clean | missed conversions | whether it *looks* right |
+| **CI on macOS** — `swift build` + `swift run HeardTests` | **✅ passed** | every type error, every test regression | anything visual |
+
+#### ✅ Gate 1 — compile (passed)
+
+CI builds and tests on macOS for a push to any branch, so the branch push covered this:
+`swift build` clean, full test suite green, no new warnings from the converted files. None of
+the compile failures anticipated below actually occurred — recorded because they're the fragile
+spots if these components get edited again:
+
+- `TerminalTextFieldStyle`'s `TextFieldStyle` conformance via the underscored
+  `_body(configuration:)` requirement.
+- `CardHeader`'s `trailing: AnyView?`, which relies on `Optional` conditionally conforming to
+  `View`.
+- `SettingsTabs.swift` view-body size vs. the type-checker's time limit.
+
+#### ✅ Gate 2 — look at it (done, 2026-09-01)
+
+```bash
+./scripts/bundle.sh && open build/Heard.app
+```
+
+Use the `.app`, **not** `swift run` — fonts resolve via `ATSApplicationFontsPath`, which only
+exists in the bundle. Under `swift run` `HeardFont.isAvailable` is false and everything falls
+back to system monospaced, so typography can't be judged there.
+
+JetBrains Mono confirmed rendering correctly in the bundle (not falling back to SF Mono).
+Walked live via `seen` screenshots + `System Events` UI scripting (menu bar dropdown idle +
+recording states, Settings → General/Recording/Advanced, Speakers, Meetings). No layout
+clipping found in the menu bar dropdown.
+
+**Verdict: implementation was faithful to the written spec but read flatter and busier than
+`~/projects/seen`'s conversion of the same `DESIGN.md`**, despite both apps sharing the same
+dark-mode hex values token-for-token. Root causes, fixed in `DesignSystem.swift` +
+`SettingsView.swift` (dark-mode only — light mode untouched):
+
+- **Elevation ladder was anchored too bright.** `DESIGN.md`'s own token block puts `background`
+  and `surface-elevated` one hex step apart (`#131316` / `#121217`), which makes the "containers
+  lift above the ground" relationship the spec's prose describes imperceptible. Re-anchored to
+  the prose's near-black ground instead: `bg` dark → `#08080B`, `surface` → `#121217`,
+  `surfaceAlt` → `#1B1B1F`, `surfaceHigh` → `#201F23`, `sidebar` → `#121217` (matches `seen`'s
+  base/elevated/raised/high ladder). Light mode values are unchanged.
+- **No line-height anywhere** — `HeardFont.*` returned bare `Font` with zero leading, so body
+  copy and card rows read cramped. Added `HeardTheme.Leading.{body,caption}` and applied
+  `.lineSpacing(...)` on `CardRow`'s content and `ToggleRow`'s subtitle (propagates to nested
+  `Text` views via the environment, so this didn't require touching every call site).
+- **Padding was tighter than the spec's own increments** — `Spacing.md` was `12` (not on the
+  8/16/24/32/48/64 scale `DESIGN.md` calls for); bumped to `16`. `CardRow`/`CardHeader` padding
+  now derives from `Spacing.md` instead of hardcoded `12`/`7`. `paneScroll`'s outer padding is
+  now a uniform `Spacing.lg` (24) instead of `18`/`14`.
+- **Settings panes had no page title** — every tab read at the same small all-caps
+  `SectionLabel` weight with no hierarchy anchor. `paneScroll(_ title:subtitle:)` now renders a
+  `HeardFont.headlineLG` title (the font role already existed, tagged "pane H1", but was never
+  wired in) above the content; wired into General/Recording/Dictation/Advanced. Speakers and
+  Meetings have their own top-level layout (not `paneScroll`-based, to keep the data table from
+  losing vertical space) — each got a matching inline title instead.
+- **Sidebar selection was a boxed border** — read like a debug focus ring. Replaced with a 2px
+  leading amber rule + `surfaceAlt` fill, full-bleed (no per-row outer margin), matching `seen`'s
+  `sidebarItem`.
+- **The Apple-blue native segmented `Picker` for Appearance was the loudest off-system element**
+  in the whole app — unstyled system-accent blue against an otherwise flat amber/ink palette.
+  Replaced with a new `TerminalSegmented` control (sharp cells, solid amber fill on the selected
+  cell, in `DesignSystem.swift`) — this **supersedes** the old "keep native chrome, out of
+  scope" call below.
+- **`HeardMark` used two gradients** — a real `DESIGN.md` violation ("backgrounds stay flat, no
+  gradients"). Both are now flat single-color fills; the glyph shape is unchanged.
+
+**Left alone, deliberately:** hover states on `TerminalButtonStyle`/menu rows (real polish gap
+vs. `seen`, but invisible in a screenshot-based review — revisit if doing another pass);
+`CardHeader`'s title-inside-the-border pattern vs. `SectionLabel` floating above the box (~25
+call sites in `SettingsTabs.swift`, cosmetic, not attempted this pass); border color values
+(`border`/`borderSoft`) — untouched, not flagged as part of the flatness problem.
+
+- [x] Fonts are JetBrains Mono in the bundle.
+- [x] Menu bar dropdown idle + recording states — no clipping, darker ground reads correctly.
+- [x] Settings sidebar selection — now a left accent rule, not a boxed border.
+- [x] Settings tabs — General, Recording, Advanced (hero card confirmed flat fill) reviewed
+      directly; Dictation/Speakers/Meetings/About share the same primitives but weren't each
+      individually screenshotted after this pass.
+- [ ] Light mode legibility — not reviewed this pass (the elevation/spacing fixes only touched
+      dark values; light mode is exactly as it was at the previous Gate 2 attempt).
+- [ ] Speaker naming window, dictation HUD, meeting note composer — not reviewed this pass.
+- [ ] Note composer text view following appearance switching — still unverified.
+
+#### Known deliberate deviations — don't "fix" these
+
+- SF Symbol glyphs keep `.font(.system(size:))`. `HeardFont` is a text-role scale; symbols
+  aren't text.
+- `HeardTheme.Radius.{inline,card,hero}` still exist but all resolve to `0`. Kept so call sites
+  read intentionally; nothing currently references them.
 
 ## Attempted Approaches for Dictation (Historical)
 

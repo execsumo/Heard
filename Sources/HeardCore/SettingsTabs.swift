@@ -5,17 +5,17 @@ extension SettingsView {
     // MARK: General
 
     var generalSection: some View {
-        paneScroll {
+        paneScroll("General") {
             sectionGroup("Profile") {
                 SettingsCard {
                     CardRow(isLast: true) {
                         HStack {
                             Text("Your Name")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(HeardTheme.Paper.ink)
+                                .font(HeardFont.bodyMedium)
+                                .foregroundStyle(HeardTheme.Terminal.ink)
                             Spacer()
                             TextField("Used as speaker label in transcripts", text: settingsBinding(\.userName))
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(TerminalTextFieldStyle())
                                 .frame(width: 160)
                         }
                     }
@@ -33,12 +33,24 @@ extension SettingsView {
                     )
                     ToggleRow(
                         title: "Show Dock Icon",
-                        isLast: true,
                         isOn: Binding(
                             get: { model.settingsStore.settings.showDockIcon },
                             set: { model.setDockIconVisible($0) }
                         )
                     )
+                    CardRow(isLast: true) {
+                        HStack {
+                            Text("Appearance")
+                                .font(HeardFont.bodyMedium)
+                                .foregroundStyle(HeardTheme.Terminal.ink)
+                            Spacer()
+                            TerminalSegmented(
+                                options: AppAppearance.allCases.map { ($0.displayName, $0) },
+                                selection: settingsBinding(\.appearance)
+                            )
+                            .frame(width: 180)
+                        }
+                    }
                 }
             }
 
@@ -69,7 +81,7 @@ extension SettingsView {
     // MARK: Recording
 
     var recordingSection: some View {
-        paneScroll {
+        paneScroll("Recording") {
             sectionGroup("Meeting Detection") {
                 SettingsCard {
                     ToggleRow(title: "Microsoft Teams", isOn: settingsBinding(\.enableTeamsDetection))
@@ -102,8 +114,8 @@ extension SettingsView {
                     CardRow(isLast: true) {
                         HStack {
                             Text("Language")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(HeardTheme.Paper.ink)
+                                .font(HeardFont.bodyMedium)
+                                .foregroundStyle(HeardTheme.Terminal.ink)
                             Spacer()
                             Picker("", selection: settingsBinding(\.transcriptionModel)) {
                                 ForEach(TranscriptionModel.allCases) { version in
@@ -124,9 +136,10 @@ extension SettingsView {
                     CardRow {
                         HStack(spacing: 8) {
                             TextField("Term or phrase (e.g. AI, flip phone)", text: $model.vocabularyDraft)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(TerminalTextFieldStyle())
                                 .onSubmit { model.addVocabularyTerm() }
                             Button("Add") { model.addVocabularyTerm() }
+                                .buttonStyle(TerminalButtonStyle(.secondary, size: .sm))
                                 .disabled(model.vocabularyDraft.trimmingCharacters(in: .whitespacesAndNewlines).count < 2)
                         }
                     }
@@ -134,27 +147,28 @@ extension SettingsView {
                         CardRow {
                             FlowLayout(model.settingsStore.settings.customVocabulary, id: \.self) { term in
                                 HStack(spacing: 5) {
-                                    Text(term).font(.system(size: 12))
-                                        .foregroundStyle(HeardTheme.Paper.ink)
+                                    Text(term).font(HeardFont.mono(11))
+                                        .foregroundStyle(HeardTheme.Terminal.ink)
                                     Button {
                                         model.removeVocabularyTerm(term)
                                     } label: {
                                         Image(systemName: "xmark.circle.fill")
-                                            .font(.caption)
-                                            .foregroundStyle(HeardTheme.Paper.mute)
+                                            .font(HeardFont.mono(10))
+                                            .foregroundStyle(HeardTheme.Terminal.mute)
                                     }
                                     .buttonStyle(.plain)
                                 }
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
-                                .background(HeardTheme.Paper.surfaceAlt, in: Capsule())
+                                .background(Rectangle().fill(HeardTheme.Terminal.surfaceAlt))
+                                .overlay(Rectangle().stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline))
                             }
                         }
                     }
                     CardRow(isLast: true) {
                         Text("\(model.settingsStore.settings.customVocabulary.count) / 50 entries")
-                            .font(.system(size: 11))
-                            .foregroundStyle(HeardTheme.Paper.mute)
+                            .font(HeardFont.value)
+                            .foregroundStyle(HeardTheme.Terminal.mute)
                     }
                 }
             }
@@ -164,18 +178,18 @@ extension SettingsView {
                     CardRow(isLast: true) {
                         HStack {
                             Text("Meeting Note Hotkey")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(HeardTheme.Paper.ink)
+                                .font(HeardFont.bodyMedium)
+                                .foregroundStyle(HeardTheme.Terminal.ink)
                             Spacer()
                             Text(model.settingsStore.settings.meetingNoteHotkey.displayString)
-                                .font(.system(size: 11, design: .monospaced).weight(.medium))
-                                .foregroundStyle(HeardTheme.Paper.ink)
+                                .font(HeardFont.mono(11, .medium))
+                                .foregroundStyle(HeardTheme.Terminal.ink)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 4)
-                                .background(HeardTheme.Paper.surfaceAlt,
-                                            in: RoundedRectangle(cornerRadius: 5))
+                                .background(Rectangle().fill(HeardTheme.Terminal.surfaceAlt))
+                                .overlay(Rectangle().stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline))
                             Button("Set Hotkey") { hotkeyTarget = .meetingNote }
-                                .controlSize(.small)
+                                .buttonStyle(TerminalButtonStyle(.secondary, size: .sm))
                         }
                     }
                 }
@@ -197,19 +211,19 @@ extension SettingsView {
                     CardRow(isLast: true) {
                         HStack {
                             Text("Save Location")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(HeardTheme.Paper.ink)
+                                .font(HeardFont.bodyMedium)
+                                .foregroundStyle(HeardTheme.Terminal.ink)
                             Spacer()
                             Text(model.settingsStore.settings.outputDirectory)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(HeardTheme.Paper.mute)
+                                .font(HeardFont.value)
+                                .foregroundStyle(HeardTheme.Terminal.mute)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                                 .frame(maxWidth: 180, alignment: .trailing)
                             Button("Choose…") { model.chooseOutputDirectory() }
-                                .controlSize(.small)
+                                .buttonStyle(TerminalButtonStyle(.secondary, size: .sm))
                             Button("Open") { model.openOutputDirectory() }
-                                .controlSize(.small)
+                                .buttonStyle(TerminalButtonStyle(.secondary, size: .sm))
                         }
                     }
                 }
@@ -220,8 +234,8 @@ extension SettingsView {
     // MARK: Dictation
 
     var dictationSection: some View {
-        paneScroll {
-            sectionGroup("Dictation") {
+        paneScroll("Dictation") {
+            sectionGroup("Behavior") {
                 SettingsCard {
                     ToggleRow(
                         title: "Enable Dictation",
@@ -257,18 +271,18 @@ extension SettingsView {
                     CardRow(isLast: true) {
                         HStack {
                             Text("Dictation Hotkey")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(HeardTheme.Paper.ink)
+                                .font(HeardFont.bodyMedium)
+                                .foregroundStyle(HeardTheme.Terminal.ink)
                             Spacer()
                             Text(model.settingsStore.settings.dictationHotkey.displayString)
-                                .font(.system(size: 11, design: .monospaced).weight(.medium))
-                                .foregroundStyle(HeardTheme.Paper.ink)
+                                .font(HeardFont.mono(11, .medium))
+                                .foregroundStyle(HeardTheme.Terminal.ink)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 4)
-                                .background(HeardTheme.Paper.surfaceAlt,
-                                            in: RoundedRectangle(cornerRadius: 5))
+                                .background(Rectangle().fill(HeardTheme.Terminal.surfaceAlt))
+                                .overlay(Rectangle().stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline))
                             Button("Set Hotkey") { hotkeyTarget = .dictation }
-                                .controlSize(.small)
+                                .buttonStyle(TerminalButtonStyle(.secondary, size: .sm))
                                 .disabled(!model.settingsStore.settings.dictationEnabled)
                         }
                     }
@@ -281,28 +295,28 @@ extension SettingsView {
                     if cmds.isEmpty {
                         CardRow {
                             Text("No custom formatting commands.")
-                                .font(.system(size: 12))
-                                .foregroundStyle(HeardTheme.Paper.mute)
+                                .font(HeardFont.body)
+                                .foregroundStyle(HeardTheme.Terminal.mute)
                         }
                     } else {
                         ForEach(cmds) { cmd in
                             CardRow(isLast: false) {
                                 HStack {
                                     Text(cmd.spoken)
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundStyle(HeardTheme.Paper.ink)
+                                        .font(HeardFont.mono(11))
+                                        .foregroundStyle(HeardTheme.Terminal.ink)
                                     Image(systemName: "arrow.right")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(HeardTheme.Paper.mute)
+                                        .font(HeardFont.mono(10))
+                                        .foregroundStyle(HeardTheme.Terminal.mute)
                                     Text(cmd.written.replacingOccurrences(of: "\n", with: "\\n"))
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundStyle(HeardTheme.Paper.mute)
+                                        .font(HeardFont.mono(11))
+                                        .foregroundStyle(HeardTheme.Terminal.mute)
                                     Spacer()
                                     Button {
                                         model.removeFormattingCommand(id: cmd.id)
                                     } label: {
                                         Image(systemName: "xmark.circle.fill")
-                                            .foregroundStyle(HeardTheme.Paper.mute)
+                                            .foregroundStyle(HeardTheme.Terminal.mute)
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -312,15 +326,16 @@ extension SettingsView {
                     CardRow(isLast: true) {
                         HStack(spacing: 8) {
                             TextField("Spoken (e.g. 'new paragraph')", text: $commandSpokenDraft)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(TerminalTextFieldStyle())
                             TextField("Written (e.g. '\\n\\n')", text: $commandWrittenDraft)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(TerminalTextFieldStyle())
                             Button("Add") {
                                 let written = commandWrittenDraft.replacingOccurrences(of: "\\n", with: "\n")
                                 model.addFormattingCommand(spoken: commandSpokenDraft, written: written)
                                 commandSpokenDraft = ""
                                 commandWrittenDraft = ""
                             }
+                            .buttonStyle(TerminalButtonStyle(.secondary, size: .sm))
                             .disabled(
                                 commandSpokenDraft.trimmingCharacters(in: .whitespaces).isEmpty ||
                                 commandWrittenDraft.trimmingCharacters(in: .whitespaces).isEmpty
@@ -335,10 +350,10 @@ extension SettingsView {
                     SettingsCard {
                         CardRow(isLast: true) {
                             HStack(spacing: 8) {
-                                StatusDot(color: HeardTheme.Paper.bad, pulsing: true)
+                                StatusDot(color: HeardTheme.Terminal.bad, pulsing: true)
                                 Text("Dictating…")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(HeardTheme.Paper.ink)
+                                    .font(HeardFont.bodyMedium)
+                                    .foregroundStyle(HeardTheme.Terminal.ink)
                             }
                         }
                     }
@@ -351,10 +366,10 @@ extension SettingsView {
                         CardRow(isLast: true) {
                             HStack(spacing: 8) {
                                 Image(systemName: "exclamationmark.circle.fill")
-                                    .foregroundStyle(HeardTheme.Paper.bad)
+                                    .foregroundStyle(HeardTheme.Terminal.bad)
                                 Text(error)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(HeardTheme.Paper.mute)
+                                    .font(HeardFont.caption)
+                                    .foregroundStyle(HeardTheme.Terminal.mute)
                             }
                         }
                     }
@@ -374,57 +389,63 @@ extension SettingsView {
     var speakersSection: some View {
         VStack(spacing: 0) {
             VStack(spacing: HeardTheme.Spacing.md) {
+                Text("Speakers")
+                    .font(HeardFont.headlineLG)
+                    .foregroundStyle(HeardTheme.Terminal.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                 if !model.namingCandidates.isEmpty {
                     HStack(spacing: 8) {
                         Image(systemName: "person.badge.plus")
-                            .foregroundStyle(HeardTheme.Paper.warn)
-                            .font(.system(size: 12))
+                            .foregroundStyle(HeardTheme.Terminal.warn)
+                            .font(HeardFont.body)
                         Text("\(model.namingCandidates.count) new speaker\(model.namingCandidates.count == 1 ? "" : "s") waiting to be named")
-                            .font(.system(size: 12))
-                            .foregroundStyle(HeardTheme.Paper.warn)
+                            .font(HeardFont.body)
+                            .foregroundStyle(HeardTheme.Terminal.warn)
                         Spacer()
                         Button("Name Speakers…") {
                             openWindow(id: "speaker-naming")
                             NSApp.activate(ignoringOtherApps: true)
                         }
-                        .controlSize(.small)
+                        .buttonStyle(TerminalButtonStyle(.secondary, size: .sm))
                     }
                     .padding(12)
-                    .background(HeardTheme.Paper.warnSoft,
-                                in: RoundedRectangle(cornerRadius: HeardTheme.Radius.inline))
+                    .background(Rectangle().fill(HeardTheme.Terminal.warnSoft))
+                    .overlay(Rectangle().stroke(HeardTheme.Terminal.warn.opacity(0.4), lineWidth: HeardTheme.Stroke.hairline))
                 }
 
                 HStack(spacing: HeardTheme.Spacing.sm) {
                     HStack(spacing: 6) {
                         Image(systemName: "magnifyingglass")
-                            .foregroundStyle(HeardTheme.Paper.mute)
-                            .font(.system(size: 12))
+                            .foregroundStyle(HeardTheme.Terminal.mute)
+                            .font(HeardFont.body)
                         TextField("Search speakers", text: $model.speakerFilter)
                             .textFieldStyle(.plain)
-                            .font(.system(size: 12))
+                            .font(HeardFont.body)
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(HeardTheme.Paper.surfaceAlt,
-                                in: RoundedRectangle(cornerRadius: HeardTheme.Radius.inline))
+                    .background(Rectangle().fill(HeardTheme.Terminal.surfaceAlt))
+                    .overlay(Rectangle().stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline))
                     .frame(width: 160)
 
                     Spacer()
 
                     if !model.mergeSelection.isEmpty {
                         Text("\(model.mergeSelection.count) selected")
-                            .font(.system(size: 11))
-                            .foregroundStyle(HeardTheme.Paper.mute)
+                            .font(HeardFont.caption)
+                            .foregroundStyle(HeardTheme.Terminal.mute)
                     }
 
                     Button("Merge Selected") { model.mergeSelectedSpeakers() }
+                        .buttonStyle(TerminalButtonStyle(.secondary, size: .sm))
                         .disabled(model.mergeSelection.count < 2)
                 }
             }
             .padding(HeardTheme.Spacing.lg)
-            .background(HeardTheme.Paper.bg)
+            .background(HeardTheme.Terminal.bg)
 
-            HeardTheme.Paper.border.frame(height: 0.5)
+            HeardTheme.Terminal.border.frame(height: HeardTheme.Stroke.hairline)
 
             Table(model.filteredSpeakers.sorted(using: tableSortOrder),
                   selection: $model.mergeSelection,
@@ -441,8 +462,8 @@ extension SettingsView {
                               ? "checkmark.square.fill"
                               : "square")
                             .foregroundStyle(model.mergeSelection.contains(speaker.id)
-                                             ? HeardTheme.Paper.accent
-                                             : HeardTheme.Paper.muteSoft)
+                                             ? HeardTheme.Terminal.accent
+                                             : HeardTheme.Terminal.muteSoft)
                     }
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity)
@@ -483,12 +504,12 @@ extension SettingsView {
                 }
             }
 
-            HeardTheme.Paper.border.frame(height: 0.5)
+            HeardTheme.Terminal.border.frame(height: HeardTheme.Stroke.hairline)
 
             HStack(spacing: HeardTheme.Spacing.sm) {
                 Text("Archive inactive speakers after")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(HeardTheme.Paper.ink)
+                    .font(HeardFont.bodyMedium)
+                    .foregroundStyle(HeardTheme.Terminal.ink)
                 Picker("", selection: settingsBinding(\.speakerRetentionDays)) {
                     Text("Never").tag(0)
                     Text("30 days").tag(30)
@@ -501,14 +522,14 @@ extension SettingsView {
                 .fixedSize()
                 Spacer()
                 Text("Unseen profiles are removed on next launch.")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(HeardTheme.Paper.mute)
+                    .font(HeardFont.caption)
+                    .foregroundStyle(HeardTheme.Terminal.mute)
             }
             .padding(.horizontal, HeardTheme.Spacing.lg)
             .padding(.vertical, HeardTheme.Spacing.sm)
-            .background(HeardTheme.Paper.bg)
+            .background(HeardTheme.Terminal.bg)
         }
-        .background(HeardTheme.Paper.bg)
+        .background(HeardTheme.Terminal.bg)
     }
 
     /// Compact duration for the speaker-stats columns: "2h 05m", "14m", "38s".
@@ -522,21 +543,23 @@ extension SettingsView {
     // MARK: Advanced
 
     var advancedSection: some View {
-        paneScroll {
-            // Hero card (dark gradient)
+        paneScroll("Advanced") {
+            // Hero card — flat neutral fill, 1px border (DESIGN.md: backgrounds stay flat).
+            // Not recordingBg: that's the "something needs attention" red, and this card is
+            // routinely showing "all ready" — a status color there reads as an alarm.
             let readyCount = model.modelCatalog.statuses.filter { $0.availability == .ready }.count
             let totalCount = model.modelCatalog.statuses.count
 
             HStack(alignment: .center, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("\(readyCount) of \(totalCount) models ready")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color(hex: "F5EFE4"))
+                        .font(HeardFont.title)
+                        .foregroundStyle(HeardTheme.Terminal.ink)
                     Text(model.downloadManager.allBatchModelsReady
                          ? "Ready to transcribe"
                          : "Some models need downloading")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color(hex: "F5EFE4").opacity(0.65))
+                        .font(HeardFont.caption)
+                        .foregroundStyle(HeardTheme.Terminal.mute)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 6) {
@@ -555,16 +578,9 @@ extension SettingsView {
                 }
             }
             .padding(14)
-            .background(
-                LinearGradient(
-                    colors: [Color(hex: "2E3338"), Color(hex: "1C2024")],
-                    startPoint: .top, endPoint: .bottom
-                )
-            )
-            .clipShape(RoundedRectangle(cornerRadius: HeardTheme.Radius.card))
+            .background(HeardTheme.Terminal.surfaceAlt)
             .overlay(
-                RoundedRectangle(cornerRadius: HeardTheme.Radius.card)
-                    .stroke(Color(hex: "3A3F47"), lineWidth: 0.5)
+                Rectangle().stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline)
             )
 
             sectionGroup("Models on Disk") {
@@ -582,26 +598,26 @@ extension SettingsView {
                     CardRow(isLast: false) {
                         HStack {
                             Text("Keep models loaded for")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(HeardTheme.Paper.ink)
+                                .font(HeardFont.bodyMedium)
+                                .foregroundStyle(HeardTheme.Terminal.ink)
                             Spacer()
                             TextField("Minutes", value: settingsBinding(\.modelKeepAlive), format: .number)
                                 .textFieldStyle(.plain)
-                                .font(.system(size: 12))
+                                .font(HeardFont.value)
                                 .multilineTextAlignment(.trailing)
                                 .frame(width: 40)
                                 .padding(4)
-                                .background(Color.black.opacity(0.05))
-                                .cornerRadius(4)
+                                .background(Rectangle().fill(HeardTheme.Terminal.surfaceAlt))
+                                .overlay(Rectangle().stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline))
                             Text("minutes")
-                                .font(.system(size: 12))
-                                .foregroundStyle(HeardTheme.Paper.mute)
+                                .font(HeardFont.body)
+                                .foregroundStyle(HeardTheme.Terminal.mute)
                         }
                     }
                     CardRow(isLast: true) {
                         Text("Keeping models loaded speeds up back-to-back meetings and dictation, but uses ~800 MB RAM. Set to 0 to unload immediately.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(HeardTheme.Paper.mute)
+                            .font(HeardFont.caption)
+                            .foregroundStyle(HeardTheme.Terminal.mute)
                     }
                 }
             }
@@ -612,32 +628,32 @@ extension SettingsView {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
                                 Text("Speaker separation")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(HeardTheme.Paper.ink)
+                                    .font(HeardFont.bodyMedium)
+                                    .foregroundStyle(HeardTheme.Terminal.ink)
                                 Spacer()
                                 Text(String(format: "%.2f", model.settingsStore.settings.diarizationClusteringSimilarity))
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .foregroundStyle(HeardTheme.Paper.mute)
+                                    .font(HeardFont.value)
+                                    .foregroundStyle(HeardTheme.Terminal.mute)
                             }
                             HStack(spacing: 8) {
                                 Text("Fewer speakers")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(HeardTheme.Paper.mute)
+                                    .font(HeardFont.mono(10))
+                                    .foregroundStyle(HeardTheme.Terminal.mute)
                                 Slider(
                                     value: settingsBinding(\.diarizationClusteringSimilarity),
                                     in: 0.40...0.85,
                                     step: 0.05
                                 )
                                 Text("More speakers")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(HeardTheme.Paper.mute)
+                                    .font(HeardFont.mono(10))
+                                    .foregroundStyle(HeardTheme.Terminal.mute)
                             }
                         }
                     }
                     CardRow(isLast: false) {
                         Text("Cosine-similarity threshold for clustering voice embeddings. Higher values err on the side of splitting one person across two profiles (which you can merge in the Speakers tab); lower values may collapse two voices into one (harder to recover from). Default: 0.65.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(HeardTheme.Paper.mute)
+                            .font(HeardFont.caption)
+                            .foregroundStyle(HeardTheme.Terminal.mute)
                     }
                     CardRow(isLast: true) {
                         HStack {
@@ -646,9 +662,7 @@ extension SettingsView {
                                 model.settingsStore.settings.diarizationClusteringSimilarity =
                                     AppSettings.default.diarizationClusteringSimilarity
                             }
-                            .buttonStyle(.plain)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(HeardTheme.Paper.accent)
+                            .buttonStyle(TerminalButtonStyle(.ghost, size: .sm))
                         }
                     }
                 }
@@ -660,32 +674,32 @@ extension SettingsView {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
                                 Text("Match strictness")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(HeardTheme.Paper.ink)
+                                    .font(HeardFont.bodyMedium)
+                                    .foregroundStyle(HeardTheme.Terminal.ink)
                                 Spacer()
                                 Text(String(format: "%.2f", model.settingsStore.settings.speakerMatchThreshold))
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .foregroundStyle(HeardTheme.Paper.mute)
+                                    .font(HeardFont.value)
+                                    .foregroundStyle(HeardTheme.Terminal.mute)
                             }
                             HStack(spacing: 8) {
                                 Text("Stricter")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(HeardTheme.Paper.mute)
+                                    .font(HeardFont.mono(10))
+                                    .foregroundStyle(HeardTheme.Terminal.mute)
                                 Slider(
                                     value: settingsBinding(\.speakerMatchThreshold),
                                     in: 0.15...0.45,
                                     step: 0.05
                                 )
                                 Text("Looser")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(HeardTheme.Paper.mute)
+                                    .font(HeardFont.mono(10))
+                                    .foregroundStyle(HeardTheme.Terminal.mute)
                             }
                         }
                     }
                     CardRow(isLast: false) {
                         Text("How close a voice must be to a saved profile to be recognized as the same person across meetings. Stricter asks you to name people more often but almost never mislabels; looser recognizes more voices automatically at some risk of matching the wrong profile. Default: 0.30.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(HeardTheme.Paper.mute)
+                            .font(HeardFont.caption)
+                            .foregroundStyle(HeardTheme.Terminal.mute)
                     }
                     CardRow(isLast: true) {
                         HStack {
@@ -694,9 +708,7 @@ extension SettingsView {
                                 model.settingsStore.settings.speakerMatchThreshold =
                                     AppSettings.default.speakerMatchThreshold
                             }
-                            .buttonStyle(.plain)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(HeardTheme.Paper.accent)
+                            .buttonStyle(TerminalButtonStyle(.ghost, size: .sm))
                         }
                     }
                 }
@@ -707,8 +719,8 @@ extension SettingsView {
                     CardRow {
                         HStack {
                             Text("Low Memory Mode")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(HeardTheme.Paper.ink)
+                                .font(HeardFont.bodyMedium)
+                                .foregroundStyle(HeardTheme.Terminal.ink)
                             Spacer()
                             Picker("", selection: settingsBinding(\.memoryMode)) {
                                 ForEach(MemoryMode.allCases) { mode in
@@ -723,8 +735,8 @@ extension SettingsView {
                     }
                     CardRow(isLast: true) {
                         Text(memoryModeSubtitle)
-                            .font(.system(size: 11))
-                            .foregroundStyle(HeardTheme.Paper.mute)
+                            .font(HeardFont.caption)
+                            .foregroundStyle(HeardTheme.Terminal.mute)
                     }
                 }
             }
@@ -751,11 +763,11 @@ extension SettingsView {
                     HeardMark(size: 72)
                     VStack(spacing: 4) {
                         Text("Heard")
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundStyle(HeardTheme.Paper.ink)
+                            .font(HeardFont.headlineLG)
+                            .foregroundStyle(HeardTheme.Terminal.ink)
                         Text("Version \(model.updateChecker.currentVersion)")
-                            .font(.system(size: 11.5, design: .monospaced))
-                            .foregroundStyle(HeardTheme.Paper.mute)
+                            .font(HeardFont.value)
+                            .foregroundStyle(HeardTheme.Terminal.mute)
                     }
                     .padding(.top, 20)
 
@@ -766,11 +778,12 @@ extension SettingsView {
                                 Image(systemName: "arrow.down.circle.fill")
                                 Text("v\(version) is available — click to download")
                             }
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(HeardTheme.Paper.accent)
+                            .font(HeardFont.bodyMedium)
+                            .foregroundStyle(HeardTheme.Terminal.accent)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 7)
-                            .background(HeardTheme.Paper.accentSoft, in: RoundedRectangle(cornerRadius: 8))
+                            .background(Rectangle().fill(HeardTheme.Terminal.accentSoft))
+                            .overlay(Rectangle().stroke(HeardTheme.Terminal.accent.opacity(0.4), lineWidth: HeardTheme.Stroke.hairline))
                         }
                         .buttonStyle(.plain)
                         .padding(.top, 8)
@@ -786,8 +799,8 @@ extension SettingsView {
                                 }
                                 Text(model.updateChecker.isChecking ? "Checking…" : "Check for updates")
                             }
-                            .font(.system(size: 12))
-                            .foregroundStyle(HeardTheme.Paper.mute)
+                            .font(HeardFont.body)
+                            .foregroundStyle(HeardTheme.Terminal.mute)
                         }
                         .buttonStyle(.plain)
                         .disabled(model.updateChecker.isChecking)
@@ -796,8 +809,8 @@ extension SettingsView {
 
                     Text("Automatic meeting detection, dual-track recording,\non-device transcription and speaker diarization.")
                         .multilineTextAlignment(.center)
-                        .foregroundStyle(HeardTheme.Paper.ink2)
-                        .font(.system(size: 12))
+                        .foregroundStyle(HeardTheme.Terminal.ink2)
+                        .font(HeardFont.body)
                         .padding(.top, 12)
 
                     HStack(spacing: HeardTheme.Spacing.sm) {
@@ -810,10 +823,10 @@ extension SettingsView {
                     Spacer().frame(height: 40)
                 }
                 .frame(minWidth: 500, minHeight: 500)
-                .background(HeardTheme.Paper.bg)
+                .background(HeardTheme.Terminal.bg)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(HeardTheme.Paper.bg)
+        .background(HeardTheme.Terminal.bg)
     }
 
 }

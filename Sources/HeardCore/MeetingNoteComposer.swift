@@ -139,12 +139,14 @@ private struct MeetingNoteComposerView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Text(headerTitle)
-                    .font(.headline)
+                    .font(HeardFont.title)
+                    .foregroundStyle(HeardTheme.Terminal.ink)
                 Spacer()
                 if showOffset {
                     Text("[\(offsetSecondsAtOpen.timestampString)]")
-                        .font(.system(.callout, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .font(HeardFont.value)
+                        .monospacedDigit()
+                        .foregroundStyle(HeardTheme.Terminal.mute)
                 }
             }
 
@@ -155,24 +157,26 @@ private struct MeetingNoteComposerView: View {
             )
             .frame(minHeight: 96)
             .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.secondary.opacity(0.3))
+                Rectangle()
+                    .stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline)
             )
 
             HStack(spacing: 8) {
                 Text("↩ to save  ·  ⌘↩ new line  ·  Esc to cancel")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .font(HeardFont.caption)
+                    .foregroundStyle(HeardTheme.Terminal.mute)
                 Spacer()
                 Button("Cancel") { onCancel() }
                     .keyboardShortcut(.cancelAction)
+                    .buttonStyle(TerminalButtonStyle(.ghost))
                 Button("Save Note") { submitIfNotEmpty() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(TerminalButtonStyle(.primary))
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(16)
         .frame(width: 420, height: 200, alignment: .topLeading)
+        .background(HeardTheme.Terminal.bg)
     }
 
     private func submitIfNotEmpty() {
@@ -201,12 +205,14 @@ private struct NoteTextEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let tv = context.coordinator.textView
         tv.isRichText = false
-        tv.font = .systemFont(ofSize: NSFont.systemFontSize)
+        tv.font = NSFont(name: HeardFont.family, size: 12) ?? .monospacedSystemFont(ofSize: 12, weight: .regular)
         tv.isEditable = true
         tv.isSelectable = true
         tv.allowsUndo = true
         tv.drawsBackground = true
-        tv.backgroundColor = .textBackgroundColor
+        tv.backgroundColor = NSColor(HeardTheme.Terminal.surfaceAlt)
+        tv.textColor = NSColor(HeardTheme.Terminal.ink)
+        tv.insertionPointColor = NSColor(HeardTheme.Terminal.accent)
         tv.textContainerInset = NSSize(width: 4, height: 4)
 
         let scroll = NSScrollView()

@@ -93,16 +93,19 @@ private struct DictationHUDView: View {
         HStack(spacing: 10) {
             Image(systemName: "waveform.circle.fill")
                 .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(.red)
+                .foregroundStyle(HeardTheme.Terminal.bad)
                 .symbolEffect(.variableColor.iterative.dimInactiveLayers,
                               options: .repeating)
             Text("Dictating")
-                .font(.system(.callout, design: .rounded).weight(.semibold))
-                .foregroundStyle(.primary)
+                .font(HeardFont.bodyMedium)
+                .foregroundStyle(HeardTheme.Terminal.ink)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
         .frame(width: 160, height: 44)
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(Rectangle().fill(HeardTheme.Terminal.surface))
+        .overlay(
+            Rectangle().stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline)
+        )
     }
 }

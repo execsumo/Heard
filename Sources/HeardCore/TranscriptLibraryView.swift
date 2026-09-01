@@ -61,19 +61,26 @@ public struct TranscriptLibraryView: View {
     public var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: HeardTheme.Spacing.md) {
+                Text("Meetings")
+                    .font(HeardFont.headlineLG)
+                    .foregroundStyle(HeardTheme.Terminal.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                 HStack(spacing: HeardTheme.Spacing.sm) {
                     HStack(spacing: 6) {
                         Image(systemName: "magnifyingglass")
-                            .foregroundStyle(HeardTheme.Paper.mute)
+                            .foregroundStyle(HeardTheme.Terminal.mute)
                             .font(.system(size: 12))
                         TextField("Search transcripts", text: $filterText)
                             .textFieldStyle(.plain)
-                            .font(.system(size: 12))
+                            .font(HeardFont.body)
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(HeardTheme.Paper.surfaceAlt,
-                                in: RoundedRectangle(cornerRadius: HeardTheme.Radius.inline))
+                    .background(Rectangle().fill(HeardTheme.Terminal.surfaceAlt))
+                    .overlay(
+                        Rectangle().stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline)
+                    )
                     .frame(width: 200)
 
                     Spacer()
@@ -85,13 +92,13 @@ public struct TranscriptLibraryView: View {
                             .font(.system(size: 12, weight: .semibold))
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(HeardTheme.Paper.mute)
+                    .foregroundStyle(HeardTheme.Terminal.mute)
                 }
             }
             .padding(HeardTheme.Spacing.lg)
-            .background(HeardTheme.Paper.bg)
+            .background(HeardTheme.Terminal.bg)
 
-            HeardTheme.Paper.border.frame(height: 0.5)
+            HeardTheme.Terminal.border.frame(height: HeardTheme.Stroke.hairline)
 
             if !FileManager.default.fileExists(atPath: outputDirectoryURL.path) {
                 missingFolderState
@@ -101,7 +108,7 @@ public struct TranscriptLibraryView: View {
                 table
             }
         }
-        .background(HeardTheme.Paper.bg)
+        .background(HeardTheme.Terminal.bg)
         .onAppear {
             library.refresh(directory: outputDirectoryURL)
         }
@@ -128,17 +135,17 @@ public struct TranscriptLibraryView: View {
             Spacer()
             Image(systemName: "folder.badge.questionmark")
                 .font(.system(size: 32))
-                .foregroundStyle(HeardTheme.Paper.mute)
+                .foregroundStyle(HeardTheme.Terminal.mute)
             Text("Output folder not found")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(HeardTheme.Paper.ink)
+                .font(HeardFont.title)
+                .foregroundStyle(HeardTheme.Terminal.ink)
             Text("Please choose a valid save location in the Recording tab.")
-                .font(.system(size: 12))
-                .foregroundStyle(HeardTheme.Paper.mute)
+                .font(HeardFont.body)
+                .foregroundStyle(HeardTheme.Terminal.mute)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(HeardTheme.Paper.bg)
+        .background(HeardTheme.Terminal.bg)
     }
 
     var emptyState: some View {
@@ -146,15 +153,15 @@ public struct TranscriptLibraryView: View {
             Spacer()
             Image(systemName: "doc.text")
                 .font(.system(size: 32))
-                .foregroundStyle(HeardTheme.Paper.mute)
+                .foregroundStyle(HeardTheme.Terminal.mute)
             Text("No transcripts yet — they'll appear here after your first recorded meeting")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(HeardTheme.Paper.ink)
+                .font(HeardFont.title)
+                .foregroundStyle(HeardTheme.Terminal.ink)
                 .multilineTextAlignment(.center)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(HeardTheme.Paper.bg)
+        .background(HeardTheme.Terminal.bg)
     }
 
     var table: some View {
@@ -164,34 +171,36 @@ public struct TranscriptLibraryView: View {
             TableColumn("Title", value: \.title) { row in
                 HStack(spacing: 8) {
                     Text(row.title)
+                        .font(HeardFont.bodyMedium)
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer()
                     Button("Open") {
                         NSWorkspace.shared.open(row.record.url)
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(HeardTheme.Paper.accent)
-                    .font(.system(size: 11, weight: .medium))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(HeardTheme.Paper.accentSoft, in: RoundedRectangle(cornerRadius: 4))
+                    .buttonStyle(TerminalButtonStyle(.secondary, size: .sm))
                 }
             }
             TableColumn("Date", value: \.date) { row in
                 Text(row.date.formatted(date: .abbreviated, time: .shortened))
+                    .font(HeardFont.value)
+                    .monospacedDigit()
             }
             .width(min: 100, ideal: 120, max: 150)
             TableColumn("Duration", value: \.sortableDuration) { row in
                 if let duration = row.record.duration {
-                    Text(SettingsView.durationText(duration)).monospacedDigit()
+                    Text(SettingsView.durationText(duration))
+                        .font(HeardFont.value)
+                        .monospacedDigit()
                 } else {
                     Text("—")
+                        .font(HeardFont.value)
                 }
             }
             .width(min: 60, ideal: 70, max: 90)
             TableColumn("Participants", value: \.visibleParticipants) { row in
                 Text(row.visibleParticipants)
+                    .font(HeardFont.body)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }

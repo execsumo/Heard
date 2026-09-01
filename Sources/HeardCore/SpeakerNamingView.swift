@@ -17,28 +17,28 @@ public struct SpeakerNamingView: View {
         VStack(spacing: 0) {
             VStack(spacing: HeardTheme.Spacing.sm) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(HeardTheme.Paper.accentSoft)
+                    Rectangle()
+                        .fill(HeardTheme.Terminal.accentSoft)
                         .frame(width: 44, height: 44)
                     Image(systemName: "person.badge.plus")
                         .font(.system(size: 22))
-                        .foregroundStyle(HeardTheme.Paper.accent)
+                        .foregroundStyle(HeardTheme.Terminal.accent)
                 }
 
                 Text("New Speakers Detected")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(HeardTheme.Paper.ink)
+                    .font(HeardFont.headlineLG)
+                    .foregroundStyle(HeardTheme.Terminal.ink)
 
                 Text("Listen to each voice clip and enter their name. If a candidate's samples are clearly different voices, use Split voices to name each one, or Discard to drop it. Take your time — nothing is saved until you choose. Closing this window keeps the speakers pending; reopen it anytime from the menu bar.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(HeardTheme.Paper.mute)
+                    .font(HeardFont.body)
+                    .foregroundStyle(HeardTheme.Terminal.mute)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 420)
             }
             .padding(.top, HeardTheme.Spacing.lg)
             .padding(.bottom, HeardTheme.Spacing.md)
 
-            HeardTheme.Paper.borderSoft.frame(height: 0.5)
+            HeardTheme.Terminal.borderSoft.frame(height: HeardTheme.Stroke.hairline)
 
             ScrollView {
                 VStack(spacing: HeardTheme.Spacing.sm) {
@@ -48,9 +48,9 @@ public struct SpeakerNamingView: View {
                 }
                 .padding(HeardTheme.Spacing.lg)
             }
-            .background(HeardTheme.Paper.bg)
+            .background(HeardTheme.Terminal.bg)
 
-            HeardTheme.Paper.borderSoft.frame(height: 0.5)
+            HeardTheme.Terminal.borderSoft.frame(height: HeardTheme.Stroke.hairline)
 
             HStack {
                 Button("Skip All") {
@@ -59,7 +59,7 @@ public struct SpeakerNamingView: View {
                     dismissWindow(id: "speaker-naming")
                 }
                 .keyboardShortcut(.cancelAction)
-                .foregroundStyle(HeardTheme.Paper.ink2)
+                .buttonStyle(TerminalButtonStyle(.ghost))
 
                 Spacer()
 
@@ -69,13 +69,13 @@ public struct SpeakerNamingView: View {
                     dismissWindow(id: "speaker-naming")
                 }
                 .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(TerminalButtonStyle(.primary))
             }
             .padding(HeardTheme.Spacing.lg)
-            .background(HeardTheme.Paper.surface)
+            .background(HeardTheme.Terminal.surface)
         }
         .frame(width: 560)
-        .background(HeardTheme.Paper.bg)
+        .background(HeardTheme.Terminal.bg)
         .onDisappear { stopAudio() }
         .onChange(of: model.namingCandidates) { _, candidates in
             if candidates.isEmpty {
@@ -90,9 +90,7 @@ public struct SpeakerNamingView: View {
             clipButtons(for: candidate)
 
             VStack(alignment: .leading, spacing: HeardTheme.Spacing.xs) {
-                Text(candidate.temporaryName)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(HeardTheme.Paper.mute)
+                StatusPill(text: candidate.temporaryName, fg: HeardTheme.Terminal.mute, bg: HeardTheme.Terminal.surfaceAlt)
                 if !candidate.suggestedNames.isEmpty {
                     suggestionChips(for: candidate)
                 }
@@ -100,37 +98,29 @@ public struct SpeakerNamingView: View {
                     candidate.suggestedName ?? "Enter speaker name",
                     text: binding(for: candidate)
                 )
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(TerminalTextFieldStyle())
                 .onSubmit { saveSingle(candidate) }
             }
 
             VStack(spacing: 4) {
                 Button("Save") { saveSingle(candidate) }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                    .buttonStyle(TerminalButtonStyle(.primary, size: .sm))
                     .disabled(draftText(for: candidate).isEmpty)
                 if candidate.audioClipURLs.count >= 2 {
                     Button("Split voices") { splitSingle(candidate) }
-                        .buttonStyle(.plain)
-                        .controlSize(.small)
-                        .font(.system(size: 10))
-                        .foregroundStyle(HeardTheme.Paper.mute)
+                        .buttonStyle(TerminalButtonStyle(.ghost, size: .sm))
                         .help("The samples are different people? Split this candidate into one entry per sample so each voice can be named (or discarded) separately.")
                 }
                 Button("Discard") { discardSingle(candidate) }
-                    .buttonStyle(.plain)
-                    .controlSize(.small)
-                    .font(.system(size: 10))
-                    .foregroundStyle(HeardTheme.Paper.mute)
+                    .buttonStyle(TerminalButtonStyle(.danger, size: .sm))
                     .help("Drop this candidate without saving — keeps the speaker database clean and leaves the transcript labeled Speaker N.")
             }
         }
         .padding(HeardTheme.Spacing.md)
-        .background(HeardTheme.Paper.surface)
-        .clipShape(RoundedRectangle(cornerRadius: HeardTheme.Radius.card))
+        .background(HeardTheme.Terminal.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: HeardTheme.Radius.card)
-                .stroke(HeardTheme.Paper.border, lineWidth: 0.5)
+            Rectangle()
+                .stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline)
         )
         .contextMenu {
             if candidate.audioClipURLs.count >= 2 {
@@ -147,26 +137,21 @@ public struct SpeakerNamingView: View {
     private func suggestionChips(for candidate: NamingCandidate) -> some View {
         HStack(spacing: 4) {
             Text("maybe:")
-                .font(.system(size: 10))
-                .foregroundStyle(HeardTheme.Paper.mute)
+                .font(HeardFont.caption)
+                .foregroundStyle(HeardTheme.Terminal.mute)
             ForEach(candidate.suggestedNames.prefix(3), id: \.self) { name in
                 Button {
                     drafts[candidate.id] = name
                 } label: {
-                    Text(name)
-                        .font(.system(size: 11))
-                        .foregroundStyle(HeardTheme.Paper.warn)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(HeardTheme.Paper.warnSoft, in: Capsule())
+                    StatusPill(text: name, fg: HeardTheme.Terminal.warn, bg: HeardTheme.Terminal.warnSoft)
                 }
                 .buttonStyle(.plain)
                 .help("Fill the name field with \(name)")
             }
             if candidate.suggestedNames.count > 3 {
                 Text("+\(candidate.suggestedNames.count - 3) more")
-                    .font(.system(size: 10))
-                    .foregroundStyle(HeardTheme.Paper.mute)
+                    .font(HeardFont.caption)
+                    .foregroundStyle(HeardTheme.Terminal.mute)
             }
         }
     }
@@ -175,20 +160,20 @@ public struct SpeakerNamingView: View {
     private func clipButtons(for candidate: NamingCandidate) -> some View {
         if candidate.audioClipURLs.isEmpty {
             ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(HeardTheme.Paper.surfaceAlt)
+                Rectangle()
+                    .fill(HeardTheme.Terminal.surfaceAlt)
+                    .overlay(
+                        Rectangle().stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline)
+                    )
                     .frame(width: 38, height: 38)
                 Image(systemName: "play.slash")
                     .font(.system(size: 15))
-                    .foregroundStyle(HeardTheme.Paper.mute)
+                    .foregroundStyle(HeardTheme.Terminal.mute)
             }
             .help("No audio clip available")
         } else {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Samples")
-                    .font(.system(size: 10, weight: .bold))
-                    .kerning(0.5)
-                    .foregroundStyle(HeardTheme.Paper.mute)
+                SectionLabel(text: "Samples")
                 HStack(spacing: 4) {
                     ForEach(Array(candidate.audioClipURLs.enumerated()), id: \.offset) { index, url in
                         clipButton(candidateID: candidate.id, index: index, url: url)
@@ -200,7 +185,7 @@ public struct SpeakerNamingView: View {
 
     private func clipButton(candidateID: UUID, index: Int, url: URL) -> some View {
         let isPlaying = playingCandidateID == candidateID && playingClipIndex == index
-        let tint = isPlaying ? HeardTheme.Paper.bad : HeardTheme.Paper.accent
+        let tint = isPlaying ? HeardTheme.Terminal.bad : HeardTheme.Terminal.accent
         return Button {
             togglePlayback(candidateID: candidateID, index: index, url: url)
         } label: {
@@ -208,13 +193,14 @@ public struct SpeakerNamingView: View {
                 Image(systemName: isPlaying ? "stop.fill" : "play.fill")
                     .font(.system(size: 9, weight: .semibold))
                 Text("\(index + 1)")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(HeardFont.mono(11, .semibold))
                     .monospacedDigit()
             }
-            .foregroundStyle(tint)
+            .foregroundStyle(isPlaying ? HeardTheme.Terminal.bg : tint)
             .padding(.horizontal, 7)
             .padding(.vertical, 5)
-            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 6))
+            .background(Rectangle().fill(isPlaying ? tint : tint.opacity(0.14)))
+            .overlay(Rectangle().stroke(tint, lineWidth: HeardTheme.Stroke.hairline))
         }
         .buttonStyle(.plain)
         .help("Play sample \(index + 1)")
@@ -353,7 +339,7 @@ struct SpeakerVoiceCell: View {
         if clips.isEmpty {
             Image(systemName: "play.slash")
                 .font(.system(size: 11))
-                .foregroundStyle(HeardTheme.Paper.mute)
+                .foregroundStyle(HeardTheme.Terminal.mute)
                 .frame(width: 22, height: 20)
                 .help("No voice sample saved")
         } else {
@@ -367,7 +353,7 @@ struct SpeakerVoiceCell: View {
 
     private func clipButton(index: Int, url: URL) -> some View {
         let isPlaying = controller.playingSpeakerID == speaker.id && controller.playingClipIndex == index
-        let tint = isPlaying ? HeardTheme.Paper.bad : HeardTheme.Paper.accent
+        let tint = isPlaying ? HeardTheme.Terminal.bad : HeardTheme.Terminal.accent
         return Button {
             controller.toggle(speakerID: speaker.id, clipIndex: index, clipURL: url)
         } label: {
@@ -375,13 +361,14 @@ struct SpeakerVoiceCell: View {
                 Image(systemName: isPlaying ? "stop.fill" : "play.fill")
                     .font(.system(size: 8, weight: .semibold))
                 Text("\(index + 1)")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(HeardFont.mono(10, .semibold))
                     .monospacedDigit()
             }
-            .foregroundStyle(tint)
+            .foregroundStyle(isPlaying ? HeardTheme.Terminal.bg : tint)
             .padding(.horizontal, 5)
             .padding(.vertical, 3)
-            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 5))
+            .background(Rectangle().fill(isPlaying ? tint : tint.opacity(0.14)))
+            .overlay(Rectangle().stroke(tint, lineWidth: HeardTheme.Stroke.hairline))
         }
         .buttonStyle(.plain)
         .help("Play sample \(index + 1)")

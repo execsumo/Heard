@@ -62,11 +62,11 @@ enum HotkeyTarget: Identifiable {
                 HeardMark(size: 26)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Heard")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(HeardTheme.Paper.ink)
+                        .font(HeardFont.title)
+                        .foregroundStyle(HeardTheme.Terminal.ink)
                     Text(model.updateChecker.currentVersion)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(HeardTheme.Paper.mute)
+                        .font(HeardFont.value)
+                        .foregroundStyle(HeardTheme.Terminal.mute)
                 }
                 Spacer()
             }
@@ -74,24 +74,23 @@ enum HotkeyTarget: Identifiable {
             .padding(.top, 16)
             .padding(.bottom, 12)
 
-            HeardTheme.Paper.border.frame(height: 0.5)
+            HeardTheme.Terminal.border.frame(height: HeardTheme.Stroke.hairline)
 
-            VStack(spacing: 2) {
+            VStack(spacing: 0) {
                 ForEach(SettingsTab.allCases) { tab in
                     if tab != .advanced || model.settingsStore.settings.showAdvancedSettings {
                         sidebarItem(tab)
                     }
                 }
             }
-            .padding(.horizontal, 6)
-            .padding(.top, 8)
+            .padding(.top, HeardTheme.Spacing.sm)
 
             Spacer()
         }
         .frame(width: 188)
-        .background(HeardTheme.Paper.sidebar)
+        .background(HeardTheme.Terminal.sidebar)
         .overlay(alignment: .trailing) {
-            HeardTheme.Paper.border.frame(width: 0.5)
+            HeardTheme.Terminal.border.frame(width: HeardTheme.Stroke.hairline)
         }
     }
 
@@ -103,30 +102,26 @@ enum HotkeyTarget: Identifiable {
             HStack(spacing: 9) {
                 Image(systemName: tab.icon)
                     .font(.system(size: 13))
-                    .foregroundStyle(isSelected ? HeardTheme.Paper.accent : HeardTheme.Paper.ink2)
+                    .foregroundStyle(isSelected ? HeardTheme.Terminal.accent : HeardTheme.Terminal.ink2)
                     .frame(width: 18, alignment: .center)
                 Text(tab.label)
-                    .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
-                    .foregroundStyle(isSelected ? HeardTheme.Paper.ink : HeardTheme.Paper.ink2)
+                    .font(isSelected ? HeardFont.bodyMedium : HeardFont.body)
+                    .foregroundStyle(isSelected ? HeardTheme.Terminal.ink : HeardTheme.Terminal.ink2)
                 Spacer()
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(HeardTheme.Paper.surface)
-                        .shadow(color: Color(red: 60/255, green: 45/255, blue: 20/255).opacity(0.06),
-                                radius: 1, x: 0, y: 1)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7)
-                                .stroke(HeardTheme.Paper.border, lineWidth: 0.5)
-                        )
-                }
+            .padding(.horizontal, HeardTheme.Spacing.md)
+            .padding(.vertical, HeardTheme.Spacing.sm - 1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isSelected ? HeardTheme.Terminal.surfaceAlt : Color.clear)
+            // Selection is marked with a structural amber rule, not a boxed border.
+            .overlay(alignment: .leading) {
+                HeardTheme.Terminal.accent
+                    .frame(width: HeardTheme.Stroke.emphasis)
+                    .opacity(isSelected ? 1 : 0)
             }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 6)
     }
 
     // MARK: Detail pane
@@ -151,16 +146,34 @@ enum HotkeyTarget: Identifiable {
 extension SettingsView {
     // MARK: Pane helpers
 
-    func paneScroll<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+    func paneScroll<Content: View>(
+        _ title: String? = nil,
+        subtitle: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: HeardTheme.Spacing.md) {
+                if let title {
+                    VStack(alignment: .leading, spacing: HeardTheme.Spacing.xs) {
+                        Text(title)
+                            .font(HeardFont.headlineLG)
+                            .foregroundStyle(HeardTheme.Terminal.ink)
+                        if let subtitle {
+                            Text(subtitle)
+                                .font(HeardFont.caption)
+                                .foregroundStyle(HeardTheme.Terminal.mute)
+                                .lineSpacing(HeardTheme.Leading.caption)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.bottom, HeardTheme.Spacing.xs)
+                }
                 content()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
+            .padding(HeardTheme.Spacing.lg)
         }
-        .background(HeardTheme.Paper.bg)
+        .background(HeardTheme.Terminal.bg)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
