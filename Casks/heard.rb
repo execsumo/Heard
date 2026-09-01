@@ -8,9 +8,8 @@ cask "heard" do
   desc "Menu bar app that auto-records and transcribes Microsoft Teams meetings on-device"
   homepage "https://github.com/execsumo/heard"
 
-  # macOS 15 Sequoia or later required (uses CATapDescription process tap)
-  depends_on macos: ">= :sequoia"
-
+  # The app bundle declares macOS 15.0 as LSMinimumSystemVersion.
+  # Keep the cask free of the deprecated macOS dependency stanza.
   app "Heard.app"
 
   # Quit the running menu bar app before uninstalling so the bundle isn't replaced
