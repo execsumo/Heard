@@ -76,6 +76,13 @@ iconutil -c icns "$REPO_ROOT/Resources/AppIcon.iconset" -o "$APP_BUNDLE/Contents
 # Copy menu bar template image (SVG; NSImage renders it sharp at any resolution)
 cp "$REPO_ROOT/Resources/MenuBarIconTemplate.svg" "$APP_BUNDLE/Contents/Resources/"
 
+# Copy bundled fonts. Info.plist's ATSApplicationFontsPath points at Contents/Resources/Fonts,
+# which is how JetBrains Mono becomes available to the app without installing it system-wide.
+echo "==> Copying fonts..."
+mkdir -p "$APP_BUNDLE/Contents/Resources/Fonts"
+cp "$REPO_ROOT/Resources/Fonts/"*.ttf "$APP_BUNDLE/Contents/Resources/Fonts/"
+cp "$REPO_ROOT/Resources/Fonts/OFL.txt" "$APP_BUNDLE/Contents/Resources/Fonts/"
+
 # Auto-detect signing identity if not explicitly provided.
 # Prefer Developer ID Application (stable TCC grants across rebuilds), fall back to Dev Cert.
 if [[ -z "$SIGN_IDENTITY" ]]; then

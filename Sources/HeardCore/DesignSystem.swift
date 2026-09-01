@@ -71,47 +71,117 @@ public extension View {
 }
 
 // MARK: - Theme
+//
+// "Modern Terminal Brutalism" — see DESIGN.md. Dark values are the spec verbatim;
+// light values are a derived "paper terminal" counterpart so the Appearance
+// preference (System/Light/Dark) keeps working. Ink-black surfaces, warm amber
+// primary, structural borders instead of shadows, square corners everywhere.
 
 enum HeardTheme {
-    enum Paper {
-        static let bg           = Color(light: "F5EFE4", dark: "1C2024")
-        static let surface      = Color(light: "FBF7EF", dark: "252A30")
-        static let surfaceAlt   = Color(light: "EFE7D7", dark: "2E3338")
-        static let sidebar      = Color(light: "EBE2CE", dark: "22272D")
-        static let border       = Color(light: "D9CFB9", dark: "4A515A")
-        static let borderSoft   = Color(light: "E5DCC8", dark: "3A3F47")
-        static let ink          = Color(light: "1C2024", dark: "F5EFE4")
-        static let ink2         = Color(light: "3A3F47", dark: "D9CFB9")
-        static let mute         = Color(light: "7B7264", dark: "9A9184")
-        static let muteSoft     = Color(light: "C9BBA5", dark: "4A515A")
-        static let accent       = Color(light: "3F5C8C", dark: "658BC9")
-        static let accentInk    = Color(light: "2F4570", dark: "8BB2F2")
-        static let accentSoft   = Color(light: "E5EAF3", dark: "26334A")
-        static let good         = Color(light: "3D7A4F", dark: "53A66B")
-        static let goodSoft     = Color(light: "E1EEDF", dark: "243D2D")
-        static let warn         = Color(light: "A66A1F", dark: "D98A29")
-        static let warnSoft     = Color(light: "F4E6CE", dark: "4D351A")
-        static let bad          = Color(light: "A6452B", dark: "D65738")
-        static let badSoft      = Color(light: "F2DCD2", dark: "4A251C")
-        static let recordingBg  = Color(light: "2E3338", dark: "A6452B")
-        static let recordingInk = Color(light: "F5EFE4", dark: "1C2024")
+    enum Terminal {
+        // Surfaces — flat backgrounds, containers lift by one tonal step
+        static let bg           = Color(light: "F4F3F0", dark: "131316")
+        static let surface      = Color(light: "FFFFFF", dark: "1B1B1F")
+        static let surfaceAlt   = Color(light: "EAE8E3", dark: "201F23")
+        static let surfaceHigh  = Color(light: "DFDCD6", dark: "2A292D")
+        static let sidebar      = Color(light: "EDEBE7", dark: "0E0E11")
+
+        // Structure — depth is borders, not shadows
+        static let border       = Color(light: "CFCBC4", dark: "2A292D")
+        static let borderSoft   = Color(light: "E3E0DA", dark: "1C1C22")
+
+        // Text
+        static let ink          = Color(light: "131316", dark: "E5E1E6")
+        static let ink2         = Color(light: "3A3A3F", dark: "D7C3B4")
+        static let mute         = Color(light: "6E6A63", dark: "9F8D80")
+        static let muteSoft     = Color(light: "C4C0B8", dark: "524439")
+
+        // Primary — warm amber
+        static let accent       = Color(light: "8A4B00", dark: "FFB46E")
+        static let accentInk    = Color(light: "4B2800", dark: "FFD9BA")
+        static let accentSoft   = Color(light: "FFEBD6", dark: "3A2A16")
+
+        // Status
+        static let good         = Color(light: "4F7A0F", dark: "A6E22E")
+        static let goodSoft     = Color(light: "EDF4DA", dark: "25300F")
+        static let warn         = Color(light: "8A5A00", dark: "FFB876")
+        static let warnSoft     = Color(light: "FBEBD6", dark: "3A2A16")
+        static let bad          = Color(light: "93000A", dark: "FFB4AB")
+        static let badSoft      = Color(light: "FFDAD6", dark: "4A1417")
+        static let info         = Color(light: "00596B", dark: "66D9EF")
+        static let infoSoft     = Color(light: "DCF3FA", dark: "0E2A32")
+
+        // Recording strip
+        static let recordingBg  = Color(light: "131316", dark: "93000A")
+        static let recordingInk = Color(light: "F4F3F0", dark: "FFDAD6")
+
+        // Syntax accents — reserved for terminal output / code
+        static let terminalGreen = Color(light: "4F7A0F", dark: "A6E22E")
+        static let terminalBlue  = Color(light: "00596B", dark: "66D9EF")
+
+        /// Heavy dim for modals and overlays (DESIGN.md: 80% black).
+        static let scrim = Color.black.opacity(0.8)
     }
 
-    static var accent: Color { Paper.accent }
+    static var accent: Color { Terminal.accent }
 
+    /// 4px baseline. DESIGN.md increments: 8, 16, 24, 32, 48, 64.
     enum Spacing {
         static let xs: CGFloat = 4
         static let sm: CGFloat = 8
         static let md: CGFloat = 12
-        static let lg: CGFloat = 20
-        static let xl: CGFloat = 28
+        static let lg: CGFloat = 24
+        static let xl: CGFloat = 32
+        static let gutter: CGFloat = 24
     }
 
+    /// The shape language is strictly sharp. These stay as named members so call
+    /// sites read intentionally, but every one of them is 0.
     enum Radius {
-        static let inline: CGFloat = 6
-        static let card: CGFloat = 10
-        static let hero: CGFloat = 14
+        static let inline: CGFloat = 0
+        static let card: CGFloat = 0
+        static let hero: CGFloat = 0
     }
+
+    /// Structural borders are 1px — visible, not hairline.
+    enum Stroke {
+        static let hairline: CGFloat = 1
+        static let emphasis: CGFloat = 2
+    }
+}
+
+// MARK: - Typography
+//
+// JetBrains Mono exclusively (DESIGN.md). The TTFs ship in Resources/Fonts and are
+// registered by ATSApplicationFontsPath in Info.plist, so they resolve only inside
+// the .app bundle — under `swift run` we fall back to the system monospaced face
+// rather than silently rendering in San Francisco.
+//
+// DESIGN.md's scale is web-sized (48/32/16/14/12); it is mapped down to the app's
+// macOS scale here, preserving the hierarchy and switching the family.
+
+enum HeardFont {
+    static let family = "JetBrains Mono"
+
+    /// The bundled face only resolves inside the .app bundle (ATSApplicationFontsPath),
+    /// so under `swift run` this is false and every role falls back to system monospaced.
+    static let isAvailable: Bool = NSFont(name: family, size: 12) != nil
+
+    static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
+        isAvailable
+            ? .custom(family, fixedSize: size).weight(weight)
+            : .system(size: size, weight: weight, design: .monospaced)
+    }
+
+    static var headlineXL: Font  { mono(26, .bold) }      // About sheet app name
+    static var headlineLG: Font  { mono(19, .semibold) }  // pane H1
+    static var title: Font       { mono(13, .semibold) }  // window + card titles
+    static var body: Font        { mono(12) }             // row labels
+    static var bodyMedium: Font  { mono(12, .medium) }    // emphasised row labels
+    static var caption: Font     { mono(11) }             // subtitles
+    static var label: Font       { mono(10.5, .bold) }    // UPPERCASE section labels
+    static var value: Font       { mono(11) }             // tabular values, paths, sizes
+    static var pill: Font        { mono(10, .semibold) }
 }
 
 // MARK: - HeardMark
@@ -122,11 +192,10 @@ struct HeardMark: View {
     var body: some View {
         Canvas { ctx, sz in
             let s = sz.width / 64
-            // Squircle background gradient
-            let bgPath = RoundedRectangle(cornerRadius: 14 * s)
-                .path(in: CGRect(origin: .zero, size: sz))
+            // Square enclosure — the shape language is strictly sharp
+            let bgPath = Path(CGRect(origin: .zero, size: sz))
             ctx.fill(bgPath, with: .linearGradient(
-                Gradient(colors: [Color(hex: "E8DFD2"), Color(hex: "C9BBA5")]),
+                Gradient(colors: [Color(hex: "FFD9BA"), Color(hex: "FFB46E")]),
                 startPoint: CGPoint(x: sz.width / 2, y: 0),
                 endPoint: CGPoint(x: sz.width / 2, y: sz.height)
             ))
@@ -153,17 +222,17 @@ struct HeardMark: View {
                             control2: CGPoint(x: 16*s, y: 39.3*s))
             bubble.closeSubpath()
             ctx.fill(bubble, with: .linearGradient(
-                Gradient(colors: [Color(hex: "2E3338"), Color(hex: "1C2024")]),
+                Gradient(colors: [Color(hex: "201F23"), Color(hex: "131316")]),
                 startPoint: CGPoint(x: sz.width / 2, y: 0),
                 endPoint: CGPoint(x: sz.width / 2, y: sz.height)
             ))
-            // Three dots (cx 24/32/40, cy 29, r 2.4/3.2/2.4)
-            let dot = Color(hex: "E8DFD2")
-            ctx.fill(Path(ellipseIn: CGRect(x: (24-2.4)*s, y: (29-2.4)*s, width: 4.8*s, height: 4.8*s)),
+            // Three blocks (cx 24/32/40, cy 29) — square, per the shape language
+            let dot = Color(hex: "FFB46E")
+            ctx.fill(Path(CGRect(x: (24-2.4)*s, y: (29-2.4)*s, width: 4.8*s, height: 4.8*s)),
                      with: .color(dot.opacity(0.65)))
-            ctx.fill(Path(ellipseIn: CGRect(x: (32-3.2)*s, y: (29-3.2)*s, width: 6.4*s, height: 6.4*s)),
+            ctx.fill(Path(CGRect(x: (32-3.2)*s, y: (29-3.2)*s, width: 6.4*s, height: 6.4*s)),
                      with: .color(dot))
-            ctx.fill(Path(ellipseIn: CGRect(x: (40-2.4)*s, y: (29-2.4)*s, width: 4.8*s, height: 4.8*s)),
+            ctx.fill(Path(CGRect(x: (40-2.4)*s, y: (29-2.4)*s, width: 4.8*s, height: 4.8*s)),
                      with: .color(dot.opacity(0.65)))
         }
         .frame(width: size, height: size)
@@ -174,30 +243,123 @@ struct HeardMark: View {
 struct HeardToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         ZStack(alignment: configuration.isOn ? .trailing : .leading) {
-            Capsule()
-                .fill(configuration.isOn ? HeardTheme.Paper.accent : HeardTheme.Paper.muteSoft)
-                .frame(width: 30, height: 18)
-            Circle()
-                .fill(Color.white)
-                .shadow(color: .black.opacity(0.15), radius: 1, x: 0, y: 0.5)
-                .frame(width: 14, height: 14)
-                .padding(2)
+            Rectangle()
+                .fill(configuration.isOn ? HeardTheme.Terminal.accent : HeardTheme.Terminal.surfaceAlt)
+                .overlay(
+                    Rectangle()
+                        .stroke(configuration.isOn ? HeardTheme.Terminal.accent : HeardTheme.Terminal.border,
+                                lineWidth: HeardTheme.Stroke.hairline)
+                )
+                .frame(width: 32, height: 18)
+            Rectangle()
+                .fill(configuration.isOn ? HeardTheme.Terminal.bg : HeardTheme.Terminal.mute)
+                .frame(width: 12, height: 12)
+                .padding(3)
         }
         .animation(.easeInOut(duration: 0.14), value: configuration.isOn)
         .onTapGesture { configuration.isOn.toggle() }
     }
 }
 
+// MARK: - Button Style
+//
+// DESIGN.md: large sharp rectangles. Primary is a solid amber fill with ink text;
+// secondary is a 1px border with no fill. Pressed states invert.
+
+struct TerminalButtonStyle: ButtonStyle {
+    enum Kind { case primary, secondary, ghost, danger }
+    enum Size { case sm, md }
+
+    var kind: Kind = .secondary
+    var size: Size = .md
+
+    init(_ kind: Kind = .secondary, size: Size = .md) {
+        self.kind = kind
+        self.size = size
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        let pressed = configuration.isPressed
+        return configuration.label
+            .font(size == .sm ? HeardFont.mono(11, .medium) : HeardFont.mono(12, .medium))
+            .foregroundStyle(foreground(pressed: pressed))
+            .padding(.vertical, size == .sm ? 3 : 5)
+            .padding(.horizontal, size == .sm ? 8 : 12)
+            .background(Rectangle().fill(background(pressed: pressed)))
+            .overlay(
+                Rectangle().stroke(border, lineWidth: HeardTheme.Stroke.hairline)
+            )
+            .contentShape(Rectangle())
+    }
+
+    private var border: Color {
+        switch kind {
+        case .primary:   HeardTheme.Terminal.accent
+        case .secondary: HeardTheme.Terminal.border
+        case .ghost:     .clear
+        case .danger:    HeardTheme.Terminal.bad
+        }
+    }
+
+    private func background(pressed: Bool) -> Color {
+        switch kind {
+        case .primary:   pressed ? HeardTheme.Terminal.bg : HeardTheme.Terminal.accent
+        case .secondary: pressed ? HeardTheme.Terminal.ink : .clear
+        case .ghost:     pressed ? HeardTheme.Terminal.surfaceAlt : .clear
+        case .danger:    pressed ? HeardTheme.Terminal.bad : .clear
+        }
+    }
+
+    private func foreground(pressed: Bool) -> Color {
+        switch kind {
+        case .primary:   pressed ? HeardTheme.Terminal.accent : HeardTheme.Terminal.bg
+        case .secondary: pressed ? HeardTheme.Terminal.bg : HeardTheme.Terminal.ink
+        case .ghost:     HeardTheme.Terminal.ink2
+        case .danger:    pressed ? HeardTheme.Terminal.bg : HeardTheme.Terminal.bad
+        }
+    }
+}
+
+// MARK: - Text Field Style
+//
+// DESIGN.md: styled like a command line — square, bordered, monospaced.
+
+struct TerminalTextFieldStyle: TextFieldStyle {
+    // swiftlint:disable:next identifier_name
+    func _body(configuration: TextField<Self._Label>) -> some View {
+        configuration
+            .textFieldStyle(.plain)
+            .font(HeardFont.body)
+            .foregroundStyle(HeardTheme.Terminal.ink)
+            .padding(.vertical, 5)
+            .padding(.horizontal, 8)
+            .background(Rectangle().fill(HeardTheme.Terminal.surfaceAlt))
+            .overlay(
+                Rectangle().stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline)
+            )
+    }
+}
+
 // MARK: - Shared card components
+
+/// 1px hairline used to separate rows and card titles from content.
+struct TerminalRule: View {
+    var color: Color = HeardTheme.Terminal.borderSoft
+    var body: some View {
+        color.frame(height: HeardTheme.Stroke.hairline)
+    }
+}
+
 struct SectionLabel: View {
     let text: String
     var body: some View {
         Text(text.uppercased())
-            .font(.system(size: 10.5, weight: .bold))
-            .kerning(0.7)
-            .foregroundStyle(HeardTheme.Paper.mute)
+            .font(HeardFont.label)
+            .kerning(0.6)
+            .foregroundStyle(HeardTheme.Terminal.mute)
     }
 }
+
 struct SettingsCard<Content: View>: View {
     @ViewBuilder let content: Content
     var body: some View {
@@ -205,16 +367,46 @@ struct SettingsCard<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(HeardTheme.Paper.surface)
-        .clipShape(RoundedRectangle(cornerRadius: HeardTheme.Radius.card))
+        .background(HeardTheme.Terminal.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: HeardTheme.Radius.card)
-                .stroke(HeardTheme.Paper.border, lineWidth: 0.5)
+            Rectangle()
+                .stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline)
         )
-        .shadow(color: Color(red: 60/255, green: 45/255, blue: 20/255).opacity(0.06),
-                radius: 1, x: 0, y: 1)
     }
 }
+
+/// DESIGN.md: card titles are separated from content by a 1px horizontal rule.
+struct CardHeader: View {
+    let title: String
+    var trailing: AnyView? = nil
+
+    init(_ title: String) {
+        self.title = title
+        self.trailing = nil
+    }
+
+    init<T: View>(_ title: String, @ViewBuilder trailing: () -> T) {
+        self.title = title
+        self.trailing = AnyView(trailing())
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: HeardTheme.Spacing.sm) {
+                Text(title.uppercased())
+                    .font(HeardFont.label)
+                    .kerning(0.6)
+                    .foregroundStyle(HeardTheme.Terminal.ink2)
+                Spacer(minLength: 0)
+                trailing
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            TerminalRule(color: HeardTheme.Terminal.border)
+        }
+    }
+}
+
 struct CardRow<Content: View>: View {
     var isLast: Bool = false
     @ViewBuilder let content: Content
@@ -225,13 +417,13 @@ struct CardRow<Content: View>: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
             if !isLast {
-                HeardTheme.Paper.borderSoft
-                    .frame(height: 0.5)
-                    .padding(.leading, 12)
+                // Full-bleed: structural borders define sections, not inset whitespace
+                TerminalRule()
             }
         }
     }
 }
+
 struct ToggleRow: View {
     let title: String
     var subtitle: String? = nil
@@ -243,12 +435,12 @@ struct ToggleRow: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(HeardTheme.Paper.ink)
+                        .font(HeardFont.bodyMedium)
+                        .foregroundStyle(HeardTheme.Terminal.ink)
                     if let sub = subtitle {
                         Text(sub)
-                            .font(.system(size: 11))
-                            .foregroundStyle(HeardTheme.Paper.mute)
+                            .font(HeardFont.caption)
+                            .foregroundStyle(HeardTheme.Terminal.mute)
                     }
                 }
                 Spacer()
@@ -259,18 +451,21 @@ struct ToggleRow: View {
         }
     }
 }
+
 struct StatusPill: View {
     let text: String
     let fg: Color
     let bg: Color
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 10.5, weight: .semibold))
+        Text(text.uppercased())
+            .font(HeardFont.pill)
+            .kerning(0.4)
             .foregroundStyle(fg)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(bg, in: Capsule())
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Rectangle().fill(bg))
+            .overlay(Rectangle().stroke(fg.opacity(0.35), lineWidth: HeardTheme.Stroke.hairline))
     }
 }
 
@@ -278,18 +473,19 @@ struct StatusPill: View {
 struct HeroButtonStyle: ButtonStyle {
     var isDanger: Bool = false
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(isDanger ? Color(hex: "F2DCD2") : HeardTheme.Paper.recordingInk)
+        let tint = isDanger ? HeardTheme.Terminal.bad : HeardTheme.Terminal.recordingInk
+        return configuration.label
+            .font(HeardFont.mono(11, .medium))
+            .foregroundStyle(configuration.isPressed ? HeardTheme.Terminal.recordingBg : tint)
             .padding(.vertical, 4)
             .padding(.horizontal, 10)
-            .background(
-                isDanger ? Color(hex: "A6452B").opacity(0.4) : Color.white.opacity(0.15),
-                in: RoundedRectangle(cornerRadius: 5)
-            )
-            .opacity(configuration.isPressed ? 0.7 : 1)
+            .background(Rectangle().fill(configuration.isPressed ? tint : Color.clear))
+            .overlay(Rectangle().stroke(tint.opacity(0.55), lineWidth: HeardTheme.Stroke.hairline))
+            .contentShape(Rectangle())
     }
 }
+
+/// Square status block — the shape language is sharp, so this is a block, not a dot.
 struct StatusDot: View {
     let color: Color
     let pulsing: Bool
@@ -298,12 +494,12 @@ struct StatusDot: View {
     var body: some View {
         ZStack {
             if pulsing {
-                Circle()
+                Rectangle()
                     .fill(color.opacity(pulse ? 0.22 : 0))
                     .frame(width: 13, height: 13)
                     .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: pulse)
             }
-            Circle()
+            Rectangle()
                 .fill(color)
                 .frame(width: 7, height: 7)
         }
@@ -322,9 +518,10 @@ struct InlineEditableText: View {
     var body: some View {
         if isEditing {
             TextField("Name", text: $draft, onCommit: commit)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(TerminalTextFieldStyle())
         } else {
             Text(value)
+                .font(HeardFont.body)
                 .onTapGesture {
                     draft = value
                     isEditing = true

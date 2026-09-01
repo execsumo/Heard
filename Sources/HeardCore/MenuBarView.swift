@@ -48,7 +48,7 @@ public struct MenuBarView: View {
                 .padding(.top, 10)
                 .padding(.bottom, 8)
 
-            HeardTheme.Paper.borderSoft.frame(height: 0.5)
+            TerminalRule()
 
             // Action rows — rendered directly (no ScrollView) so they always
             // size to their natural content height. Wrapping them in a
@@ -132,13 +132,10 @@ public struct MenuBarView: View {
             // section expands to show all rows naturally, matching the approach
             // used for action rows above. recentTranscripts is already capped at 3.
             if !queueStore.recentTranscripts.isEmpty {
-                HeardTheme.Paper.borderSoft.frame(height: 0.5)
+                TerminalRule()
 
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("Recent Transcripts")
-                        .font(.system(size: 10, weight: .bold))
-                        .kerning(0.5)
-                        .foregroundStyle(HeardTheme.Paper.mute)
+                    SectionLabel(text: "Recent Transcripts")
                         .padding(.horizontal, 14)
                         .padding(.vertical, 4)
 
@@ -154,7 +151,7 @@ public struct MenuBarView: View {
             }
 
             // Pinned bottom — always reachable
-            HeardTheme.Paper.borderSoft.frame(height: 0.5)
+            TerminalRule()
 
             VStack(spacing: 1) {
                 MenuBarRow(title: "Settings…", icon: "gearshape") {
@@ -169,7 +166,7 @@ public struct MenuBarView: View {
             .padding(.vertical, 4)
         }
         .frame(width: 268)
-        .background(HeardTheme.Paper.bg)
+        .background(HeardTheme.Terminal.bg)
         // Naming is user-initiated: no auto-open. The orange badge, the
         // "Name Speakers…" row above, and the Speakers-tab banner are the cues;
         // candidates stay pending until the user acts.
@@ -183,7 +180,7 @@ public struct MenuBarView: View {
             let tapFailed = recordingManager.appAudioTapFailed
             let micFailed = recordingManager.micCaptureFailed
             StatusHeaderCard(
-                dotColor: HeardTheme.Paper.bad,
+                dotColor: HeardTheme.Terminal.bad,
                 pulsing: true,
                 title: tapFailed ? "Recording (mic only)" : (micFailed ? "Recording (no mic)" : "Recording"),
                 subtitle: tapFailed
@@ -194,9 +191,9 @@ public struct MenuBarView: View {
                 dark: true,
                 trailing: AnyView(
                     RecordingTimerView(startTime: session.startTime)
+                        .font(HeardFont.value)
                         .monospacedDigit()
-                        .font(.system(.callout, design: .monospaced))
-                        .foregroundStyle(HeardTheme.Paper.recordingInk.opacity(0.7))
+                        .foregroundStyle(HeardTheme.Terminal.recordingInk.opacity(0.7))
                 )
             )
         } else if pipelineProcessor.isProcessing, let job = queueStore.processingJob {
@@ -205,7 +202,7 @@ public struct MenuBarView: View {
             // a cancellation that didn't mark it failed) used to stick the header on
             // "Processing" forever even though the transcript was already written.
             StatusHeaderCard(
-                dotColor: HeardTheme.Paper.warn,
+                dotColor: HeardTheme.Terminal.warn,
                 pulsing: true,
                 title: "Processing",
                 subtitle: processingSubtitle(for: job),
@@ -214,7 +211,7 @@ public struct MenuBarView: View {
             )
         } else if model.phase == .processing && pipelineProcessor.isProcessing {
             StatusHeaderCard(
-                dotColor: HeardTheme.Paper.warn,
+                dotColor: HeardTheme.Terminal.warn,
                 pulsing: true,
                 title: "Processing",
                 subtitle: "Preparing transcription…",
@@ -223,7 +220,7 @@ public struct MenuBarView: View {
             )
         } else if model.isDictating {
             StatusHeaderCard(
-                dotColor: HeardTheme.Paper.bad,
+                dotColor: HeardTheme.Terminal.bad,
                 pulsing: true,
                 title: "Dictating",
                 subtitle: "Listening…",
@@ -233,7 +230,7 @@ public struct MenuBarView: View {
         } else {
             Button { model.toggleWatching() } label: {
                 StatusHeaderCard(
-                    dotColor: meetingDetector.isWatching ? HeardTheme.Paper.good : HeardTheme.Paper.warn,
+                    dotColor: meetingDetector.isWatching ? HeardTheme.Terminal.good : HeardTheme.Terminal.warn,
                     pulsing: false,
                     title: meetingDetector.isWatching ? "Watching" : "Paused",
                     subtitle: meetingDetector.isWatching ? "Waiting for meeting" : "Click to resume",
@@ -263,20 +260,21 @@ public struct MenuBarView: View {
     private func errorBanner(_ message: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(HeardTheme.Paper.bad)
-                .font(.caption)
+                .foregroundStyle(HeardTheme.Terminal.bad)
+                .font(HeardFont.caption)
             Text(message)
-                .font(.caption)
-                .foregroundStyle(HeardTheme.Paper.ink)
+                .font(HeardFont.caption)
+                .foregroundStyle(HeardTheme.Terminal.ink)
                 .lineLimit(2)
             Spacer(minLength: 4)
             Button("Dismiss") { model.acknowledgeError() }
                 .buttonStyle(.plain)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(HeardTheme.Paper.accent)
+                .font(HeardFont.mono(11, .medium))
+                .foregroundStyle(HeardTheme.Terminal.accent)
         }
         .padding(10)
-        .background(HeardTheme.Paper.badSoft, in: RoundedRectangle(cornerRadius: HeardTheme.Radius.inline))
+        .background(Rectangle().fill(HeardTheme.Terminal.badSoft))
+        .overlay(Rectangle().stroke(HeardTheme.Terminal.bad.opacity(0.35), lineWidth: HeardTheme.Stroke.hairline))
         .padding(.horizontal, 10)
         .padding(.top, 10)
     }
@@ -284,29 +282,30 @@ public struct MenuBarView: View {
     private var axLostBanner: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(HeardTheme.Paper.warn)
-                .font(.caption)
+                .foregroundStyle(HeardTheme.Terminal.warn)
+                .font(HeardFont.caption)
             VStack(alignment: .leading, spacing: 4) {
                 Text("Accessibility access was revoked. Dictation text injection stopped.")
-                    .font(.caption)
-                    .foregroundStyle(HeardTheme.Paper.ink)
+                    .font(HeardFont.caption)
+                    .foregroundStyle(HeardTheme.Terminal.ink)
                     .lineLimit(3)
                 Button("Re-grant Access…") {
                     TextInjector.ensureAccessibility()
                     model.acknowledgeAXLost()
                 }
                 .buttonStyle(.plain)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(HeardTheme.Paper.accent)
+                .font(HeardFont.mono(11, .medium))
+                .foregroundStyle(HeardTheme.Terminal.accent)
             }
             Spacer(minLength: 4)
             Button("Dismiss") { model.acknowledgeAXLost() }
                 .buttonStyle(.plain)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(HeardTheme.Paper.mute)
+                .font(HeardFont.mono(11, .medium))
+                .foregroundStyle(HeardTheme.Terminal.mute)
         }
         .padding(10)
-        .background(HeardTheme.Paper.warnSoft, in: RoundedRectangle(cornerRadius: HeardTheme.Radius.inline))
+        .background(Rectangle().fill(HeardTheme.Terminal.warnSoft))
+        .overlay(Rectangle().stroke(HeardTheme.Terminal.warn.opacity(0.35), lineWidth: HeardTheme.Stroke.hairline))
         .padding(.horizontal, 10)
         .padding(.top, 10)
     }
@@ -314,21 +313,22 @@ public struct MenuBarView: View {
     private var tapFailedBanner: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(HeardTheme.Paper.warn)
-                .font(.caption)
+                .foregroundStyle(HeardTheme.Terminal.warn)
+                .font(HeardFont.caption)
             VStack(alignment: .leading, spacing: 4) {
                 Text("System audio tap failed. Recording only your voice.")
-                    .font(.caption)
-                    .foregroundStyle(HeardTheme.Paper.ink)
+                    .font(HeardFont.caption)
+                    .foregroundStyle(HeardTheme.Terminal.ink)
                     .lineLimit(3)
                 Text("Verify Screen Recording permission in System Settings.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(HeardTheme.Paper.mute)
+                    .font(HeardFont.mono(10))
+                    .foregroundStyle(HeardTheme.Terminal.mute)
             }
             Spacer(minLength: 4)
         }
         .padding(10)
-        .background(HeardTheme.Paper.warnSoft, in: RoundedRectangle(cornerRadius: HeardTheme.Radius.inline))
+        .background(Rectangle().fill(HeardTheme.Terminal.warnSoft))
+        .overlay(Rectangle().stroke(HeardTheme.Terminal.warn.opacity(0.35), lineWidth: HeardTheme.Stroke.hairline))
         .padding(.horizontal, 10)
         .padding(.top, 10)
     }
@@ -336,21 +336,22 @@ public struct MenuBarView: View {
     private var micFailedBanner: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(HeardTheme.Paper.warn)
-                .font(.caption)
+                .foregroundStyle(HeardTheme.Terminal.warn)
+                .font(HeardFont.caption)
             VStack(alignment: .leading, spacing: 4) {
                 Text("Mic capture failed. Recording only the other participants.")
-                    .font(.caption)
-                    .foregroundStyle(HeardTheme.Paper.ink)
+                    .font(HeardFont.caption)
+                    .foregroundStyle(HeardTheme.Terminal.ink)
                     .lineLimit(3)
                 Text("Check the input device in Settings → General and the Microphone permission.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(HeardTheme.Paper.mute)
+                    .font(HeardFont.mono(10))
+                    .foregroundStyle(HeardTheme.Terminal.mute)
             }
             Spacer(minLength: 4)
         }
         .padding(10)
-        .background(HeardTheme.Paper.warnSoft, in: RoundedRectangle(cornerRadius: HeardTheme.Radius.inline))
+        .background(Rectangle().fill(HeardTheme.Terminal.warnSoft))
+        .overlay(Rectangle().stroke(HeardTheme.Terminal.warn.opacity(0.35), lineWidth: HeardTheme.Stroke.hairline))
         .padding(.horizontal, 10)
         .padding(.top, 10)
     }
@@ -370,11 +371,11 @@ struct StatusHeaderCard: View {
             StatusDot(color: dotColor, pulsing: pulsing)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(dark ? HeardTheme.Paper.recordingInk : HeardTheme.Paper.ink)
+                    .font(HeardFont.title)
+                    .foregroundStyle(dark ? HeardTheme.Terminal.recordingInk : HeardTheme.Terminal.ink)
                 Text(subtitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(dark ? HeardTheme.Paper.recordingInk.opacity(0.65) : HeardTheme.Paper.mute)
+                    .font(HeardFont.caption)
+                    .foregroundStyle(dark ? HeardTheme.Terminal.recordingInk.opacity(0.65) : HeardTheme.Terminal.mute)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -384,11 +385,14 @@ struct StatusHeaderCard: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: HeardTheme.Radius.card)
-                .fill(dark ? HeardTheme.Paper.recordingBg : HeardTheme.Paper.surfaceAlt)
+        .background(Rectangle().fill(dark ? HeardTheme.Terminal.recordingBg : HeardTheme.Terminal.surfaceAlt))
+        .overlay(
+            Rectangle().stroke(
+                dark ? HeardTheme.Terminal.recordingInk.opacity(0.25) : HeardTheme.Terminal.border,
+                lineWidth: HeardTheme.Stroke.hairline
+            )
         )
-        .contentShape(RoundedRectangle(cornerRadius: HeardTheme.Radius.card))
+        .contentShape(Rectangle())
     }
 }
 struct MenuBarRow: View {
@@ -402,17 +406,17 @@ struct MenuBarRow: View {
         Button(action: action) {
             HStack(spacing: 9) {
                 Image(systemName: icon)
-                    .font(.system(size: 12))
-                    .foregroundStyle(accent ? HeardTheme.Paper.accent : HeardTheme.Paper.ink2)
+                    .font(HeardFont.body)
+                    .foregroundStyle(accent ? HeardTheme.Terminal.accent : HeardTheme.Terminal.ink2)
                     .frame(width: 18, alignment: .center)
                 Text(title)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(accent ? HeardTheme.Paper.accent : HeardTheme.Paper.ink)
+                    .font(HeardFont.bodyMedium)
+                    .foregroundStyle(accent ? HeardTheme.Terminal.accent : HeardTheme.Terminal.ink)
                 Spacer()
                 if let hotkey {
                     Text(hotkey)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(HeardTheme.Paper.mute)
+                        .font(HeardFont.value)
+                        .foregroundStyle(HeardTheme.Terminal.mute)
                 }
             }
             .contentShape(Rectangle())
@@ -426,8 +430,8 @@ struct MenuBarRowStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .background(
-                configuration.isPressed ? HeardTheme.Paper.surfaceAlt : Color.clear,
-                in: RoundedRectangle(cornerRadius: 5)
+                configuration.isPressed ? HeardTheme.Terminal.surfaceAlt : Color.clear,
+                in: Rectangle()
             )
     }
 }
@@ -441,17 +445,18 @@ struct JobRow: View {
         }) {
             HStack(spacing: 9) {
                 Image(systemName: iconName)
-                    .font(.system(size: 12))
+                    .font(HeardFont.body)
                     .foregroundStyle(iconColor)
                     .frame(width: 18, alignment: .center)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(job.meetingTitle.isEmpty ? "Meeting" : job.meetingTitle)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(HeardTheme.Paper.ink)
+                        .font(HeardFont.bodyMedium)
+                        .foregroundStyle(HeardTheme.Terminal.ink)
                         .lineLimit(1)
                     Text(job.startTime.formatted(date: .omitted, time: .shortened))
-                        .font(.system(size: 11))
-                        .foregroundStyle(HeardTheme.Paper.mute)
+                        .font(HeardFont.value)
+                        .monospacedDigit()
+                        .foregroundStyle(HeardTheme.Terminal.mute)
                 }
                 Spacer()
             }
@@ -484,9 +489,9 @@ struct JobRow: View {
 
     private var iconColor: Color {
         switch job.stage {
-        case .complete: return HeardTheme.Paper.mute
-        case .failed:   return HeardTheme.Paper.bad
-        default:        return HeardTheme.Paper.warn
+        case .complete: return HeardTheme.Terminal.mute
+        case .failed:   return HeardTheme.Terminal.bad
+        default:        return HeardTheme.Terminal.warn
         }
     }
 }
@@ -521,7 +526,7 @@ public struct PulsingDot: View {
     var size: CGFloat = 8
     public init(size: CGFloat = 8) { self.size = size }
     public var body: some View {
-        StatusDot(color: HeardTheme.Paper.bad, pulsing: true)
+        StatusDot(color: HeardTheme.Terminal.bad, pulsing: true)
             .frame(width: size, height: size)
     }
 }

@@ -62,11 +62,11 @@ enum HotkeyTarget: Identifiable {
                 HeardMark(size: 26)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Heard")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(HeardTheme.Paper.ink)
+                        .font(HeardFont.title)
+                        .foregroundStyle(HeardTheme.Terminal.ink)
                     Text(model.updateChecker.currentVersion)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(HeardTheme.Paper.mute)
+                        .font(HeardFont.value)
+                        .foregroundStyle(HeardTheme.Terminal.mute)
                 }
                 Spacer()
             }
@@ -74,7 +74,7 @@ enum HotkeyTarget: Identifiable {
             .padding(.top, 16)
             .padding(.bottom, 12)
 
-            HeardTheme.Paper.border.frame(height: 0.5)
+            HeardTheme.Terminal.border.frame(height: HeardTheme.Stroke.hairline)
 
             VStack(spacing: 2) {
                 ForEach(SettingsTab.allCases) { tab in
@@ -89,9 +89,9 @@ enum HotkeyTarget: Identifiable {
             Spacer()
         }
         .frame(width: 188)
-        .background(HeardTheme.Paper.sidebar)
+        .background(HeardTheme.Terminal.sidebar)
         .overlay(alignment: .trailing) {
-            HeardTheme.Paper.border.frame(width: 0.5)
+            HeardTheme.Terminal.border.frame(width: HeardTheme.Stroke.hairline)
         }
     }
 
@@ -103,24 +103,23 @@ enum HotkeyTarget: Identifiable {
             HStack(spacing: 9) {
                 Image(systemName: tab.icon)
                     .font(.system(size: 13))
-                    .foregroundStyle(isSelected ? HeardTheme.Paper.accent : HeardTheme.Paper.ink2)
+                    .foregroundStyle(isSelected ? HeardTheme.Terminal.accent : HeardTheme.Terminal.ink2)
                     .frame(width: 18, alignment: .center)
                 Text(tab.label)
-                    .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
-                    .foregroundStyle(isSelected ? HeardTheme.Paper.ink : HeardTheme.Paper.ink2)
+                    .font(isSelected ? HeardFont.bodyMedium : HeardFont.body)
+                    .foregroundStyle(isSelected ? HeardTheme.Terminal.ink : HeardTheme.Terminal.ink2)
                 Spacer()
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
             .background {
                 if isSelected {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(HeardTheme.Paper.surface)
-                        .shadow(color: Color(red: 60/255, green: 45/255, blue: 20/255).opacity(0.06),
-                                radius: 1, x: 0, y: 1)
+                    // Selected nav item: square surface fill + 1px accent border, no shadow.
+                    Rectangle()
+                        .fill(HeardTheme.Terminal.surface)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 7)
-                                .stroke(HeardTheme.Paper.border, lineWidth: 0.5)
+                            Rectangle()
+                                .stroke(HeardTheme.Terminal.accent, lineWidth: HeardTheme.Stroke.hairline)
                         )
                 }
             }
@@ -160,7 +159,7 @@ extension SettingsView {
             .padding(.horizontal, 18)
             .padding(.vertical, 14)
         }
-        .background(HeardTheme.Paper.bg)
+        .background(HeardTheme.Terminal.bg)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 

@@ -25,6 +25,9 @@ No Xcode project — this is a Swift Package Manager executable. macOS 15.0+ req
 - `Sources/HeardCore/Views.swift` — All UI (menu bar dropdown + settings window)
 - `Sources/HeardCore/CoreModels.swift` — Data types
 - `Sources/HeardCore/Stores.swift` — Persistence layer
+- `DESIGN.md` — Design system (source of truth for all visual styling)
+- `Sources/HeardCore/DesignSystem.swift` — Design tokens and shared components implementing `DESIGN.md`
+- `Resources/Fonts/` — Bundled JetBrains Mono (OFL), loaded via `ATSApplicationFontsPath`
 - `Info.plist` — App bundle metadata
 - `Heard.entitlements` — Entitlements (audio input only, no sandbox)
 - `scripts/bundle.sh` — Build script for .app bundle
@@ -43,6 +46,18 @@ No Xcode project — this is a Swift Package Manager executable. macOS 15.0+ req
 - Keep v1 focused on post-meeting transcription. Dictation is v2 placeholder scaffolding.
 - Avoid broad refactors — make targeted changes that deliver the next integration step.
 - The "Simulate Meeting" buttons are intentional for testing without a real Teams call. Keep them.
+- Treat `DESIGN.md` as the visual source of truth. Never hardcode a color, font, or corner radius in a view — use `HeardTheme.Terminal.*`, `HeardFont.*`, and `HeardTheme.Spacing/Radius/Stroke`. If a token is missing, add it to `DesignSystem.swift` rather than inlining a literal.
+
+## Design System
+
+"Modern Terminal Brutalism" (see `DESIGN.md`). The implementation lives entirely in
+`Sources/HeardCore/DesignSystem.swift`:
+
+- **Palette** — `HeardTheme.Terminal.*`. Dark values are `DESIGN.md` verbatim; light values are a derived "paper terminal" counterpart so the `AppAppearance` preference (System/Light/Dark) keeps working.
+- **Type** — `HeardFont.*`, JetBrains Mono throughout. The TTFs ship in `Resources/Fonts/` and resolve via `ATSApplicationFontsPath` **only inside the .app bundle**; under `swift run` `HeardFont` falls back to the system monospaced face.
+- **Shape** — strictly sharp. `HeardTheme.Radius.{inline,card,hero}` are all `0`; use `Rectangle()`, never `RoundedRectangle` or `Capsule`, for containers.
+- **Depth** — no shadows on cards, rows, or buttons. Depth is a 1px `border` stroke over a tonal fill. Drop shadows are reserved for floating OS-level panels (menu bar dropdown, dictation HUD, windows).
+- **Components** — `SettingsCard`, `CardHeader`, `CardRow`, `ToggleRow`, `StatusPill`, `SectionLabel`, `StatusDot`, `TerminalRule`, plus `TerminalButtonStyle`, `TerminalTextFieldStyle`, `HeardToggleStyle`, `HeroButtonStyle`.
 
 ## Architecture Notes
 

@@ -13,6 +13,7 @@ Future Codex sessions should treat `spec.md` as the product source of truth and 
 - Keep the app as a single-process menu bar application.
 - Do not introduce cloud APIs, LLM integrations, or non-English transcription support.
 - Keep v1 focused on post-meeting transcription. Dictation remains placeholder scaffolding for v2.
+- Treat `DESIGN.md` as the visual source of truth. Never hardcode a color, font, or corner radius in a view — use `HeardTheme.Terminal.*`, `HeardFont.*`, and `HeardTheme.Spacing`/`Stroke` from `DesignSystem.swift`. If a token is missing, add it there rather than inlining a literal.
 
 ## Current Codebase Shape
 
@@ -22,7 +23,8 @@ Future Codex sessions should treat `spec.md` as the product source of truth and 
 - `Sources/HeardCore/CoreModels.swift` holds app, pipeline, speaker, transcript, and settings models.
 - `Sources/HeardCore/Stores.swift` contains persistence and file-system helpers.
 - `Sources/HeardCore/Services.swift` contains the current service scaffolding for detection, recording, models, queue processing, and transcript writing.
-- `Sources/HeardCore/Views.swift` contains the current menu bar and settings UI.
+- The UI is split across `MenuBarView.swift`, `SettingsView.swift`, `SettingsTabs.swift`, `SettingsComponents.swift`, `SpeakerNamingView.swift`, `TranscriptLibraryView.swift`, `DictationHUD.swift`, and `MeetingNoteComposer.swift`. (The old single `Views.swift` no longer exists.)
+- `Sources/HeardCore/DesignSystem.swift` holds every design token and shared component, implementing the system in `DESIGN.md`.
 
 ## Expectations For Future Sessions
 

@@ -2,6 +2,13 @@
 
 ## Current Status
 
+> ⚠️ **The working tree has an unverified UI change.** The terminal design-system
+> conversion (2026-09-01) has never been compiled or run — it was written on Linux,
+> where `swift build` cannot work. Everything below describing a clean build refers to
+> the state *before* that conversion. See
+> [Design System Conversion](#design-system-conversion-2026-09-01) for the verification
+> checklist that has to pass first.
+
 The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15.0+. Core infrastructure is complete — meeting detection, dual-track audio capture, on-device transcription (Parakeet TDT V2/V3), VAD (Silero), speaker diarization (LS-EEND + WeSpeaker), and speaker assignment are all functional via the FluidAudio framework. An `.app` bundle is available via `./scripts/bundle.sh`.
 
 **v0.1.0 is released** — notarized DMG published to [GitHub Releases](https://github.com/execsumo/Heard/releases/tag/v0.1.0) and installable via `brew tap execsumo/tap && brew install --cask heard`.
@@ -316,7 +323,118 @@ See [`ROADMAP.md`](./ROADMAP.md) for the current technical-debt status, complete
 - ✅ Update checker — `UpdateChecker` polls `api.github.com/repos/execsumo/Heard/releases/latest` at startup (rate-limited to once per 24 hours). When a newer version is detected, a banner appears in the menu bar dropdown and in Settings → About with a link to the GitHub release. No new dependencies; no auto-install (user re-runs the DMG or `brew upgrade --cask heard`).
 
 ### 2. Known rough edges
-None currently.
+
+**The terminal design-system conversion has not been compiled or seen.** See below.
+
+## Design System Conversion (2026-09-01)
+
+The UI was converted from the old "Paper" language (warm cream, rounded corners, SF Pro,
+soft shadows) to the "Modern Terminal Brutalism" system in [`DESIGN.md`](./DESIGN.md):
+ink-black surfaces, warm amber primary, JetBrains Mono throughout, 0px corner radius,
+1px structural borders instead of shadows. The plan and full palette/type tables are in
+[`plans/terminal-design-conversion.md`](./plans/terminal-design-conversion.md).
+
+**What changed**
+
+- `Sources/HeardCore/DesignSystem.swift` — rewritten. `HeardTheme.Paper` → `HeardTheme.Terminal`
+  (same member names, new values, so most call sites needed no color edits). New `HeardFont`
+  type scale, `HeardTheme.Stroke`, `TerminalButtonStyle`, `TerminalTextFieldStyle`,
+  `CardHeader`, `TerminalRule`. `HeardTheme.Radius.*` all resolve to `0`.
+- All seven view files converted: menu bar dropdown, settings window + sidebar, the settings
+  tabs, shared setting rows, speaker naming, transcript library, dictation HUD, note composer.
+- `Resources/Fonts/` — JetBrains Mono (OFL) Regular/Medium/SemiBold/Bold, ~1.05 MB.
+- `Info.plist` gained `ATSApplicationFontsPath = Fonts`; `scripts/bundle.sh` copies the fonts
+  into `Contents/Resources/Fonts`.
+- Settings → General gained an **Appearance** picker. `AppSettings.appearance` already existed
+  and was already applied in `MTApp.swift`; it simply had no UI control.
+
+**Decisions worth knowing**
+
+- `DESIGN.md` is a dark-only palette. Light-mode values are a *derived* counterpart, not spec,
+  chosen so the existing System/Light/Dark preference keeps working. If light mode looks wrong,
+  the light halves of `HeardTheme.Terminal` are the only thing to change.
+- Fonts resolve via the bundle only. Under `swift run Heard` there is no bundle, so
+  `HeardFont.isAvailable` is false and every role falls back to the system monospaced face.
+  Judge typography from `./scripts/bundle.sh`, not `swift run`.
+- SF Symbol glyphs keep `.font(.system(size:))` — `HeardFont` is a text-role scale, not an
+  icon-sizing scale.
+- The macOS segmented `Picker` used for Appearance keeps its native rounded chrome; it can't be
+  squared off without a custom control, which was out of scope.
+
+### ⚠️ Verification required
+
+The conversion was written on a Linux machine, where `swift build` fails at FluidAudio's
+`mach/mach.h`. **Nothing has been type-checked, run, or looked at.**
+
+What *was* verified, and what it's worth:
+
+| Check | Result | Catches | Misses |
+|---|---|---|---|
+| `swiftc -parse` on every touched file | clean | syntax, brace/paren balance | all type errors |
+| Every `HeardTheme.Terminal.*` / `HeardFont.*` reference resolves to a definition | clean | typo'd or invented tokens | wrong types, bad arg labels |
+| No residual `RoundedRectangle`/`Capsule`/`cornerRadius`/`.shadow(`/`roundedBorder`/raw `Color.red` etc. | clean | missed conversions | whether it *looks* right |
+
+#### Gate 1 — compile
+
+```bash
+swift build && swift run HeardTests
+```
+
+Most likely failures, in rough order of probability:
+
+1. **"Unable to type-check this expression in reasonable time"** in `SettingsTabs.swift`.
+   That file's view bodies grew during conversion. Fix by extracting the offending section
+   into a `private var someSection: some View`, not by simplifying the styling.
+2. **`TerminalTextFieldStyle`** (`DesignSystem.swift`) conforms to `TextFieldStyle` via the
+   underscored `_body(configuration:)` requirement. If the SDK rejects it, replace the
+   conformance with a plain `ViewModifier` and change the 5 call sites (plus the one inside
+   `InlineEditableText`) from `.textFieldStyle(TerminalTextFieldStyle())` to `.modifier(...)`.
+3. **`CardHeader`'s `trailing: AnyView?`** relies on `Optional` conditionally conforming to
+   `View`. If that errors, wrap it in `if let trailing { trailing }`.
+4. **`TerminalButtonStyle` argument labels** — the initialiser is
+   `init(_ kind: Kind = .secondary, size: Size = .md)`. All 22 call sites were checked to use
+   `size:`, but a compile error here would be trivial to fix.
+
+#### Gate 2 — look at it
+
+```bash
+./scripts/bundle.sh && open build/Heard.app
+```
+
+Use the `.app`, **not** `swift run` — fonts resolve via `ATSApplicationFontsPath`, which only
+exists in the bundle. Under `swift run` `HeardFont.isAvailable` is false and everything falls
+back to system monospaced, so typography can't be judged there.
+
+Walk these, in both Light and Dark (Settings → General → Appearance):
+
+- [ ] **Fonts are actually JetBrains Mono**, not SF Mono. If every surface looks like SF Mono,
+      the bundle's `Contents/Resources/Fonts/` is missing or `ATSApplicationFontsPath` didn't
+      take — check the bundle contents before touching any Swift.
+- [ ] **Menu bar dropdown** — all five states via "Simulate Meeting Start": idle, recording
+      (amber/red header + elapsed timer), processing, dictating, paused. Panel must not clip
+      its bottom actions (Settings, Quit); spacing tokens changed, so this is the most likely
+      layout regression in the app.
+- [ ] **Settings sidebar** — selected tab gets an amber 1px border, not a rounded fill.
+- [ ] **Settings tabs** — General (incl. the new Appearance picker), Recording, Dictation,
+      Speakers, Advanced, About. Check the Advanced hero card is a flat fill, not a gradient.
+- [ ] **Light mode legibility.** Light values are derived, not from `DESIGN.md` — amber on
+      white is the risky pair. If contrast is bad, the light halves of `HeardTheme.Terminal`
+      are the only thing to change.
+- [ ] **Speaker naming window**, **transcript library**, **dictation HUD** (Ctrl+Shift+D),
+      **meeting note composer**.
+- [ ] **Note composer text view follows appearance switching.** It bridges SwiftUI colors into
+      AppKit via `NSColor(Color)`, which may flatten the dynamic light/dark color to whichever
+      appearance was active at init. If it doesn't follow, set the `NSTextView` colors from
+      `viewDidChangeEffectiveAppearance` instead.
+
+#### Known deliberate deviations — don't "fix" these
+
+- SF Symbol glyphs keep `.font(.system(size:))`. `HeardFont` is a text-role scale; symbols
+  aren't text.
+- The Appearance `Picker` keeps macOS's native rounded segmented chrome. Squaring it needs a
+  custom control, which was out of scope.
+- `HeardTheme.Radius.{inline,card,hero}` still exist but all resolve to `0`. Kept so call sites
+  read intentionally; nothing currently references them.
 
 ## Attempted Approaches for Dictation (Historical)
 

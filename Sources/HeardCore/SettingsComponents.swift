@@ -14,8 +14,8 @@ struct MicrophonePickerRow: View {
     var body: some View {
         HStack {
             Text("Input Device")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(HeardTheme.Paper.ink)
+                .font(HeardFont.bodyMedium)
+                .foregroundStyle(HeardTheme.Terminal.ink)
             Spacer()
             Picker("", selection: pickerBinding) {
                 Text(systemDefaultLabel).tag(String?.none)
@@ -67,7 +67,7 @@ struct ModelStatusRow: View {
     var body: some View {
         HStack(spacing: HeardTheme.Spacing.md) {
             ZStack {
-                RoundedRectangle(cornerRadius: 6)
+                Rectangle()
                     .fill(statusBg)
                     .frame(width: 28, height: 28)
                 Image(systemName: statusIcon)
@@ -77,24 +77,24 @@ struct ModelStatusRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.modelKind.displayName(for: downloadManager.transcriptionModel))
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(HeardTheme.Paper.ink)
+                    .font(HeardFont.bodyMedium)
+                    .foregroundStyle(HeardTheme.Terminal.ink)
 
                 if let progress = downloadManager.downloadProgress[item.modelKind] {
                     ProgressView(value: progress)
                     Text("\(Int(progress * 100))%")
-                        .font(.system(size: 10))
-                        .foregroundStyle(HeardTheme.Paper.mute)
+                        .font(HeardFont.value)
+                        .foregroundStyle(HeardTheme.Terminal.mute)
                         .monospacedDigit()
                 } else if let error = downloadManager.errors[item.modelKind] {
                     Text(error)
-                        .font(.system(size: 11))
-                        .foregroundStyle(HeardTheme.Paper.bad)
+                        .font(HeardFont.caption)
+                        .foregroundStyle(HeardTheme.Terminal.bad)
                         .lineLimit(1)
                 } else {
                     Text(item.detail)
-                        .font(.system(size: 11))
-                        .foregroundStyle(item.availability == .ready ? HeardTheme.Paper.good : HeardTheme.Paper.mute)
+                        .font(HeardFont.caption)
+                        .foregroundStyle(item.availability == .ready ? HeardTheme.Terminal.good : HeardTheme.Terminal.mute)
                 }
             }
 
@@ -102,7 +102,7 @@ struct ModelStatusRow: View {
 
             if item.availability == .notDownloaded && downloadManager.downloadProgress[item.modelKind] == nil {
                 Button("Download") { downloadManager.download(item.modelKind) }
-                    .controlSize(.small)
+                    .buttonStyle(TerminalButtonStyle(.primary, size: .sm))
             }
         }
         .padding(.vertical, 2)
@@ -119,21 +119,21 @@ struct ModelStatusRow: View {
     }
 
     private var statusColor: Color {
-        if downloadManager.downloadProgress[item.modelKind] != nil { return HeardTheme.Paper.accent }
-        if downloadManager.errors[item.modelKind] != nil { return HeardTheme.Paper.bad }
+        if downloadManager.downloadProgress[item.modelKind] != nil { return HeardTheme.Terminal.accent }
+        if downloadManager.errors[item.modelKind] != nil { return HeardTheme.Terminal.bad }
         switch item.availability {
-        case .ready:         return HeardTheme.Paper.good
-        case .downloading:   return HeardTheme.Paper.accent
-        case .notDownloaded: return HeardTheme.Paper.mute
+        case .ready:         return HeardTheme.Terminal.good
+        case .downloading:   return HeardTheme.Terminal.accent
+        case .notDownloaded: return HeardTheme.Terminal.mute
         }
     }
 
     private var statusBg: Color {
-        if downloadManager.errors[item.modelKind] != nil { return HeardTheme.Paper.badSoft }
+        if downloadManager.errors[item.modelKind] != nil { return HeardTheme.Terminal.badSoft }
         switch item.availability {
-        case .ready:         return HeardTheme.Paper.goodSoft
-        case .downloading:   return HeardTheme.Paper.accentSoft
-        case .notDownloaded: return HeardTheme.Paper.surfaceAlt
+        case .ready:         return HeardTheme.Terminal.goodSoft
+        case .downloading:   return HeardTheme.Terminal.accentSoft
+        case .notDownloaded: return HeardTheme.Terminal.surfaceAlt
         }
     }
 }
@@ -146,7 +146,7 @@ struct PermissionRow: View {
     var body: some View {
         HStack(spacing: HeardTheme.Spacing.md) {
             ZStack {
-                RoundedRectangle(cornerRadius: 7)
+                Rectangle()
                     .fill(iconBg)
                     .frame(width: 28, height: 28)
                 Image(systemName: iconName)
@@ -157,17 +157,17 @@ struct PermissionRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(permission.title)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(HeardTheme.Paper.ink)
+                        .font(HeardFont.bodyMedium)
+                        .foregroundStyle(HeardTheme.Terminal.ink)
                     if permission.id == "microphone" || permission.id == "screenCapture" {
                         StatusPill(text: "Required",
-                                   fg: HeardTheme.Paper.bad,
-                                   bg: HeardTheme.Paper.badSoft)
+                                   fg: HeardTheme.Terminal.bad,
+                                   bg: HeardTheme.Terminal.badSoft)
                     }
                 }
                 Text(permission.purpose)
-                    .font(.system(size: 11))
-                    .foregroundStyle(HeardTheme.Paper.mute)
+                    .font(HeardFont.caption)
+                    .foregroundStyle(HeardTheme.Terminal.mute)
             }
 
             Spacer()
@@ -184,7 +184,7 @@ struct PermissionRow: View {
                         default: break
                         }
                     }
-                    .controlSize(.small)
+                    .buttonStyle(TerminalButtonStyle(.primary, size: .sm))
                 }
             }
         }
@@ -202,26 +202,26 @@ struct PermissionRow: View {
     }
 
     private var iconTint: Color {
-        permission.state == .granted ? HeardTheme.Paper.good : HeardTheme.Paper.accent
+        permission.state == .granted ? HeardTheme.Terminal.good : HeardTheme.Terminal.accent
     }
 
     private var iconBg: Color {
-        permission.state == .granted ? HeardTheme.Paper.goodSoft : HeardTheme.Paper.accentSoft
+        permission.state == .granted ? HeardTheme.Terminal.goodSoft : HeardTheme.Terminal.accentSoft
     }
 
     private var pillFg: Color {
         switch permission.state {
-        case .granted:     return HeardTheme.Paper.good
-        case .recommended: return HeardTheme.Paper.warn
-        case .unknown:     return HeardTheme.Paper.bad
+        case .granted:     return HeardTheme.Terminal.good
+        case .recommended: return HeardTheme.Terminal.warn
+        case .unknown:     return HeardTheme.Terminal.bad
         }
     }
 
     private var pillBg: Color {
         switch permission.state {
-        case .granted:     return HeardTheme.Paper.goodSoft
-        case .recommended: return HeardTheme.Paper.warnSoft
-        case .unknown:     return HeardTheme.Paper.badSoft
+        case .granted:     return HeardTheme.Terminal.goodSoft
+        case .recommended: return HeardTheme.Terminal.warnSoft
+        case .unknown:     return HeardTheme.Terminal.badSoft
         }
     }
 }
@@ -234,12 +234,15 @@ struct AboutBadge: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: icon).font(.caption2)
-            Text(text).font(.system(size: 11))
+            Text(text).font(HeardFont.caption)
         }
-        .foregroundStyle(HeardTheme.Paper.mute)
+        .foregroundStyle(HeardTheme.Terminal.mute)
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(HeardTheme.Paper.surfaceAlt, in: Capsule())
+        .background(Rectangle().fill(HeardTheme.Terminal.surfaceAlt))
+        .overlay(
+            Rectangle().stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline)
+        )
     }
 }
 
@@ -257,31 +260,34 @@ enum ValidationKind { case noModifier, forbidden, singleModifier, heardConflict 
         VStack(spacing: HeardTheme.Spacing.lg) {
             Image(systemName: "keyboard")
                 .font(.system(size: 36))
-                .foregroundStyle(HeardTheme.Paper.accent)
+                .foregroundStyle(HeardTheme.Terminal.accent)
 
             Text("Record Shortcut")
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(HeardTheme.Paper.ink)
+                .font(HeardFont.headlineLG)
+                .foregroundStyle(HeardTheme.Terminal.ink)
 
             Text("Press the key combination you want to use for dictation.")
-                .font(.callout)
-                .foregroundStyle(HeardTheme.Paper.mute)
+                .font(HeardFont.body)
+                .foregroundStyle(HeardTheme.Terminal.mute)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 280)
 
             Group {
                 if let combo = captured {
+                    // Key chip: square, 1px border, mono.
                     Text(combo.displayString)
-                        .font(.system(.title3, design: .monospaced).weight(.semibold))
+                        .font(HeardFont.mono(11, .medium))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
-                        .background(HeardTheme.Paper.accentSoft,
-                                    in: RoundedRectangle(cornerRadius: HeardTheme.Radius.inline))
-                        .foregroundStyle(HeardTheme.Paper.accent)
+                        .background(Rectangle().fill(HeardTheme.Terminal.accentSoft))
+                        .overlay(
+                            Rectangle().stroke(HeardTheme.Terminal.accent, lineWidth: HeardTheme.Stroke.hairline)
+                        )
+                        .foregroundStyle(HeardTheme.Terminal.accent)
                 } else {
                     Text("Waiting for input…")
-                        .font(.callout)
-                        .foregroundStyle(HeardTheme.Paper.mute)
+                        .font(HeardFont.caption)
+                        .foregroundStyle(HeardTheme.Terminal.mute)
                         .padding(.vertical, 8)
                 }
             }
@@ -293,10 +299,10 @@ enum ValidationKind { case noModifier, forbidden, singleModifier, heardConflict 
                           ? "exclamationmark.triangle.fill"
                           : "xmark.circle.fill")
                         .font(.caption)
-                        .foregroundStyle(validation == .singleModifier ? HeardTheme.Paper.warn : HeardTheme.Paper.bad)
+                        .foregroundStyle(validation == .singleModifier ? HeardTheme.Terminal.warn : HeardTheme.Terminal.bad)
                     Text(validationMessage(validation))
-                        .font(.caption)
-                        .foregroundStyle(validation == .singleModifier ? HeardTheme.Paper.warn : HeardTheme.Paper.bad)
+                        .font(HeardFont.caption)
+                        .foregroundStyle(validation == .singleModifier ? HeardTheme.Terminal.warn : HeardTheme.Terminal.bad)
                         .multilineTextAlignment(.leading)
                 }
                 .frame(maxWidth: 280, alignment: .leading)
@@ -308,6 +314,7 @@ enum ValidationKind { case noModifier, forbidden, singleModifier, heardConflict 
                     onCancel()
                 }
                 .keyboardShortcut(.cancelAction)
+                .buttonStyle(TerminalButtonStyle(.secondary))
 
                 Button("Save") {
                     stopMonitoring()
@@ -315,12 +322,12 @@ enum ValidationKind { case noModifier, forbidden, singleModifier, heardConflict 
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(captured == nil || isBlocked(captured))
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(TerminalButtonStyle(.primary))
             }
         }
         .padding(HeardTheme.Spacing.xl)
         .frame(width: 360)
-        .background(HeardTheme.Paper.bg)
+        .background(HeardTheme.Terminal.bg)
         .onAppear { startMonitoring() }
         .onDisappear { stopMonitoring() }
     }
