@@ -76,15 +76,14 @@ enum HotkeyTarget: Identifiable {
 
             HeardTheme.Terminal.border.frame(height: HeardTheme.Stroke.hairline)
 
-            VStack(spacing: 2) {
+            VStack(spacing: 0) {
                 ForEach(SettingsTab.allCases) { tab in
                     if tab != .advanced || model.settingsStore.settings.showAdvancedSettings {
                         sidebarItem(tab)
                     }
                 }
             }
-            .padding(.horizontal, 6)
-            .padding(.top, 8)
+            .padding(.top, HeardTheme.Spacing.sm)
 
             Spacer()
         }
@@ -110,22 +109,19 @@ enum HotkeyTarget: Identifiable {
                     .foregroundStyle(isSelected ? HeardTheme.Terminal.ink : HeardTheme.Terminal.ink2)
                 Spacer()
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background {
-                if isSelected {
-                    // Selected nav item: square surface fill + 1px accent border, no shadow.
-                    Rectangle()
-                        .fill(HeardTheme.Terminal.surface)
-                        .overlay(
-                            Rectangle()
-                                .stroke(HeardTheme.Terminal.accent, lineWidth: HeardTheme.Stroke.hairline)
-                        )
-                }
+            .padding(.horizontal, HeardTheme.Spacing.md)
+            .padding(.vertical, HeardTheme.Spacing.sm - 1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isSelected ? HeardTheme.Terminal.surfaceAlt : Color.clear)
+            // Selection is marked with a structural amber rule, not a boxed border.
+            .overlay(alignment: .leading) {
+                HeardTheme.Terminal.accent
+                    .frame(width: HeardTheme.Stroke.emphasis)
+                    .opacity(isSelected ? 1 : 0)
             }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 6)
     }
 
     // MARK: Detail pane
@@ -150,14 +146,32 @@ enum HotkeyTarget: Identifiable {
 extension SettingsView {
     // MARK: Pane helpers
 
-    func paneScroll<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+    func paneScroll<Content: View>(
+        _ title: String? = nil,
+        subtitle: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: HeardTheme.Spacing.md) {
+                if let title {
+                    VStack(alignment: .leading, spacing: HeardTheme.Spacing.xs) {
+                        Text(title)
+                            .font(HeardFont.headlineLG)
+                            .foregroundStyle(HeardTheme.Terminal.ink)
+                        if let subtitle {
+                            Text(subtitle)
+                                .font(HeardFont.caption)
+                                .foregroundStyle(HeardTheme.Terminal.mute)
+                                .lineSpacing(HeardTheme.Leading.caption)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.bottom, HeardTheme.Spacing.xs)
+                }
                 content()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
+            .padding(HeardTheme.Spacing.lg)
         }
         .background(HeardTheme.Terminal.bg)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

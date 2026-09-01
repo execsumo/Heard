@@ -79,12 +79,15 @@ public extension View {
 
 enum HeardTheme {
     enum Terminal {
-        // Surfaces — flat backgrounds, containers lift by one tonal step
-        static let bg           = Color(light: "F4F3F0", dark: "131316")
-        static let surface      = Color(light: "FFFFFF", dark: "1B1B1F")
-        static let surfaceAlt   = Color(light: "EAE8E3", dark: "201F23")
-        static let surfaceHigh  = Color(light: "DFDCD6", dark: "2A292D")
-        static let sidebar      = Color(light: "EDEBE7", dark: "0E0E11")
+        // Surfaces — flat backgrounds, containers lift by one tonal step.
+        // Dark values follow DESIGN.md's prose anchor (near-black ground, #121217
+        // containers) rather than its token block, where background/surface-elevated
+        // are only 1 hex step apart and the lift is imperceptible.
+        static let bg           = Color(light: "F4F3F0", dark: "08080B")
+        static let surface      = Color(light: "FFFFFF", dark: "121217")
+        static let surfaceAlt   = Color(light: "EAE8E3", dark: "1B1B1F")
+        static let surfaceHigh  = Color(light: "DFDCD6", dark: "201F23")
+        static let sidebar      = Color(light: "EDEBE7", dark: "121217")
 
         // Structure — depth is borders, not shadows
         static let border       = Color(light: "CFCBC4", dark: "2A292D")
@@ -129,10 +132,19 @@ enum HeardTheme {
     enum Spacing {
         static let xs: CGFloat = 4
         static let sm: CGFloat = 8
-        static let md: CGFloat = 12
+        static let md: CGFloat = 16
         static let lg: CGFloat = 24
         static let xl: CGFloat = 32
         static let gutter: CGFloat = 24
+    }
+
+    /// Extra leading applied on top of the base line height so long-form
+    /// settings copy reads with DESIGN.md's "generous line heights" instead of
+    /// SwiftUI's single-spaced default. Two steps: body rows, and the smaller
+    /// captions/subtitles nested beneath them.
+    enum Leading {
+        static let body: CGFloat = 4
+        static let caption: CGFloat = 3
     }
 
     /// The shape language is strictly sharp. These stay as named members so call
@@ -194,11 +206,7 @@ struct HeardMark: View {
             let s = sz.width / 64
             // Square enclosure — the shape language is strictly sharp
             let bgPath = Path(CGRect(origin: .zero, size: sz))
-            ctx.fill(bgPath, with: .linearGradient(
-                Gradient(colors: [Color(hex: "FFD9BA"), Color(hex: "FFB46E")]),
-                startPoint: CGPoint(x: sz.width / 2, y: 0),
-                endPoint: CGPoint(x: sz.width / 2, y: sz.height)
-            ))
+            ctx.fill(bgPath, with: .color(Color(hex: "FFB46E")))
             // Bubble shape
             var bubble = Path()
             bubble.move(to: CGPoint(x: 16*s, y: 22*s))
@@ -221,11 +229,7 @@ struct HeardMark: View {
                             control1: CGPoint(x: 18.7*s, y: 42*s),
                             control2: CGPoint(x: 16*s, y: 39.3*s))
             bubble.closeSubpath()
-            ctx.fill(bubble, with: .linearGradient(
-                Gradient(colors: [Color(hex: "201F23"), Color(hex: "131316")]),
-                startPoint: CGPoint(x: sz.width / 2, y: 0),
-                endPoint: CGPoint(x: sz.width / 2, y: sz.height)
-            ))
+            ctx.fill(bubble, with: .color(Color(hex: "121217")))
             // Three blocks (cx 24/32/40, cy 29) — square, per the shape language
             let dot = Color(hex: "FFB46E")
             ctx.fill(Path(CGRect(x: (24-2.4)*s, y: (29-2.4)*s, width: 4.8*s, height: 4.8*s)),
@@ -320,6 +324,46 @@ struct TerminalButtonStyle: ButtonStyle {
     }
 }
 
+// MARK: - Segmented Selector
+//
+// Replaces `Picker(.segmented)`, whose native chrome is rounded and tinted with
+// the system accent color — the loudest off-system element against the flat,
+// sharp, amber-accented terminal aesthetic. Adjacent 1px cells, solid amber
+// fill on the selected one, per DESIGN.md's button-invert guidance.
+
+struct TerminalSegmented<Value: Hashable>: View {
+    let options: [(label: String, value: Value)]
+    @Binding var selection: Value
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(options.enumerated()), id: \.offset) { index, option in
+                let selected = option.value == selection
+                Button {
+                    selection = option.value
+                } label: {
+                    Text(option.label)
+                        .font(HeardFont.mono(11, selected ? .semibold : .medium))
+                        .foregroundStyle(selected ? HeardTheme.Terminal.bg : HeardTheme.Terminal.ink2)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, HeardTheme.Spacing.sm - 2)
+                        .background(selected ? HeardTheme.Terminal.accent : Color.clear)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if index < options.count - 1 {
+                    HeardTheme.Terminal.border.frame(width: HeardTheme.Stroke.hairline)
+                }
+            }
+        }
+        .background(HeardTheme.Terminal.surfaceAlt)
+        .overlay(
+            Rectangle().stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline)
+        )
+    }
+}
+
 // MARK: - Text Field Style
 //
 // DESIGN.md: styled like a command line — square, bordered, monospaced.
@@ -400,8 +444,8 @@ struct CardHeader: View {
                 Spacer(minLength: 0)
                 trailing
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
+            .padding(.horizontal, HeardTheme.Spacing.md)
+            .padding(.vertical, HeardTheme.Spacing.md - 4)
             TerminalRule(color: HeardTheme.Terminal.border)
         }
     }
@@ -414,8 +458,9 @@ struct CardRow<Content: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             content
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
+                .lineSpacing(HeardTheme.Leading.body)
+                .padding(.horizontal, HeardTheme.Spacing.md)
+                .padding(.vertical, HeardTheme.Spacing.md - 4)
             if !isLast {
                 // Full-bleed: structural borders define sections, not inset whitespace
                 TerminalRule()
@@ -441,6 +486,7 @@ struct ToggleRow: View {
                         Text(sub)
                             .font(HeardFont.caption)
                             .foregroundStyle(HeardTheme.Terminal.mute)
+                            .lineSpacing(HeardTheme.Leading.caption)
                     }
                 }
                 Spacer()

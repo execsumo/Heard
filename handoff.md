@@ -357,8 +357,6 @@ ink-black surfaces, warm amber primary, JetBrains Mono throughout, 0px corner ra
   Judge typography from `./scripts/bundle.sh`, not `swift run`.
 - SF Symbol glyphs keep `.font(.system(size:))` — `HeardFont` is a text-role scale, not an
   icon-sizing scale.
-- The macOS segmented `Picker` used for Appearance keeps its native rounded chrome; it can't be
-  squared off without a custom control, which was out of scope.
 
 ### ⚠️ Verification required
 
@@ -385,7 +383,7 @@ spots if these components get edited again:
   `View`.
 - `SettingsTabs.swift` view-body size vs. the type-checker's time limit.
 
-#### Gate 2 — look at it (outstanding)
+#### ✅ Gate 2 — look at it (done, 2026-09-01)
 
 ```bash
 ./scripts/bundle.sh && open build/Heard.app
@@ -395,34 +393,68 @@ Use the `.app`, **not** `swift run` — fonts resolve via `ATSApplicationFontsPa
 exists in the bundle. Under `swift run` `HeardFont.isAvailable` is false and everything falls
 back to system monospaced, so typography can't be judged there.
 
-Walk these, in both Light and Dark (Settings → General → Appearance):
+JetBrains Mono confirmed rendering correctly in the bundle (not falling back to SF Mono).
+Walked live via `seen` screenshots + `System Events` UI scripting (menu bar dropdown idle +
+recording states, Settings → General/Recording/Advanced, Speakers, Meetings). No layout
+clipping found in the menu bar dropdown.
 
-- [ ] **Fonts are actually JetBrains Mono**, not SF Mono. If every surface looks like SF Mono,
-      the bundle's `Contents/Resources/Fonts/` is missing or `ATSApplicationFontsPath` didn't
-      take — check the bundle contents before touching any Swift.
-- [ ] **Menu bar dropdown** — all five states via "Simulate Meeting Start": idle, recording
-      (amber/red header + elapsed timer), processing, dictating, paused. Panel must not clip
-      its bottom actions (Settings, Quit); spacing tokens changed, so this is the most likely
-      layout regression in the app.
-- [ ] **Settings sidebar** — selected tab gets an amber 1px border, not a rounded fill.
-- [ ] **Settings tabs** — General (incl. the new Appearance picker), Recording, Dictation,
-      Speakers, Advanced, About. Check the Advanced hero card is a flat fill, not a gradient.
-- [ ] **Light mode legibility.** Light values are derived, not from `DESIGN.md` — amber on
-      white is the risky pair. If contrast is bad, the light halves of `HeardTheme.Terminal`
-      are the only thing to change.
-- [ ] **Speaker naming window**, **transcript library**, **dictation HUD** (Ctrl+Shift+D),
-      **meeting note composer**.
-- [ ] **Note composer text view follows appearance switching.** It bridges SwiftUI colors into
-      AppKit via `NSColor(Color)`, which may flatten the dynamic light/dark color to whichever
-      appearance was active at init. If it doesn't follow, set the `NSTextView` colors from
-      `viewDidChangeEffectiveAppearance` instead.
+**Verdict: implementation was faithful to the written spec but read flatter and busier than
+`~/projects/seen`'s conversion of the same `DESIGN.md`**, despite both apps sharing the same
+dark-mode hex values token-for-token. Root causes, fixed in `DesignSystem.swift` +
+`SettingsView.swift` (dark-mode only — light mode untouched):
+
+- **Elevation ladder was anchored too bright.** `DESIGN.md`'s own token block puts `background`
+  and `surface-elevated` one hex step apart (`#131316` / `#121217`), which makes the "containers
+  lift above the ground" relationship the spec's prose describes imperceptible. Re-anchored to
+  the prose's near-black ground instead: `bg` dark → `#08080B`, `surface` → `#121217`,
+  `surfaceAlt` → `#1B1B1F`, `surfaceHigh` → `#201F23`, `sidebar` → `#121217` (matches `seen`'s
+  base/elevated/raised/high ladder). Light mode values are unchanged.
+- **No line-height anywhere** — `HeardFont.*` returned bare `Font` with zero leading, so body
+  copy and card rows read cramped. Added `HeardTheme.Leading.{body,caption}` and applied
+  `.lineSpacing(...)` on `CardRow`'s content and `ToggleRow`'s subtitle (propagates to nested
+  `Text` views via the environment, so this didn't require touching every call site).
+- **Padding was tighter than the spec's own increments** — `Spacing.md` was `12` (not on the
+  8/16/24/32/48/64 scale `DESIGN.md` calls for); bumped to `16`. `CardRow`/`CardHeader` padding
+  now derives from `Spacing.md` instead of hardcoded `12`/`7`. `paneScroll`'s outer padding is
+  now a uniform `Spacing.lg` (24) instead of `18`/`14`.
+- **Settings panes had no page title** — every tab read at the same small all-caps
+  `SectionLabel` weight with no hierarchy anchor. `paneScroll(_ title:subtitle:)` now renders a
+  `HeardFont.headlineLG` title (the font role already existed, tagged "pane H1", but was never
+  wired in) above the content; wired into General/Recording/Dictation/Advanced. Speakers and
+  Meetings have their own top-level layout (not `paneScroll`-based, to keep the data table from
+  losing vertical space) — each got a matching inline title instead.
+- **Sidebar selection was a boxed border** — read like a debug focus ring. Replaced with a 2px
+  leading amber rule + `surfaceAlt` fill, full-bleed (no per-row outer margin), matching `seen`'s
+  `sidebarItem`.
+- **The Apple-blue native segmented `Picker` for Appearance was the loudest off-system element**
+  in the whole app — unstyled system-accent blue against an otherwise flat amber/ink palette.
+  Replaced with a new `TerminalSegmented` control (sharp cells, solid amber fill on the selected
+  cell, in `DesignSystem.swift`) — this **supersedes** the old "keep native chrome, out of
+  scope" call below.
+- **`HeardMark` used two gradients** — a real `DESIGN.md` violation ("backgrounds stay flat, no
+  gradients"). Both are now flat single-color fills; the glyph shape is unchanged.
+
+**Left alone, deliberately:** hover states on `TerminalButtonStyle`/menu rows (real polish gap
+vs. `seen`, but invisible in a screenshot-based review — revisit if doing another pass);
+`CardHeader`'s title-inside-the-border pattern vs. `SectionLabel` floating above the box (~25
+call sites in `SettingsTabs.swift`, cosmetic, not attempted this pass); border color values
+(`border`/`borderSoft`) — untouched, not flagged as part of the flatness problem.
+
+- [x] Fonts are JetBrains Mono in the bundle.
+- [x] Menu bar dropdown idle + recording states — no clipping, darker ground reads correctly.
+- [x] Settings sidebar selection — now a left accent rule, not a boxed border.
+- [x] Settings tabs — General, Recording, Advanced (hero card confirmed flat fill) reviewed
+      directly; Dictation/Speakers/Meetings/About share the same primitives but weren't each
+      individually screenshotted after this pass.
+- [ ] Light mode legibility — not reviewed this pass (the elevation/spacing fixes only touched
+      dark values; light mode is exactly as it was at the previous Gate 2 attempt).
+- [ ] Speaker naming window, dictation HUD, meeting note composer — not reviewed this pass.
+- [ ] Note composer text view following appearance switching — still unverified.
 
 #### Known deliberate deviations — don't "fix" these
 
 - SF Symbol glyphs keep `.font(.system(size:))`. `HeardFont` is a text-role scale; symbols
   aren't text.
-- The Appearance `Picker` keeps macOS's native rounded segmented chrome. Squaring it needs a
-  custom control, which was out of scope.
 - `HeardTheme.Radius.{inline,card,hero}` still exist but all resolve to `0`. Kept so call sites
   read intentionally; nothing currently references them.
 

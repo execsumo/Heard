@@ -5,7 +5,7 @@ extension SettingsView {
     // MARK: General
 
     var generalSection: some View {
-        paneScroll {
+        paneScroll("General") {
             sectionGroup("Profile") {
                 SettingsCard {
                     CardRow(isLast: true) {
@@ -44,13 +44,10 @@ extension SettingsView {
                                 .font(HeardFont.bodyMedium)
                                 .foregroundStyle(HeardTheme.Terminal.ink)
                             Spacer()
-                            Picker("", selection: settingsBinding(\.appearance)) {
-                                ForEach(AppAppearance.allCases) { mode in
-                                    Text(mode.displayName).tag(mode)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.segmented)
+                            TerminalSegmented(
+                                options: AppAppearance.allCases.map { ($0.displayName, $0) },
+                                selection: settingsBinding(\.appearance)
+                            )
                             .frame(width: 180)
                         }
                     }
@@ -84,7 +81,7 @@ extension SettingsView {
     // MARK: Recording
 
     var recordingSection: some View {
-        paneScroll {
+        paneScroll("Recording") {
             sectionGroup("Meeting Detection") {
                 SettingsCard {
                     ToggleRow(title: "Microsoft Teams", isOn: settingsBinding(\.enableTeamsDetection))
@@ -237,8 +234,8 @@ extension SettingsView {
     // MARK: Dictation
 
     var dictationSection: some View {
-        paneScroll {
-            sectionGroup("Dictation") {
+        paneScroll("Dictation") {
+            sectionGroup("Behavior") {
                 SettingsCard {
                     ToggleRow(
                         title: "Enable Dictation",
@@ -392,6 +389,11 @@ extension SettingsView {
     var speakersSection: some View {
         VStack(spacing: 0) {
             VStack(spacing: HeardTheme.Spacing.md) {
+                Text("Speakers")
+                    .font(HeardFont.headlineLG)
+                    .foregroundStyle(HeardTheme.Terminal.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                 if !model.namingCandidates.isEmpty {
                     HStack(spacing: 8) {
                         Image(systemName: "person.badge.plus")
@@ -541,8 +543,10 @@ extension SettingsView {
     // MARK: Advanced
 
     var advancedSection: some View {
-        paneScroll {
-            // Hero card — flat recordingBg fill, 1px border (DESIGN.md: backgrounds stay flat)
+        paneScroll("Advanced") {
+            // Hero card — flat neutral fill, 1px border (DESIGN.md: backgrounds stay flat).
+            // Not recordingBg: that's the "something needs attention" red, and this card is
+            // routinely showing "all ready" — a status color there reads as an alarm.
             let readyCount = model.modelCatalog.statuses.filter { $0.availability == .ready }.count
             let totalCount = model.modelCatalog.statuses.count
 
@@ -550,12 +554,12 @@ extension SettingsView {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("\(readyCount) of \(totalCount) models ready")
                         .font(HeardFont.title)
-                        .foregroundStyle(HeardTheme.Terminal.recordingInk)
+                        .foregroundStyle(HeardTheme.Terminal.ink)
                     Text(model.downloadManager.allBatchModelsReady
                          ? "Ready to transcribe"
                          : "Some models need downloading")
                         .font(HeardFont.caption)
-                        .foregroundStyle(HeardTheme.Terminal.recordingInk.opacity(0.65))
+                        .foregroundStyle(HeardTheme.Terminal.mute)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 6) {
@@ -574,7 +578,7 @@ extension SettingsView {
                 }
             }
             .padding(14)
-            .background(HeardTheme.Terminal.recordingBg)
+            .background(HeardTheme.Terminal.surfaceAlt)
             .overlay(
                 Rectangle().stroke(HeardTheme.Terminal.border, lineWidth: HeardTheme.Stroke.hairline)
             )

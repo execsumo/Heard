@@ -61,6 +61,11 @@ public struct TranscriptLibraryView: View {
     public var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: HeardTheme.Spacing.md) {
+                Text("Meetings")
+                    .font(HeardFont.headlineLG)
+                    .foregroundStyle(HeardTheme.Terminal.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                 HStack(spacing: HeardTheme.Spacing.sm) {
                     HStack(spacing: 6) {
                         Image(systemName: "magnifyingglass")
