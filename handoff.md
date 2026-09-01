@@ -2,12 +2,11 @@
 
 ## Current Status
 
-> ⚠️ **The working tree has an unverified UI change.** The terminal design-system
-> conversion (2026-09-01) has never been compiled or run — it was written on Linux,
-> where `swift build` cannot work. Everything below describing a clean build refers to
-> the state *before* that conversion. See
-> [Design System Conversion](#design-system-conversion-2026-09-01) for the verification
-> checklist that has to pass first.
+> ⚠️ **The terminal design-system conversion (2026-09-01) is on
+> `design/terminal-design-system`, not merged.** It compiles and passes tests on macOS
+> (verified in CI), but **nobody has looked at it** — no screenshot, no run. See
+> [Design System Conversion](#design-system-conversion-2026-09-01) for the visual
+> checklist that still has to pass.
 
 The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15.0+. Core infrastructure is complete — meeting detection, dual-track audio capture, on-device transcription (Parakeet TDT V2/V3), VAD (Silero), speaker diarization (LS-EEND + WeSpeaker), and speaker assignment are all functional via the FluidAudio framework. An `.app` bundle is available via `./scripts/bundle.sh`.
 
@@ -364,38 +363,29 @@ ink-black surfaces, warm amber primary, JetBrains Mono throughout, 0px corner ra
 ### ⚠️ Verification required
 
 The conversion was written on a Linux machine, where `swift build` fails at FluidAudio's
-`mach/mach.h`. **Nothing has been type-checked, run, or looked at.**
-
-What *was* verified, and what it's worth:
+`mach/mach.h`, so it was authored blind.
 
 | Check | Result | Catches | Misses |
 |---|---|---|---|
 | `swiftc -parse` on every touched file | clean | syntax, brace/paren balance | all type errors |
 | Every `HeardTheme.Terminal.*` / `HeardFont.*` reference resolves to a definition | clean | typo'd or invented tokens | wrong types, bad arg labels |
 | No residual `RoundedRectangle`/`Capsule`/`cornerRadius`/`.shadow(`/`roundedBorder`/raw `Color.red` etc. | clean | missed conversions | whether it *looks* right |
+| **CI on macOS** — `swift build` + `swift run HeardTests` | **✅ passed** | every type error, every test regression | anything visual |
 
-#### Gate 1 — compile
+#### ✅ Gate 1 — compile (passed)
 
-```bash
-swift build && swift run HeardTests
-```
+CI builds and tests on macOS for a push to any branch, so the branch push covered this:
+`swift build` clean, full test suite green, no new warnings from the converted files. None of
+the compile failures anticipated below actually occurred — recorded because they're the fragile
+spots if these components get edited again:
 
-Most likely failures, in rough order of probability:
+- `TerminalTextFieldStyle`'s `TextFieldStyle` conformance via the underscored
+  `_body(configuration:)` requirement.
+- `CardHeader`'s `trailing: AnyView?`, which relies on `Optional` conditionally conforming to
+  `View`.
+- `SettingsTabs.swift` view-body size vs. the type-checker's time limit.
 
-1. **"Unable to type-check this expression in reasonable time"** in `SettingsTabs.swift`.
-   That file's view bodies grew during conversion. Fix by extracting the offending section
-   into a `private var someSection: some View`, not by simplifying the styling.
-2. **`TerminalTextFieldStyle`** (`DesignSystem.swift`) conforms to `TextFieldStyle` via the
-   underscored `_body(configuration:)` requirement. If the SDK rejects it, replace the
-   conformance with a plain `ViewModifier` and change the 5 call sites (plus the one inside
-   `InlineEditableText`) from `.textFieldStyle(TerminalTextFieldStyle())` to `.modifier(...)`.
-3. **`CardHeader`'s `trailing: AnyView?`** relies on `Optional` conditionally conforming to
-   `View`. If that errors, wrap it in `if let trailing { trailing }`.
-4. **`TerminalButtonStyle` argument labels** — the initialiser is
-   `init(_ kind: Kind = .secondary, size: Size = .md)`. All 22 call sites were checked to use
-   `size:`, but a compile error here would be trivial to fix.
-
-#### Gate 2 — look at it
+#### Gate 2 — look at it (outstanding)
 
 ```bash
 ./scripts/bundle.sh && open build/Heard.app
