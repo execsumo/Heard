@@ -5,8 +5,8 @@
 <h1 align="center">Heard</h1>
 
 <p align="center">
-  <strong>Stop taking meeting notes. Get them automatically.</strong><br/>
-  Heard is a quiet macOS menu bar app that auto-detects your meetings in Microsoft Teams, Zoom, and Webex, records them, and turns them into clean, speaker-labeled Markdown transcripts — <em>fully on-device</em>.
+  <strong>Your meetings become usable notes. Nothing leaves your Mac.</strong><br/>
+  Heard is a quiet macOS menu bar app that notices Teams, Zoom, and Webex calls, captures them automatically, and turns them into clean, speaker-labeled Markdown — <em>fully on-device</em>.
 </p>
 
 <p align="center">
@@ -25,8 +25,9 @@
 
 ## Why Heard?
 
-**No cloud. No subscription. No sending your meetings to anyone's servers.**
-Every byte of audio, every transcript, every speaker embedding lives on your Mac. Heard never makes a network call to a transcription service — because there is no transcription service. It all runs locally on Apple Silicon.
+Meeting transcription should feel like infrastructure, not another attendee.
+
+Heard stays out of the call, does the work locally, and leaves you with files you can actually use. **No meeting bot. No cloud transcription service. No subscription.** Every byte of audio, every transcript, and every speaker embedding stays on your Mac and is processed on Apple Silicon.
 
 - **Zero‑click recording** — As soon as a meeting starts in Teams, Zoom, or Webex, Heard starts. When the meeting ends, you have a transcript waiting in your Documents folder.
 - **Speaker-labeled transcripts** — Diarization separates each voice; once you name a speaker, Heard remembers them across every future meeting.
