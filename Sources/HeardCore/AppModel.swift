@@ -121,6 +121,9 @@ public final class AppModel: ObservableObject {
         recordingManager.onAppAudioCaptureConfirmed = { [weak permissionCenter] in
             permissionCenter?.markAudioCaptureGranted()
         }
+        recordingManager.onAppAudioLooksDenied = { [weak permissionCenter] in
+            permissionCenter?.markAudioCaptureUnverified()
+        }
 
         // Sync launch-at-login state with settings
         let currentlyEnabled = LaunchAtLogin.isEnabled
@@ -954,6 +957,35 @@ public var filteredSpeakers: [SpeakerProfile] {
             if let path = job.transcriptPath {
                 TranscriptWriter.renameSpeaker(in: path, from: oldName, to: newName)
             }
+        }
+    }
+
+    /// True while resetting permissions would cut off a recording or a pipeline job.
+    public var isBusyForPermissionReset: Bool {
+        recordingManager.activeSession != nil || pipelineProcessor.isProcessing || isDictating
+    }
+
+    /// Confirm, then wipe all of Heard's macOS privacy grants and relaunch. Recovery
+    /// for grants left in a bad state (e.g. by a macOS update) that toggling in
+    /// System Settings doesn't fix.
+    public func confirmAndResetPermissions() {
+        guard !isBusyForPermissionReset else { return }
+        let alert = NSAlert()
+        alert.messageText = "Reset all permissions?"
+        alert.informativeText = "Heard will remove its Microphone, System Audio, Screen Recording, and Accessibility permissions from macOS and relaunch. You'll then grant each one again in Settings → General → Permissions."
+        alert.addButton(withTitle: "Reset and Relaunch")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        if let error = permissionCenter.resetAllPermissionsAndRelaunch() {
+            let failure = NSAlert()
+            failure.messageText = "Couldn't reset permissions"
+            failure.informativeText = error
+            failure.alertStyle = .warning
+            failure.runModal()
         }
     }
 

@@ -184,7 +184,7 @@ public struct MenuBarView: View {
                 pulsing: true,
                 title: tapFailed ? "Recording (mic only)" : (micFailed ? "Recording (no mic)" : "Recording"),
                 subtitle: tapFailed
-                    ? "No system audio — check Screen Recording"
+                    ? "No \(recordingManager.meetingAppName) audio — check System Audio"
                     : micFailed
                         ? "Mic capture failed — check input device"
                         : (session.title.isEmpty ? "Meeting" : session.title),
@@ -316,13 +316,18 @@ public struct MenuBarView: View {
                 .foregroundStyle(HeardTheme.Terminal.warn)
                 .font(HeardFont.caption)
             VStack(alignment: .leading, spacing: 4) {
-                Text("System audio tap failed. Recording only your voice.")
+                Text("No \(recordingManager.meetingAppName) audio for over a minute. Only your voice is being recorded.")
                     .font(HeardFont.caption)
                     .foregroundStyle(HeardTheme.Terminal.ink)
                     .lineLimit(3)
-                Text("Verify Screen Recording permission in System Settings.")
+                Text("If others are talking, check System Audio Recording for Heard. This clears on its own once audio arrives.")
                     .font(HeardFont.mono(10))
                     .foregroundStyle(HeardTheme.Terminal.mute)
+                    .lineLimit(4)
+                Button("Open System Audio Settings") {
+                    model.permissionCenter.openAudioCaptureSettings()
+                }
+                .buttonStyle(TerminalButtonStyle(.secondary, size: .sm))
             }
             Spacer(minLength: 4)
         }

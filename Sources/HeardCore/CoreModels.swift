@@ -318,6 +318,8 @@ public enum PermissionState: String, Codable, CaseIterable, Identifiable {
     case unknown
     case granted
     case recommended
+    /// Granted as far as macOS says, but capture produced only silence.
+    case unverified
 
     public var id: String { rawValue }
 
@@ -326,6 +328,7 @@ public enum PermissionState: String, Codable, CaseIterable, Identifiable {
         case .unknown: return "Unknown"
         case .granted: return "Granted"
         case .recommended: return "Not Granted"
+        case .unverified: return "Unverified"
         }
     }
 }
