@@ -649,7 +649,9 @@ public final class MeetingDetector: ObservableObject {
 @MainActor
 public final class RecordingManager: ObservableObject {
     @Published public private(set) var activeSession: RecordingSession?
-    /// True when the app-audio process tap failed — recording is mic-only.
+    /// True when no meeting-app audio is reaching the recording: the tap couldn't be
+    /// created, or it has delivered only silence for a sustained stretch while the
+    /// meeting app was playing audio. Clears on its own when audio arrives.
     @Published public private(set) var appAudioTapFailed: Bool = false
     /// True when the mic engine failed to start — recording is app-audio-only.
     @Published public private(set) var micCaptureFailed: Bool = false
@@ -693,6 +695,11 @@ public final class RecordingManager: ObservableObject {
     private var aggregateDeviceID: AudioObjectID = 0
     private var maxDurationTask: Task<Void, Never>?
     private var appAudioMonitorTask: Task<Void, Never>?
+    private var appAudioHealth = AppAudioHealthMonitor()
+    /// When the tap chain last went down for a file-preserving rebuild; the gap is
+    /// padded with silence so the app track stays aligned with the mic track.
+    private var appChainDownAt: CFTimeInterval?
+    private var appWAVPath: URL?
     private var defaultOutputListenerBlock: AudioObjectPropertyListenerBlock?
     private var micStartTime: Date?
     private var appStartTime: Date?
@@ -705,6 +712,12 @@ public final class RecordingManager: ObservableObject {
     public var onMaxDurationReached: (@MainActor (RecordingSession) -> Void)?
     /// Called once when the self-test confirms non-zero app audio is flowing.
     public var onAppAudioCaptureConfirmed: (() -> Void)?
+    /// Called when the tap has delivered only silence for the whole recording while
+    /// the meeting app was playing audio — the signature of a denied System Audio grant.
+    public var onAppAudioLooksDenied: (() -> Void)?
+
+    /// Display name of the meeting app being recorded, for status text.
+    public var meetingAppName: String { currentSource.displayName }
 
     /// The meeting-app PID, source, title, and roster for the current recording (needed for re-start on split).
     private var currentMeetingPID: pid_t?
@@ -739,6 +752,9 @@ public final class RecordingManager: ObservableObject {
 
         // Set up app audio recording if we have a meeting-app PID
         appAudioTapFailed = false
+        appAudioHealth = AppAudioHealthMonitor()
+        appChainDownAt = nil
+        appWAVPath = appPath
         currentSource = source
         var appAudioRunning = false
         if let pid = meetingPID {
@@ -746,9 +762,10 @@ public final class RecordingManager: ObservableObject {
                 try setupAppAudioRecording(pid: pid, to: appPath)
                 appAudioRunning = true
             } catch {
-                // App audio is best-effort — continue with mic-only if tap fails
-                appAudioTapFailed = true
-                NSLog("Heard: App audio tap failed (recording mic-only): \(error.localizedDescription)")
+                // App audio is best-effort — the health monitor keeps retrying the tap
+                // (the meeting app may not have opened audio yet) and only warns if
+                // it's still down after a sustained stretch.
+                NSLog("Heard: App audio tap failed at start (will retry): \(error.localizedDescription)")
             }
         }
 
@@ -769,6 +786,9 @@ public final class RecordingManager: ObservableObject {
         currentMeetingPID = meetingPID
         currentTitle = title
         currentRosterNames = rosterNames
+        if let pid = meetingPID {
+            startAppAudioMonitor(pid: pid)
+        }
 
         activeSession = RecordingSession(
             title: title,
@@ -929,13 +949,15 @@ public final class RecordingManager: ObservableObject {
 
     // MARK: - App Audio Recording (CATapDescription + Process Tap + Raw AUHAL)
 
-    private func setupAppAudioRecording(pid: pid_t, to url: URL, allowSelfTestRebuild: Bool = true) throws {
+    /// Build the tap → aggregate → IOProc chain. With `existingFile`, the chain appends
+    /// to that WAV (a mid-session rebuild) instead of truncating `url`.
+    private func setupAppAudioRecording(pid: pid_t, to url: URL, existingFile: AVAudioFile? = nil) throws {
         // ── Step 1: Collect ALL meeting-app process object IDs ────────────────
         // Electron/Chromium clients (Teams, Webex) render audio in renderer / GPU
         // sub-processes, not necessarily the main process that holds the power
         // assertion. Tapping only the reported PID misses audio from those children.
         let appName = currentSource.displayName
-        let processObjectIDs = collectMeetingProcessObjectIDs(for: currentSource, requiredPID: pid)
+        let processObjectIDs = collectMeetingProcessObjectIDs(for: currentSource, requiredPID: pid, log: true)
         guard !processObjectIDs.isEmpty else {
             NSLog("Heard: No CoreAudio process objects found for %@ (pid=%d). The process(es) haven't opened audio yet — translate-PID returns 0 until they do.", appName, pid)
             throw RecordingError.processTapFailed(kAudioHardwareBadObjectError)
@@ -1033,6 +1055,20 @@ public final class RecordingManager: ObservableObject {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain)
         _ = AudioObjectGetPropertyData(aggregateDeviceID, &rateProp, 0, nil, &rateSize, &nominalRate)
+        if let existingFile, nominalRate != existingFile.processingFormat.sampleRate {
+            // The output device changed rate since the WAV was opened (e.g. a new
+            // default device). Ask the aggregate to run at the file's rate; the
+            // IOProc writes raw frames, so a mismatch would corrupt the track.
+            var wanted = existingFile.processingFormat.sampleRate
+            _ = AudioObjectSetPropertyData(aggregateDeviceID, &rateProp, 0, nil, rateSize, &wanted)
+            _ = AudioObjectGetPropertyData(aggregateDeviceID, &rateProp, 0, nil, &rateSize, &nominalRate)
+            guard nominalRate == wanted else {
+                NSLog("Heard: Rebuilt aggregate runs at %.0f Hz but the app WAV is %.0f Hz — can't append", nominalRate, wanted)
+                AudioHardwareDestroyAggregateDevice(aggregateDeviceID); aggregateDeviceID = 0
+                AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
+                throw RecordingError.deviceSetupFailed(kAudioDeviceUnsupportedFormatError)
+            }
+        }
         let sampleRate = nominalRate > 0 ? nominalRate : 48000.0
         let channels: AVAudioChannelCount = 2
 
@@ -1050,7 +1086,7 @@ public final class RecordingManager: ObservableObject {
         ]
         let file: AVAudioFile
         do {
-            file = try AVAudioFile(forWriting: url, settings: fileSettings)
+            file = try existingFile ?? AVAudioFile(forWriting: url, settings: fileSettings)
         } catch {
             AudioHardwareDestroyAggregateDevice(aggregateDeviceID); aggregateDeviceID = 0
             AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
@@ -1061,6 +1097,15 @@ public final class RecordingManager: ObservableObject {
         let format = file.processingFormat
         NSLog("Heard: IOProc format sr=%.0f ch=%u interleaved=%d",
               format.sampleRate, format.channelCount, format.isInterleaved ? 1 : 0)
+
+        // Pad the time the chain was down with silence so the app track stays
+        // aligned with the mic track after a file-preserving rebuild.
+        if existingFile != nil, let downAt = appChainDownAt {
+            let now = CACurrentMediaTime()
+            padWithSilence(file, seconds: now - downAt)
+            // If a later step fails, the next retry only pads the gap from here.
+            appChainDownAt = now
+        }
 
         // ── Step 8: Create IOProc directly on the aggregate device ─────────────
         // AudioDeviceCreateIOProcIDWithBlock with a dispatch queue: CoreAudio copies
@@ -1130,7 +1175,7 @@ public final class RecordingManager: ObservableObject {
         guard ioErr == noErr, let validProc = ioProc else {
             NSLog("Heard: AudioDeviceCreateIOProcIDWithBlock failed (%d)", ioErr)
             appHALContext = nil
-            appAudioFile = nil
+            if existingFile == nil { appAudioFile = nil }
             AudioHardwareDestroyAggregateDevice(aggregateDeviceID); aggregateDeviceID = 0
             AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
             throw RecordingError.deviceSetupFailed(ioErr)
@@ -1141,18 +1186,43 @@ public final class RecordingManager: ObservableObject {
             NSLog("Heard: AudioDeviceStart failed (%d)", startErr)
             AudioDeviceDestroyIOProcID(aggregateDeviceID, validProc)
             appHALContext = nil
-            appAudioFile = nil
+            if existingFile == nil { appAudioFile = nil }
             AudioHardwareDestroyAggregateDevice(aggregateDeviceID); aggregateDeviceID = 0
             AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
             throw RecordingError.deviceSetupFailed(startErr)
         }
 
         appIOProcID = validProc
-        appStartTime = Date()
-        NSLog("Heard: App audio capture started (IOProc, aggregate=%u, sr=%.0f)", aggregateDeviceID, sampleRate)
+        appChainDownAt = nil
+        if existingFile == nil {
+            appStartTime = Date()
+        }
+        NSLog("Heard: App audio capture started (IOProc, aggregate=%u, sr=%.0f, appending=%d)",
+              aggregateDeviceID, sampleRate, existingFile != nil ? 1 : 0)
 
         installDefaultOutputDeviceListener(initial: outputDeviceID)
-        startAppAudioMonitor(context: ctx, pid: pid, appPath: url, allowRebuild: allowSelfTestRebuild)
+    }
+
+    /// Append `seconds` of zero frames to the app WAV (capped at 10 minutes per call).
+    private func padWithSilence(_ file: AVAudioFile, seconds: Double) {
+        let format = file.processingFormat
+        var remaining = AVAudioFrameCount(max(0, min(seconds, 600)) * format.sampleRate)
+        guard remaining > 0 else { return }
+        let chunk: AVAudioFrameCount = 48_000
+        guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunk),
+              let channelData = buf.floatChannelData else { return }
+        for c in 0..<Int(format.channelCount) {
+            channelData[c].update(repeating: 0, count: Int(chunk))
+        }
+        while remaining > 0 {
+            buf.frameLength = min(chunk, remaining)
+            do { try file.write(from: buf) } catch {
+                NSLog("Heard: Padding app WAV with silence failed: %@", error.localizedDescription)
+                return
+            }
+            remaining -= buf.frameLength
+        }
+        NSLog("Heard: Padded app WAV with %.2fs of silence for the rebuild gap", seconds)
     }
 
     /// Find CoreAudio process object IDs for all running processes in the meeting
@@ -1160,7 +1230,7 @@ public final class RecordingManager: ObservableObject {
     /// helper processes (Teams Helper, Teams Helper (GPU), etc.). We tap all of
     /// them so that audio from any subprocess is captured regardless of which
     /// one is active.
-    private func collectMeetingProcessObjectIDs(for source: MeetingApp, requiredPID: pid_t) -> [AudioObjectID] {
+    private func collectMeetingProcessObjectIDs(for source: MeetingApp, requiredPID: pid_t, log: Bool) -> [AudioObjectID] {
         let meetingApps = NSWorkspace.shared.runningApplications.filter { app in
             source.isProcessFamilyMember(bundleID: app.bundleIdentifier, localizedName: app.localizedName)
         }
@@ -1185,6 +1255,7 @@ public final class RecordingManager: ObservableObject {
             )
             if err == noErr && objID != 0 {
                 result.append(objID)
+                guard log else { continue }
                 let processName = meetingApps.first(where: { $0.processIdentifier == pid })?.localizedName ?? "?"
                 NSLog("Heard: Tapping %@ process pid=%d objectID=%u (%@)",
                       source.displayName, pid, objID, processName)
@@ -1209,18 +1280,28 @@ public final class RecordingManager: ObservableObject {
         }
     }
 
-    /// Tear down only the audio chain (AUHAL + aggregate + tap + file), leaving the monitor
-    /// task and device listener alive. Used by the self-test rebuild path so the monitor that
-    /// triggered the rebuild can drive the new setup without cancelling itself mid-call.
-    private func teardownAppAudioChainOnly() {
+    /// Tear down only the audio chain (IOProc + aggregate + tap), leaving the monitor
+    /// task and device listener alive so the monitor can drive a rebuild. With
+    /// `keepFile`, the app WAV stays open for a file-preserving rebuild and the
+    /// moment the chain went down is recorded so the gap can be padded.
+    private func teardownAppAudioChainOnly(keepFile: Bool = false) {
         appHALContext?.isStopped = true
         if let procID = appIOProcID {
             AudioDeviceStop(aggregateDeviceID, procID)
             AudioDeviceDestroyIOProcID(aggregateDeviceID, procID)
             appIOProcID = nil
         }
+        // Drain IOProc blocks already queued so nothing writes to the file while
+        // the rebuild pads it from the main actor.
+        appIOProcQueue.sync {}
         appHALContext = nil
-        appAudioFile = nil
+        if keepFile {
+            // Keep the earliest down time if earlier retries already failed.
+            appChainDownAt = appChainDownAt ?? CACurrentMediaTime()
+        } else {
+            appAudioFile = nil
+            appChainDownAt = nil
+        }
 
         if aggregateDeviceID != 0 {
             AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
@@ -1232,96 +1313,150 @@ public final class RecordingManager: ObservableObject {
         }
     }
 
-    // MARK: - App Audio Diagnostics
+    // MARK: - App Audio Health
 
-    /// Self-test at T+2s, optional one-shot rebuild on silence, then periodic stats logging.
-    /// Cancellation: teardownAppAudioRecording cancels this task. The task also exits early after
-    /// triggering a rebuild — the rebuild creates a fresh context + monitor that supersedes this one.
-    private func startAppAudioMonitor(context ctx: AppAudioInputContext, pid: pid_t, appPath: URL, allowRebuild: Bool) {
+    /// Every 2 s for the whole recording: feed what the tap delivered into
+    /// `AppAudioHealthMonitor` and apply its decisions (rebuild, warn, clear,
+    /// confirm). Also retries the tap while the chain is down — at the start of a
+    /// call the meeting app may not have opened audio yet.
+    /// Cancellation: teardownAppAudioRecording cancels this task.
+    private func startAppAudioMonitor(pid: pid_t) {
         appAudioMonitorTask?.cancel()
-        let started = CACurrentMediaTime()
+        appHealthSnapshot = (nil, 0, 0)
+        appChainRetryElapsed = 0
         appAudioMonitorTask = Task { [weak self] in
-            // ── T+2s self-test ─────────────────────────────────────────────────
-            try? await Task.sleep(for: .seconds(2))
-            if Task.isCancelled { return }
-
-            let elapsed = CACurrentMediaTime() - started
-            if ctx.nonZeroFrames > 0 {
-                NSLog("Heard: Self-test PASSED at +%.1fs (%d non-zero of %d frames, peak=%.4f)",
-                      elapsed, ctx.nonZeroFrames, ctx.totalFrames, ctx.peakAmplitude)
-                DebugFileLog.log(
-                    "app audio self-test: result=passed elapsedSeconds=\(String(format: "%.1f", elapsed)) " +
-                    "nonZeroSamples=\(ctx.nonZeroFrames) totalFrames=\(ctx.totalFrames) " +
-                    "peak=\(String(format: "%.4f", ctx.peakAmplitude))"
-                )
-                self?.onAppAudioCaptureConfirmed?()
-            } else {
-                let reason = ctx.renderCycles == 0
-                    ? "no render callbacks fired"
-                    : "callbacks firing (cycles=\(ctx.renderCycles), frames=\(ctx.totalFrames)) but all-zero samples"
-                DebugFileLog.log(
-                    "app audio self-test: result=failed elapsedSeconds=\(String(format: "%.1f", elapsed)) " +
-                    "nonZeroSamples=0 totalFrames=\(ctx.totalFrames) renderCycles=\(ctx.renderCycles) " +
-                    "rebuild=\(allowRebuild) reason=\(reason)"
-                )
-                if allowRebuild {
-                    NSLog("Heard: Self-test FAILED at +%.1fs — %@. Rebuilding tap with fresh helper enumeration (one attempt).",
-                          elapsed, reason)
-                    self?.attemptAppAudioRebuild(pid: pid, appPath: appPath)
-                    return
-                } else {
-                    NSLog("Heard: Self-test FAILED again at +%.1fs after rebuild — %@. Flagging recording as mic-only.",
-                          elapsed, reason)
-                    self?.appAudioTapFailed = true
-                }
-            }
-
-            // ── Periodic stats / silence warnings ──────────────────────────────
             var tick = 0
-            var warnedSilent = false
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(5))
-                if Task.isCancelled { break }
+                try? await Task.sleep(for: .seconds(Self.appAudioHealthInterval))
+                guard let self, !Task.isCancelled else { return }
                 tick += 1
-                let now = CACurrentMediaTime() - started
-
-                if ctx.renderCycles == 0 {
-                    NSLog("Heard: App audio — NO render callbacks fired after %.1fs (tap/aggregate not producing input)", now)
-                } else if !warnedSilent && ctx.nonZeroFrames == 0 {
-                    warnedSilent = true
-                    NSLog("Heard: App audio — callbacks firing but still all-zero after %.1fs. Likely causes: no audio playing through Teams, wrong process tapped, or muted output.",
-                          now)
-                }
-
-                if tick % 2 == 0 {
-                    self?.logAppAudioStats(prefix: "App audio", context: ctx)
+                self.appAudioHealthTick(pid: pid)
+                if tick % 5 == 0, let ctx = self.appHALContext {
+                    self.logAppAudioStats(prefix: "App audio", context: ctx)
                 }
             }
         }
     }
 
-    /// Tear down the tap/aggregate/AUHAL and rebuild with fresh process enumeration.
-    /// Called once from the self-test on silence. Helper processes that opened audio
-    /// after the initial setup will now translate to non-zero process object IDs.
-    private func attemptAppAudioRebuild(pid: pid_t, appPath: URL) {
-        teardownAppAudioChainOnly()
+    private static let appAudioHealthInterval: Double = 2
+    private static let appChainRetrySeconds: Double = 10
+    private var appHealthSnapshot: (ctx: AppAudioInputContext?, nonZero: Int, cycles: Int) = (nil, 0, 0)
+    private var appChainRetryElapsed: Double = 0
+
+    private func appAudioHealthTick(pid: pid_t) {
+        guard activeSession != nil else { return }
+        let seconds = Self.appAudioHealthInterval
+
+        if appHALContext == nil {
+            appChainRetryElapsed += seconds
+            if appChainRetryElapsed >= Self.appChainRetrySeconds {
+                appChainRetryElapsed = 0
+                rebuildAppAudioChain(pid: pid, preserveFile: true, reason: "chain down")
+            }
+        }
+
+        // Callbacks are only judged while a chain exists; a missing chain is
+        // retried above rather than counted as a dead aggregate.
+        var receivedAudio = false
+        var callbacksFiring = true
+        if let ctx = appHALContext {
+            if appHealthSnapshot.ctx !== ctx {
+                appHealthSnapshot = (ctx, 0, 0)
+            }
+            receivedAudio = ctx.nonZeroFrames > appHealthSnapshot.nonZero
+            callbacksFiring = ctx.renderCycles > appHealthSnapshot.cycles
+            appHealthSnapshot = (ctx, ctx.nonZeroFrames, ctx.renderCycles)
+        }
+        let outputActive = meetingAppOutputActive(pid: pid)
+
+        let actions = appAudioHealth.tick(
+            seconds: seconds,
+            receivedAudio: receivedAudio,
+            callbacksFiring: callbacksFiring,
+            meetingAppOutputActive: outputActive
+        )
+        let health = appAudioHealth
+        for action in actions {
+            switch action {
+            case .confirmCapture:
+                NSLog("Heard: App audio confirmed at +%.0fs", health.elapsed)
+                DebugFileLog.log("app audio self-test: result=passed elapsedSeconds=\(Int(health.elapsed))")
+                onAppAudioCaptureConfirmed?()
+            case .rebuildFresh:
+                rebuildAppAudioChain(pid: pid, preserveFile: false, reason: "no audio at startup")
+            case .rebuildPreservingFile:
+                let reason = callbacksFiring
+                    ? "silent \(Int(health.silentSeconds))s while \(meetingAppName) output active"
+                    : "render callbacks stopped"
+                rebuildAppAudioChain(pid: pid, preserveFile: true, reason: reason)
+            case .flagSilent:
+                NSLog("Heard: No %@ audio for %.0fs while it was playing — flagging recording (heardAudio=%d)",
+                      meetingAppName, health.silentSeconds, health.heardAudio ? 1 : 0)
+                DebugFileLog.log(
+                    "app audio self-test: result=failed elapsedSeconds=\(Int(health.elapsed)) " +
+                    "silentSeconds=\(Int(health.silentSeconds)) heardAudio=\(health.heardAudio) " +
+                    "chainUp=\(appHALContext != nil) rebuilds=\(health.rebuildCount)"
+                )
+                appAudioTapFailed = true
+                if health.looksLikePermissionDenied && appHALContext != nil {
+                    onAppAudioLooksDenied?()
+                }
+            case .clearFlag:
+                NSLog("Heard: %@ audio is flowing again — clearing warning", meetingAppName)
+                DebugFileLog.log("app audio health: recovered elapsedSeconds=\(Int(health.elapsed))")
+                appAudioTapFailed = false
+            }
+        }
+    }
+
+    /// Tear down the tap chain and build a new one with fresh process enumeration.
+    /// `preserveFile` appends to the current WAV (keeping captured audio and the
+    /// mic/app alignment); otherwise the WAV restarts and the alignment is recomputed.
+    /// On failure the chain stays down and the health tick retries it.
+    private func rebuildAppAudioChain(pid: pid_t, preserveFile: Bool, reason: String) {
+        guard let path = appWAVPath else { return }
+        let keptFile = preserveFile ? appAudioFile : nil
+        NSLog("Heard: Rebuilding app-audio chain (%@, %@)", reason, keptFile != nil ? "appending" : "fresh file")
+        DebugFileLog.log("app audio health: rebuild reason=\(reason) appending=\(keptFile != nil)")
+        teardownAppAudioChainOnly(keepFile: keptFile != nil)
         do {
-            try setupAppAudioRecording(pid: pid, to: appPath, allowSelfTestRebuild: false)
-            // The rebuild truncated and restarted the app WAV, so the app
-            // track's t=0 moved to the new appStartTime. Recompute the
-            // mic/app alignment offset (mic.start − app.start, same formula
-            // as startRecording) — otherwise bleed dedup and interleaving
-            // run with a delay that's stale by the rebuild gap (~2–4 s).
-            if let mic = micStartTime, let app = appStartTime {
+            try setupAppAudioRecording(pid: pid, to: path, existingFile: keptFile)
+            appAudioHealth.noteRebuilt()
+            if keptFile == nil, let mic = micStartTime, let app = appStartTime {
+                // A fresh WAV moved the app track's t=0 to the new appStartTime.
+                // Recompute the mic/app alignment offset (mic.start − app.start,
+                // same formula as startRecording) — otherwise bleed dedup and
+                // interleaving run with a stale delay.
                 let delay = mic.timeIntervalSince(app)
                 activeSession?.micDelaySeconds = delay
-                NSLog("Heard: Rebuild moved app-track start — mic delay recalibrated to %.2fs", delay)
+                NSLog("Heard: App-track start moved — mic delay recalibrated to %.2fs", delay)
             }
-            NSLog("Heard: App-audio chain rebuilt successfully — self-test will re-run at +2s")
+            NSLog("Heard: App-audio chain rebuilt")
         } catch {
-            NSLog("Heard: App-audio rebuild failed: %@", error.localizedDescription)
-            appAudioTapFailed = true
+            NSLog("Heard: App-audio rebuild failed (will retry): %@", error.localizedDescription)
         }
+    }
+
+    /// Whether any of the meeting app's processes has an audio output stream
+    /// running. Silence only counts against the tap while this is true. Returns
+    /// true when the HAL can't answer, so the monitor falls back to time alone.
+    private func meetingAppOutputActive(pid: pid_t) -> Bool {
+        let ids = collectMeetingProcessObjectIDs(for: currentSource, requiredPID: pid, log: false)
+        var prop = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyIsRunningOutput,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var anyAnswered = false
+        for id in ids {
+            var running: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            if AudioObjectGetPropertyData(id, &prop, 0, nil, &size, &running) == noErr {
+                anyAnswered = true
+                if running != 0 { return true }
+            }
+        }
+        return !anyAnswered
     }
 
     private func logAppAudioStats(prefix: String, context ctx: AppAudioInputContext) {
@@ -1539,7 +1674,7 @@ public final class PermissionCenter: ObservableObject {
     // (UserDefaults) is reconfirmed after launch and cleared if the user revoked the
     // permission while Heard wasn't running. See ScreenCaptureGrantCache.
     private var screenCaptureGrant = ScreenCaptureGrantCache(
-        cachedFromPreviousSession: UserDefaults.standard.bool(forKey: "screenCaptureTCCGranted")
+        cachedFromPreviousSession: UserDefaults.standard.bool(forKey: PermissionCenter.screenCaptureGrantedKey)
     )
     // Set when the user clicks "Grant…" so the System Settings deactivation observer
     // knows to do a live check when they return.
@@ -1549,11 +1684,13 @@ public final class PermissionCenter: ObservableObject {
     public init() {
         refresh()
         // The System Audio grant is cached in UserDefaults (there's no query API
-        // for kTCCServiceAudioCapture). Validate it once per launch so a revoked
-        // permission doesn't show "Granted" forever — TCC revocations only take
-        // effect after an app restart, so once per launch is exactly enough.
-        if UserDefaults.standard.bool(forKey: "audioCaptureTCCGranted") {
-            validateCachedAudioCaptureGrant()
+        // for kTCCServiceAudioCapture). Re-verify it once per launch by actually
+        // listening (SystemAudioProbe) so a grant revoked or reset — e.g. by a
+        // macOS update — doesn't show "Granted" forever. Only when a previous
+        // result exists: the probe would otherwise show the first-run prompt.
+        if Self.audioCaptureState(granted: UserDefaults.standard.bool(forKey: Self.audioCaptureGrantedKey),
+                                  unverified: UserDefaults.standard.bool(forKey: Self.audioCaptureUnverifiedKey)) != .recommended {
+            Task { [weak self] in await self?.verifyAudioCapture() }
         }
         // Periodically re-check permissions (catches grants made in System Settings).
         refreshTask = Task { [weak self] in
@@ -1566,29 +1703,6 @@ public final class PermissionCenter: ObservableObject {
                 guard let self, !Task.isCancelled else { return }
                 await self.refreshAsync()
             }
-        }
-    }
-
-    /// Re-verify the cached System Audio grant with a momentary process tap.
-    /// Only called when the cached flag is true: in that state the permission is
-    /// either still granted (tap succeeds silently) or was revoked/denied (tap
-    /// fails without prompting — macOS doesn't re-prompt a denied service).
-    /// Skipped when no process has opened audio yet; the cached value stands
-    /// until the next launch that can verify it.
-    private func validateCachedAudioCaptureGrant() {
-        guard let target = anyAudioProcessObjectID() else { return }
-        let desc = CATapDescription(stereoMixdownOfProcesses: [target])
-        desc.uuid = UUID()
-        desc.name = "Heard Permission Validation"
-        desc.isPrivate = true
-        desc.muteBehavior = .unmuted
-        var tapID: AudioObjectID = 0
-        if AudioHardwareCreateProcessTap(desc, &tapID) == noErr {
-            AudioHardwareDestroyProcessTap(tapID)
-        } else {
-            NSLog("Heard: Cached System Audio grant failed validation — marking as not granted")
-            UserDefaults.standard.set(false, forKey: "audioCaptureTCCGranted")
-            refresh()
         }
     }
 
@@ -1626,9 +1740,9 @@ public final class PermissionCenter: ObservableObject {
             : screenCaptureGrant.recordProbe(granted: granted)
         switch action {
         case .markGranted:
-            UserDefaults.standard.set(true, forKey: "screenCaptureTCCGranted")
+            UserDefaults.standard.set(true, forKey: Self.screenCaptureGrantedKey)
         case .clearGrant:
-            UserDefaults.standard.set(false, forKey: "screenCaptureTCCGranted")
+            UserDefaults.standard.set(false, forKey: Self.screenCaptureGrantedKey)
         case nil:
             break
         }
@@ -1684,7 +1798,7 @@ public final class PermissionCenter: ObservableObject {
             PermissionStatus(
                 id: "audioCapture",
                 title: "System Audio",
-                purpose: "Capture Teams audio to record other participants. Click Grant to approve up front instead of mid-meeting.",
+                purpose: "Capture Teams audio to record other participants. Heard confirms it by listening for a moment, since macOS doesn't report this permission's status.",
                 state: audioCaptureState()
             ),
             PermissionStatus(
@@ -1722,88 +1836,121 @@ public final class PermissionCenter: ObservableObject {
         CGPreflightScreenCaptureAccess() || screenCaptureGrant.isGranted
     }
 
+    static let audioCaptureGrantedKey = "audioCaptureTCCGranted"
+    static let audioCaptureUnverifiedKey = "audioCaptureUnverified"
+    static let screenCaptureGrantedKey = "screenCaptureTCCGranted"
+
+    /// Real audio came through a tap — the System Audio grant works.
     public func markAudioCaptureGranted() {
-        UserDefaults.standard.set(true, forKey: "audioCaptureTCCGranted")
+        UserDefaults.standard.set(true, forKey: Self.audioCaptureGrantedKey)
+        UserDefaults.standard.set(false, forKey: Self.audioCaptureUnverifiedKey)
+        refresh()
+    }
+
+    /// A tap delivered only silence while audio was playing — the grant is likely
+    /// denied or was reset. Shown as "Unverified" until a probe or recording hears audio.
+    public func markAudioCaptureUnverified() {
+        UserDefaults.standard.set(false, forKey: Self.audioCaptureGrantedKey)
+        UserDefaults.standard.set(true, forKey: Self.audioCaptureUnverifiedKey)
         refresh()
     }
 
     public func openAudioCaptureSettings() {
-        // No direct API to request kTCCServiceAudioCapture — the dialog appears
-        // automatically when AudioHardwareCreateProcessTap is first called (i.e. on
-        // meeting join). Open the Microphone privacy page as the closest system UI.
-        openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        // System Audio Recording lives on the "Screen & System Audio Recording"
+        // page (its "System Audio Recording Only" list) on macOS 15+.
+        openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
     }
 
-    /// Preflight the System Audio (kTCCServiceAudioCapture) permission so the macOS
-    /// TCC prompt appears from Heard's Settings rather than mid-meeting. Creates and
-    /// immediately destroys a brief process tap; that call is what triggers the prompt.
-    /// If the permission is already granted, the tap succeeds and we mark the cached
-    /// state as granted. Falls back to opening System Settings if no audio process
-    /// objects exist yet to target.
+    // MARK: Reset
+
+    /// Resetting needs a real bundle ID: under `swift run` grants belong to the terminal.
+    public static var canResetPermissions: Bool {
+        Bundle.main.bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil
+    }
+
+    /// Wipe every macOS privacy grant for Heard (`tccutil reset All <bundle id>`),
+    /// clear Heard's cached grant flags, and relaunch — macOS only applies TCC
+    /// changes to a fresh process. The user re-grants from Settings afterwards.
+    /// Returns an error message if the reset failed (the app keeps running).
+    public func resetAllPermissionsAndRelaunch() -> String? {
+        guard Self.canResetPermissions, let bundleID = Bundle.main.bundleIdentifier else {
+            return "Reset is only available when running the installed Heard.app."
+        }
+        let tccutil = Process()
+        tccutil.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        tccutil.arguments = ["reset", "All", bundleID]
+        let errPipe = Pipe()
+        tccutil.standardError = errPipe
+        tccutil.standardOutput = FileHandle.nullDevice
+        do {
+            try tccutil.run()
+            tccutil.waitUntilExit()
+        } catch {
+            return "Couldn't run tccutil: \(error.localizedDescription)"
+        }
+        guard tccutil.terminationStatus == 0 else {
+            let detail = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            NSLog("Heard: tccutil reset failed (%d): %@", tccutil.terminationStatus, detail)
+            return "tccutil reset failed (exit \(tccutil.terminationStatus))\(detail.isEmpty ? "" : ": \(detail)")"
+        }
+        NSLog("Heard: Reset all privacy permissions for %@ — relaunching", bundleID)
+        DebugFileLog.log("permissions reset: bundleID=\(bundleID)")
+        for key in [Self.audioCaptureGrantedKey, Self.audioCaptureUnverifiedKey, Self.screenCaptureGrantedKey] {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+
+        // Relaunch from a detached shell once this process has exited.
+        let relauncher = Process()
+        relauncher.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relauncher.arguments = ["-c", "sleep 1; /usr/bin/open \"$0\"", Bundle.main.bundlePath]
+        do {
+            try relauncher.run()
+        } catch {
+            return "Permissions were reset, but Heard couldn't relaunch itself. Quit and reopen Heard."
+        }
+        NSApp.terminate(nil)
+        return nil
+    }
+
+    /// Run the end-to-end System Audio probe and record the result. Returns true
+    /// when audio was heard. An `.unavailable` probe (no output device, HAL error)
+    /// leaves the cached state alone — it says nothing about the grant.
+    @discardableResult
+    public func verifyAudioCapture() async -> Bool {
+        switch await SystemAudioProbe.run() {
+        case .verified:
+            markAudioCaptureGranted()
+            return true
+        case .silent:
+            markAudioCaptureUnverified()
+            return false
+        case .unavailable:
+            return false
+        }
+    }
+
+    private var audioCaptureRequestTask: Task<Void, Never>?
+
+    /// Grant or re-verify System Audio from Settings so the macOS prompt appears
+    /// here rather than mid-meeting. The probe's tap shows the prompt the first
+    /// time; while the user answers it (or flips the switch in System Settings,
+    /// which is the only way back from a denial) keep re-probing for a minute.
     public func requestAudioCapture() {
-        guard let target = anyAudioProcessObjectID() else {
-            openAudioCaptureSettings()
-            return
+        guard audioCaptureRequestTask == nil else { return }
+        audioCaptureRequestTask = Task { [weak self] in
+            defer { self?.audioCaptureRequestTask = nil }
+            guard let self else { return }
+            if await self.verifyAudioCapture() { return }
+            for attempt in 1...20 {
+                try? await Task.sleep(for: .seconds(3))
+                if Task.isCancelled { return }
+                if await self.verifyAudioCapture() { return }
+                // No prompt answered after a couple of tries — the grant was
+                // probably denied earlier, which macOS won't re-prompt for.
+                if attempt == 2 { self.openAudioCaptureSettings() }
+            }
         }
-
-        let desc = CATapDescription(stereoMixdownOfProcesses: [target])
-        desc.uuid = UUID()
-        desc.name = "Heard Permission Preflight"
-        desc.isPrivate = true
-        desc.muteBehavior = .unmuted
-
-        var tapID: AudioObjectID = 0
-        let err = AudioHardwareCreateProcessTap(desc, &tapID)
-        if err == noErr {
-            AudioHardwareDestroyProcessTap(tapID)
-            NSLog("Heard: System Audio preflight succeeded — permission granted")
-            markAudioCaptureGranted()
-            return
-        }
-
-        NSLog("Heard: System Audio preflight failed (%d) — TCC prompt should appear", err)
-        // The prompt is asynchronous; re-check shortly so the UI can flip to "Granted"
-        // once the user accepts without forcing them to wait for the next 3s refresh tick.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            Task { @MainActor in self?.recheckAudioCapture() }
-        }
-    }
-
-    /// Re-attempt the preflight tap silently to detect a freshly granted permission.
-    private func recheckAudioCapture() {
-        guard let target = anyAudioProcessObjectID() else { return }
-        let desc = CATapDescription(stereoMixdownOfProcesses: [target])
-        desc.uuid = UUID()
-        desc.name = "Heard Permission Recheck"
-        desc.isPrivate = true
-        desc.muteBehavior = .unmuted
-        var tapID: AudioObjectID = 0
-        if AudioHardwareCreateProcessTap(desc, &tapID) == noErr {
-            AudioHardwareDestroyProcessTap(tapID)
-            markAudioCaptureGranted()
-        }
-    }
-
-    /// Pick any process object the system already knows about, to use as a
-    /// preflight target. Returns nil if no processes have opened audio yet.
-    private func anyAudioProcessObjectID() -> AudioObjectID? {
-        var prop = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyProcessObjectList,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject), &prop, 0, nil, &size
-        ) == noErr, size > 0 else { return nil }
-
-        let count = Int(size) / MemoryLayout<AudioObjectID>.size
-        var list = [AudioObjectID](repeating: 0, count: count)
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &prop, 0, nil, &size, &list
-        ) == noErr else { return nil }
-
-        return list.first(where: { $0 != 0 })
     }
 
     public func requestMicrophone() {
@@ -1880,7 +2027,10 @@ public final class PermissionCenter: ObservableObject {
     }
 
     private func audioCaptureState() -> PermissionState {
-        UserDefaults.standard.bool(forKey: "audioCaptureTCCGranted") ? .granted : .recommended
+        Self.audioCaptureState(
+            granted: UserDefaults.standard.bool(forKey: Self.audioCaptureGrantedKey),
+            unverified: UserDefaults.standard.bool(forKey: Self.audioCaptureUnverifiedKey)
+        )
     }
 
     private func microphoneState() -> PermissionState {
@@ -1925,6 +2075,14 @@ public final class PermissionCenter: ObservableObject {
     /// (potentially cached) sync check or the live SCShareableContent check confirms it.
     public nonisolated static func screenCapturePermissionState(syncGranted: Bool, liveGranted: Bool) -> PermissionState {
         (syncGranted || liveGranted) ? .granted : .recommended
+    }
+
+    /// Exposed for unit tests. System Audio is only "granted" once real audio came
+    /// through a tap (a probe or a recording); a tap that heard only silence is
+    /// "unverified"; with neither, the grant was never confirmed.
+    public nonisolated static func audioCaptureState(granted: Bool, unverified: Bool) -> PermissionState {
+        if granted { return .granted }
+        return unverified ? .unverified : .recommended
     }
 
     /// Exposed for unit tests. Accessibility is granted if either AXIsProcessTrusted()

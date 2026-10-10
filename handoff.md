@@ -10,6 +10,13 @@
 
 The app builds cleanly with `swift build` and runs as a menu bar app on macOS 15.0+. Core infrastructure is complete — meeting detection, dual-track audio capture, on-device transcription (Parakeet TDT V2/V3), VAD (Silero), speaker diarization (LS-EEND + WeSpeaker), and speaker assignment are all functional via the FluidAudio framework. An `.app` bundle is available via `./scripts/bundle.sh`.
 
+**System audio health + permission reset (2026-10-09, branch `fix/system-audio-health`, CI-verified only — not yet run on a Mac).** After a macOS update, a tap whose System Audio grant was denied or reset still returns `noErr` and delivers all-zero samples (also reported mid-session on 26.5), so the old checks were misleading:
+- `AppAudioHealthMonitor` (`AppAudioHealth.swift`, pure + tested) replaces the one-shot T+2s self-test that flagged "mic only" whenever nobody spoke in the first ~4 s. It ticks every 2 s for the whole recording, counts silence only while a meeting-app process reports `kAudioProcessPropertyIsRunningOutput`, rebuilds the tap at 30 s of silence (appending to the same WAV, gap padded with zeros to keep mic alignment), warns at 60 s, and clears the warning when audio returns. A tap that can't be created at start is retried every 10 s instead of flagging immediately.
+- System Audio status is no longer a bare cached flag. `SystemAudioProbe` plays a −80 dBFS tone and listens through a global tap; it runs at launch (when a previous result exists) and from the Grant/Verify button. New `PermissionState.unverified` = the tap heard only silence.
+- Warning text and button point at System Audio (Screen & System Audio Recording page), not Screen Recording.
+- Advanced → Permissions → **Reset All Permissions**: `tccutil reset All com.execsumo.heard`, clears cached flags, relaunches. Disabled while recording/processing/dictating and under `swift run`.
+- **Needs a real-Mac check:** (1) the probe reports Verified on a granted machine and Unverified after `tccutil reset AudioCapture com.execsumo.heard`; (2) Reset works without sudo for Accessibility/Screen Recording; (3) a call where everyone is muted for >60 s shows the soft warning and it clears on speech.
+
 **v0.1.0 is released** — notarized DMG published to [GitHub Releases](https://github.com/execsumo/Heard/releases/tag/v0.1.0) and installable via `brew tap execsumo/tap && brew install --cask heard`.
 
 **Homebrew tap renamed (2026-07-08):** `homebrew-heard` → `homebrew-tap`, so the same tap can host formulas/casks for other projects (e.g. Dossier) alongside Heard's cask. `ci.yml`'s release job and `update-tap.yml` now clone/push to `homebrew-tap.git`; install/update commands are `brew tap execsumo/tap` and `brew upgrade --cask heard`.

@@ -741,6 +741,31 @@ extension SettingsView {
                 }
             }
 
+            sectionGroup("Permissions") {
+                SettingsCard {
+                    CardRow(isLast: true) {
+                        HStack(alignment: .center, spacing: HeardTheme.Spacing.md) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Reset All Permissions")
+                                    .font(HeardFont.bodyMedium)
+                                    .foregroundStyle(HeardTheme.Terminal.ink)
+                                Text(PermissionCenter.canResetPermissions
+                                     ? "Removes Heard's macOS privacy permissions and relaunches, so you can grant them fresh. Use when permissions show as granted but capture still fails, e.g. after a macOS update."
+                                     : "Only available when running the installed Heard.app.")
+                                    .font(HeardFont.caption)
+                                    .foregroundStyle(HeardTheme.Terminal.mute)
+                            }
+                            Spacer()
+                            Button("Reset…") {
+                                model.confirmAndResetPermissions()
+                            }
+                            .buttonStyle(TerminalButtonStyle(.danger, size: .sm))
+                            .disabled(!PermissionCenter.canResetPermissions || model.isBusyForPermissionReset)
+                        }
+                    }
+                }
+            }
+
             sectionGroup("Debugging") {
                 SettingsCard {
                     ToggleRow(

@@ -175,7 +175,7 @@ struct PermissionRow: View {
             VStack(alignment: .trailing, spacing: 4) {
                 StatusPill(text: permission.state.badge, fg: pillFg, bg: pillBg)
                 if permission.state != .granted {
-                    Button("Grant…") {
+                    Button(permission.state == .unverified ? "Verify…" : "Grant…") {
                         switch permission.id {
                         case "microphone":    model.permissionCenter.requestMicrophone()
                         case "audioCapture":  model.permissionCenter.requestAudioCapture()
@@ -213,6 +213,7 @@ struct PermissionRow: View {
         switch permission.state {
         case .granted:     return HeardTheme.Terminal.good
         case .recommended: return HeardTheme.Terminal.warn
+        case .unverified:  return HeardTheme.Terminal.warn
         case .unknown:     return HeardTheme.Terminal.bad
         }
     }
@@ -221,6 +222,7 @@ struct PermissionRow: View {
         switch permission.state {
         case .granted:     return HeardTheme.Terminal.goodSoft
         case .recommended: return HeardTheme.Terminal.warnSoft
+        case .unverified:  return HeardTheme.Terminal.warnSoft
         case .unknown:     return HeardTheme.Terminal.badSoft
         }
     }

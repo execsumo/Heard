@@ -2951,6 +2951,7 @@ struct TestRunner {
         runSegmentDeduplicatorTests()
         runSystemMemoryTests()
         runPermissionCenterTests()
+        runAppAudioHealthTests()
         runTranscriptLibraryTests()
         runCustomVocabularyThresholdTests()
 
