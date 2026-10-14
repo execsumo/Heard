@@ -327,8 +327,13 @@ public final class MeetingDetector: ObservableObject {
             return
         case .startMeeting:
             guard let result else { return }
-            let pid = result.pid
             let source = result.source
+            // The assertion can come from a helper with no windows — read the
+            // title/roster from the app that owns the meeting window.
+            let pid = MeetingProcesses.mainAppPID(for: result.pid, source: source)
+            if pid != result.pid {
+                DebugFileLog.log("meeting detection: assertion pid=\(result.pid) resolved to main app pid=\(pid)")
+            }
             // Title/roster scraping does blocking AX IPC into the meeting app —
             // which is busy joining a call and can stall for seconds. Run it off
             // the main thread, then start the meeting once the data is in hand.
@@ -1226,10 +1231,10 @@ public final class RecordingManager: ObservableObject {
     }
 
     /// Find CoreAudio process object IDs for all running processes in the meeting
-    /// app's family. Electron clients can render audio from the main process OR
-    /// helper processes (Teams Helper, Teams Helper (GPU), etc.). We tap all of
-    /// them so that audio from any subprocess is captured regardless of which
-    /// one is active.
+    /// app's family. Clients can render audio from the main process, helper
+    /// processes (Teams Helper, Teams Helper (GPU), etc.) or XPC services the app
+    /// is responsible for. We tap all of them so that audio from any subprocess
+    /// is captured regardless of which one is active.
     private func collectMeetingProcessObjectIDs(for source: MeetingApp, requiredPID: pid_t, log: Bool) -> [AudioObjectID] {
         let meetingApps = NSWorkspace.shared.runningApplications.filter { app in
             source.isProcessFamilyMember(bundleID: app.bundleIdentifier, localizedName: app.localizedName)
@@ -1237,7 +1242,35 @@ public final class RecordingManager: ObservableObject {
 
         var pids = meetingApps.map(\.processIdentifier)
         if !pids.contains(requiredPID) { pids.insert(requiredPID, at: 0) }
+        let namesByPID = Dictionary(meetingApps.map { ($0.processIdentifier, $0.localizedName ?? "?") },
+                                    uniquingKeysWith: { a, _ in a })
 
+        // Primary path: CoreAudio's own process list, so audio rendered by a
+        // process outside the app's bundle family (a WebKit GPU process, a helper
+        // LaunchServices doesn't list) is tapped too — see `MeetingProcesses`.
+        let audioProcesses = MeetingProcesses.allAudioProcesses()
+        if !audioProcesses.isEmpty {
+            let selected = MeetingProcesses.select(audioProcesses, for: source, familyPIDs: Set(pids))
+            if log {
+                for p in selected {
+                    let name = namesByPID[p.pid] ?? p.bundleID ?? "?"
+                    let via = p.responsiblePID.map { " responsible=\($0)(\(p.responsibleBundleID ?? "?"))" } ?? ""
+                    NSLog("Heard: Tapping %@ process pid=%d objectID=%u (%@)%@",
+                          source.displayName, p.pid, p.objectID, name, via)
+                    DebugFileLog.log(
+                        "app audio tap process: source=\(source.rawValue) pid=\(p.pid) objectID=\(p.objectID) " +
+                        "bundleID=\(p.bundleID ?? "nil") localizedName=\(name)\(via)"
+                    )
+                }
+                if selected.isEmpty {
+                    let seen = audioProcesses.map { "\($0.pid):\($0.bundleID ?? "nil")<-\($0.responsibleBundleID ?? "-")" }
+                    DebugFileLog.log("app audio tap process: none matched source=\(source.rawValue); audio processes=[\(seen.joined(separator: ", "))]")
+                }
+            }
+            return selected.map(\.objectID)
+        }
+
+        // Fallback: translate the NSWorkspace family PIDs one by one.
         var seen = Set<pid_t>()
         var result: [AudioObjectID] = []
         var prop = AudioObjectPropertyAddress(
@@ -1256,7 +1289,7 @@ public final class RecordingManager: ObservableObject {
             if err == noErr && objID != 0 {
                 result.append(objID)
                 guard log else { continue }
-                let processName = meetingApps.first(where: { $0.processIdentifier == pid })?.localizedName ?? "?"
+                let processName = namesByPID[pid] ?? "?"
                 NSLog("Heard: Tapping %@ process pid=%d objectID=%u (%@)",
                       source.displayName, pid, objID, processName)
                 DebugFileLog.log(

@@ -1416,6 +1416,41 @@ func runTeamsIdentificationTests() {
     }
 }
 
+// MARK: - Meeting Audio Process Selection Tests
+
+func runMeetingProcessSelectionTests() {
+    print("\n🔉 Meeting Audio Process Selection Tests")
+
+    let processes = [
+        AudioProcessInfo(objectID: 10, pid: 100, bundleID: "com.microsoft.teams2"),
+        AudioProcessInfo(objectID: 11, pid: 101, bundleID: "com.microsoft.teams2.helper"),
+        // WebKit GPU process playing Teams' web-view audio: only the responsible app ties it to Teams.
+        AudioProcessInfo(objectID: 12, pid: 102, bundleID: "com.apple.WebKit.GPU",
+                         responsiblePID: 100, responsibleBundleID: "com.microsoft.teams2"),
+        // Same XPC service, but owned by Safari.
+        AudioProcessInfo(objectID: 13, pid: 103, bundleID: "com.apple.WebKit.GPU",
+                         responsiblePID: 200, responsibleBundleID: "com.apple.Safari"),
+        AudioProcessInfo(objectID: 14, pid: 104, bundleID: "com.spotify.client"),
+        // Helper LaunchServices doesn't list and with no bundle ID, known only by PID.
+        AudioProcessInfo(objectID: 15, pid: 105, bundleID: nil),
+    ]
+
+    test("Selects Teams processes by bundle ID, PID and responsible app") {
+        let selected = MeetingProcesses.select(processes, for: .teams, familyPIDs: [100, 105])
+        try expectEqual(selected.map(\.objectID), [10, 11, 12, 15])
+    }
+
+    test("Matches the responsible app's bundle ID when its PID wasn't enumerated") {
+        let selected = MeetingProcesses.select(processes, for: .teams, familyPIDs: [])
+        try expectEqual(selected.map(\.objectID), [10, 11, 12])
+    }
+
+    test("Excludes other apps' audio, including their WebKit processes") {
+        let selected = MeetingProcesses.select(processes, for: .zoom, familyPIDs: [])
+        try expectEqual(selected.map(\.objectID), [])
+    }
+}
+
 // MARK: - Meeting App Identification Tests (Teams + Zoom + Webex)
 
 func runMeetingAppIdentificationTests() {
@@ -2939,6 +2974,7 @@ struct TestRunner {
         runMeetingDetectionTests()
         runTeamsIdentificationTests()
         runMeetingAppIdentificationTests()
+        runMeetingProcessSelectionTests()
         runMeetingDetectorLifecycleTests()
         await runRetryExecutorTests()
         await runLifetimeRetryCapTests()
