@@ -348,7 +348,7 @@ public final class MeetingDetector: ObservableObject {
                     let roster: [String] = source == .teams ? RosterReader.readRoster(pid: pid) : []
                     return (title, roster)
                 }.value
-                DebugFileLog.log("meeting start scrape: source=\(source.rawValue) pid=\(pid) titleCaptured=\(!title.isEmpty) rosterCount=\(rosterNames.count) — roster poll will retry title/roster every 15s")
+                DebugFileLog.log("meeting start scrape: source=\(source.rawValue) pid=\(pid) title=\(title.debugDescription) rosterCount=\(rosterNames.count) — roster poll will retry title/roster every 15s")
                 guard let self else { return }
                 // The meeting may have ended (or watching been toggled off) while
                 // we were scraping — the detection state machine is the source of truth.
@@ -752,7 +752,7 @@ public final class RecordingManager: ObservableObject {
         } catch {
             micError = error
             micCaptureFailed = true
-            NSLog("Heard: Mic capture failed (recording app audio only): \(error.localizedDescription)")
+            DebugFileLog.event("Mic capture failed (recording app audio only): %@", error.localizedDescription)
         }
 
         // Set up app audio recording if we have a meeting-app PID
@@ -770,7 +770,7 @@ public final class RecordingManager: ObservableObject {
                 // App audio is best-effort — the health monitor keeps retrying the tap
                 // (the meeting app may not have opened audio yet) and only warns if
                 // it's still down after a sustained stretch.
-                NSLog("Heard: App audio tap failed at start (will retry): \(error.localizedDescription)")
+                DebugFileLog.event("App audio tap failed at start (will retry): %@", error.localizedDescription)
             }
         }
 
@@ -849,6 +849,7 @@ public final class RecordingManager: ObservableObject {
     public func updateTitle(_ title: String) {
         let trimmed = title.trimmingCharacters(in: .whitespaces)
         guard activeSession != nil, !trimmed.isEmpty else { return }
+        DebugFileLog.log("recording title updated: \(currentTitle.debugDescription) -> \(trimmed.debugDescription)")
         activeSession?.title = trimmed
         currentTitle = trimmed
     }
@@ -933,7 +934,7 @@ public final class RecordingManager: ObservableObject {
             } catch {
                 if !writeFailure.logged {
                     writeFailure.logged = true
-                    NSLog("Heard: Mic WAV write failed (disk full?): \(error.localizedDescription)")
+                    DebugFileLog.event("Mic WAV write failed (disk full?): %@", error.localizedDescription)
                 }
             }
             self?.micBufferContinuation?.yield(buffer)
@@ -964,12 +965,12 @@ public final class RecordingManager: ObservableObject {
         let appName = currentSource.displayName
         let processObjectIDs = collectMeetingProcessObjectIDs(for: currentSource, requiredPID: pid, log: true)
         guard !processObjectIDs.isEmpty else {
-            NSLog("Heard: No CoreAudio process objects found for %@ (pid=%d). The process(es) haven't opened audio yet — translate-PID returns 0 until they do.", appName, pid)
+            DebugFileLog.event("No CoreAudio process objects found for %@ (pid=%d). The process(es) haven't opened audio yet — translate-PID returns 0 until they do.", appName, pid)
             throw RecordingError.processTapFailed(kAudioHardwareBadObjectError)
         }
-        NSLog("Heard: Creating process tap for %d %@ process(es)", processObjectIDs.count, appName)
+        DebugFileLog.event("Creating process tap for %d %@ process(es)", processObjectIDs.count, appName)
         if processObjectIDs.count == 1 {
-            NSLog("Heard: WARNING — only ONE %@ audio process found. Electron-based clients typically render call audio in helper processes; if the captured WAV is silent, the wrong process is being tapped.", appName)
+            DebugFileLog.event("WARNING — only ONE %@ audio process found. Electron-based clients typically render call audio in helper processes; if the captured WAV is silent, the wrong process is being tapped.", appName)
         }
 
         // ── Step 2: Create the process tap ────────────────────────────────────
@@ -981,10 +982,10 @@ public final class RecordingManager: ObservableObject {
 
         let tapErr = AudioHardwareCreateProcessTap(tapDesc, &tapObjectID)
         guard tapErr == noErr else {
-            NSLog("Heard: AudioHardwareCreateProcessTap failed (%d)", tapErr)
+            DebugFileLog.event("AudioHardwareCreateProcessTap failed (%d)", tapErr)
             throw RecordingError.processTapFailed(tapErr)
         }
-        NSLog("Heard: Process tap created (id=%u)", tapObjectID)
+        DebugFileLog.event("Process tap created (id=%u)", tapObjectID)
 
         // ── Step 3: Tap UID ───────────────────────────────────────────────────
         // Use the UUID we set on the description directly — avoids a silent
@@ -1025,7 +1026,7 @@ public final class RecordingManager: ObservableObject {
             mElement: kAudioObjectPropertyElementMain
         )
         _ = AudioObjectGetPropertyData(outputDeviceID, &outputSRProp, 0, nil, &outputSRSize, &outputSampleRate)
-        NSLog("Heard: Default output device: \"%@\" (id=%u, uid=%@, sr=%.0f)",
+        DebugFileLog.event("Default output device: \"%@\" (id=%u, uid=%@, sr=%.0f)",
               outputName, outputDeviceID, outputUID, outputSampleRate)
 
         // ── Step 5: Create private aggregate device containing the tap ────────
@@ -1047,10 +1048,10 @@ public final class RecordingManager: ObservableObject {
         let aggErr = AudioHardwareCreateAggregateDevice(aggregateDict as CFDictionary, &aggregateDeviceID)
         guard aggErr == noErr else {
             AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
-            NSLog("Heard: AudioHardwareCreateAggregateDevice failed (%d)", aggErr)
+            DebugFileLog.event("AudioHardwareCreateAggregateDevice failed (%d)", aggErr)
             throw RecordingError.deviceSetupFailed(aggErr)
         }
-        NSLog("Heard: Aggregate device created (id=%u)", aggregateDeviceID)
+        DebugFileLog.event("Aggregate device created (id=%u)", aggregateDeviceID)
 
         // ── Step 6: Query aggregate device sample rate ────────────────────────
         var nominalRate: Float64 = 48000.0
@@ -1068,7 +1069,7 @@ public final class RecordingManager: ObservableObject {
             _ = AudioObjectSetPropertyData(aggregateDeviceID, &rateProp, 0, nil, rateSize, &wanted)
             _ = AudioObjectGetPropertyData(aggregateDeviceID, &rateProp, 0, nil, &rateSize, &nominalRate)
             guard nominalRate == wanted else {
-                NSLog("Heard: Rebuilt aggregate runs at %.0f Hz but the app WAV is %.0f Hz — can't append", nominalRate, wanted)
+                DebugFileLog.event("Rebuilt aggregate runs at %.0f Hz but the app WAV is %.0f Hz — can't append", nominalRate, wanted)
                 AudioHardwareDestroyAggregateDevice(aggregateDeviceID); aggregateDeviceID = 0
                 AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
                 throw RecordingError.deviceSetupFailed(kAudioDeviceUnsupportedFormatError)
@@ -1100,7 +1101,7 @@ public final class RecordingManager: ObservableObject {
         appAudioFile = file
         // processingFormat is the format write(from:) actually expects.
         let format = file.processingFormat
-        NSLog("Heard: IOProc format sr=%.0f ch=%u interleaved=%d",
+        DebugFileLog.event("IOProc format sr=%.0f ch=%u interleaved=%d",
               format.sampleRate, format.channelCount, format.isInterleaved ? 1 : 0)
 
         // Pad the time the chain was down with silence so the app track stays
@@ -1173,12 +1174,12 @@ public final class RecordingManager: ObservableObject {
                 ctx.renderErrorCount &+= 1
                 ctx.lastRenderError = OSStatus(truncatingIfNeeded: (error as NSError).code)
                 if ctx.renderErrorCount == 1 {
-                    NSLog("Heard: App audio WAV write failed (disk full?): %@", error.localizedDescription)
+                    DebugFileLog.event("App audio WAV write failed (disk full?): %@", error.localizedDescription)
                 }
             }
         }
         guard ioErr == noErr, let validProc = ioProc else {
-            NSLog("Heard: AudioDeviceCreateIOProcIDWithBlock failed (%d)", ioErr)
+            DebugFileLog.event("AudioDeviceCreateIOProcIDWithBlock failed (%d)", ioErr)
             appHALContext = nil
             if existingFile == nil { appAudioFile = nil }
             AudioHardwareDestroyAggregateDevice(aggregateDeviceID); aggregateDeviceID = 0
@@ -1188,7 +1189,7 @@ public final class RecordingManager: ObservableObject {
 
         let startErr = AudioDeviceStart(aggregateDeviceID, validProc)
         guard startErr == noErr else {
-            NSLog("Heard: AudioDeviceStart failed (%d)", startErr)
+            DebugFileLog.event("AudioDeviceStart failed (%d)", startErr)
             AudioDeviceDestroyIOProcID(aggregateDeviceID, validProc)
             appHALContext = nil
             if existingFile == nil { appAudioFile = nil }
@@ -1202,7 +1203,7 @@ public final class RecordingManager: ObservableObject {
         if existingFile == nil {
             appStartTime = Date()
         }
-        NSLog("Heard: App audio capture started (IOProc, aggregate=%u, sr=%.0f, appending=%d)",
+        DebugFileLog.event("App audio capture started (IOProc, aggregate=%u, sr=%.0f, appending=%d)",
               aggregateDeviceID, sampleRate, existingFile != nil ? 1 : 0)
 
         installDefaultOutputDeviceListener(initial: outputDeviceID)
@@ -1222,12 +1223,12 @@ public final class RecordingManager: ObservableObject {
         while remaining > 0 {
             buf.frameLength = min(chunk, remaining)
             do { try file.write(from: buf) } catch {
-                NSLog("Heard: Padding app WAV with silence failed: %@", error.localizedDescription)
+                DebugFileLog.event("Padding app WAV with silence failed: %@", error.localizedDescription)
                 return
             }
             remaining -= buf.frameLength
         }
-        NSLog("Heard: Padded app WAV with %.2fs of silence for the rebuild gap", seconds)
+        DebugFileLog.event("Padded app WAV with %.2fs of silence for the rebuild gap", seconds)
     }
 
     /// Find CoreAudio process object IDs for all running processes in the meeting
@@ -1255,7 +1256,7 @@ public final class RecordingManager: ObservableObject {
                 for p in selected {
                     let name = namesByPID[p.pid] ?? p.bundleID ?? "?"
                     let via = p.responsiblePID.map { " responsible=\($0)(\(p.responsibleBundleID ?? "?"))" } ?? ""
-                    NSLog("Heard: Tapping %@ process pid=%d objectID=%u (%@)%@",
+                    DebugFileLog.event("Tapping %@ process pid=%d objectID=%u (%@)%@",
                           source.displayName, p.pid, p.objectID, name, via)
                     DebugFileLog.log(
                         "app audio tap process: source=\(source.rawValue) pid=\(p.pid) objectID=\(p.objectID) " +
@@ -1290,7 +1291,7 @@ public final class RecordingManager: ObservableObject {
                 result.append(objID)
                 guard log else { continue }
                 let processName = namesByPID[pid] ?? "?"
-                NSLog("Heard: Tapping %@ process pid=%d objectID=%u (%@)",
+                DebugFileLog.event("Tapping %@ process pid=%d objectID=%u (%@)",
                       source.displayName, pid, objID, processName)
                 DebugFileLog.log(
                     "app audio tap process: source=\(source.rawValue) pid=\(pid) " +
@@ -1412,7 +1413,7 @@ public final class RecordingManager: ObservableObject {
         for action in actions {
             switch action {
             case .confirmCapture:
-                NSLog("Heard: App audio confirmed at +%.0fs", health.elapsed)
+                DebugFileLog.event("App audio confirmed at +%.0fs", health.elapsed)
                 DebugFileLog.log("app audio self-test: result=passed elapsedSeconds=\(Int(health.elapsed))")
                 onAppAudioCaptureConfirmed?()
             case .rebuildFresh:
@@ -1423,7 +1424,7 @@ public final class RecordingManager: ObservableObject {
                     : "render callbacks stopped"
                 rebuildAppAudioChain(pid: pid, preserveFile: true, reason: reason)
             case .flagSilent:
-                NSLog("Heard: No %@ audio for %.0fs while it was playing — flagging recording (heardAudio=%d)",
+                DebugFileLog.event("No %@ audio for %.0fs while it was playing — flagging recording (heardAudio=%d)",
                       meetingAppName, health.silentSeconds, health.heardAudio ? 1 : 0)
                 DebugFileLog.log(
                     "app audio self-test: result=failed elapsedSeconds=\(Int(health.elapsed)) " +
@@ -1435,7 +1436,7 @@ public final class RecordingManager: ObservableObject {
                     onAppAudioLooksDenied?()
                 }
             case .clearFlag:
-                NSLog("Heard: %@ audio is flowing again — clearing warning", meetingAppName)
+                DebugFileLog.event("%@ audio is flowing again — clearing warning", meetingAppName)
                 DebugFileLog.log("app audio health: recovered elapsedSeconds=\(Int(health.elapsed))")
                 appAudioTapFailed = false
             }
@@ -1449,7 +1450,7 @@ public final class RecordingManager: ObservableObject {
     private func rebuildAppAudioChain(pid: pid_t, preserveFile: Bool, reason: String) {
         guard let path = appWAVPath else { return }
         let keptFile = preserveFile ? appAudioFile : nil
-        NSLog("Heard: Rebuilding app-audio chain (%@, %@)", reason, keptFile != nil ? "appending" : "fresh file")
+        DebugFileLog.event("Rebuilding app-audio chain (%@, %@)", reason, keptFile != nil ? "appending" : "fresh file")
         DebugFileLog.log("app audio health: rebuild reason=\(reason) appending=\(keptFile != nil)")
         teardownAppAudioChainOnly(keepFile: keptFile != nil)
         do {
@@ -1462,11 +1463,11 @@ public final class RecordingManager: ObservableObject {
                 // interleaving run with a stale delay.
                 let delay = mic.timeIntervalSince(app)
                 activeSession?.micDelaySeconds = delay
-                NSLog("Heard: App-track start moved — mic delay recalibrated to %.2fs", delay)
+                DebugFileLog.event("App-track start moved — mic delay recalibrated to %.2fs", delay)
             }
-            NSLog("Heard: App-audio chain rebuilt")
+            DebugFileLog.event("App-audio chain rebuilt")
         } catch {
-            NSLog("Heard: App-audio rebuild failed (will retry): %@", error.localizedDescription)
+            DebugFileLog.event("App-audio rebuild failed (will retry): %@", error.localizedDescription)
         }
     }
 
@@ -1504,7 +1505,7 @@ public final class RecordingManager: ObservableObject {
         let nonZeroPct = total > 0 ? Double(nonZero) * 100.0 / Double(total) : 0
         let peakDb = peak > 0 ? 20 * log10(Double(peak)) : -.infinity
         let rmsDb  = rms  > 0 ? 20 * log10(rms) : -.infinity
-        NSLog("Heard: %@ — cycles=%d frames=%d nonZero=%.1f%% peak=%.4f (%.1fdB) rms=%.4f (%.1fdB) errs=%d lastErr=%d firstAudio=%@",
+        DebugFileLog.event("%@ — cycles=%d frames=%d nonZero=%.1f%% peak=%.4f (%.1fdB) rms=%.4f (%.1fdB) errs=%d lastErr=%d firstAudio=%@",
               prefix, cycles, total, nonZeroPct, peak, peakDb, rms, rmsDb, errs, lastErr,
               firstAudio == 0 ? "never" : "yes")
     }
@@ -1528,7 +1529,7 @@ public final class RecordingManager: ObservableObject {
                 AudioObjectID(kAudioObjectSystemObject), &p, 0, nil, &size, &newID
             )
             let name = RecordingManager.copyDeviceStringProperty(newID, selector: kAudioObjectPropertyName) ?? "?"
-            NSLog("Heard: Default output device CHANGED to \"%@\" (id=%u). Aggregate is still bound to the original device — capture may stop if the original device disappeared.",
+            DebugFileLog.event("Default output device CHANGED to \"%@\" (id=%u). Aggregate is still bound to the original device — capture may stop if the original device disappeared.",
                   name, newID)
         }
         let status = AudioObjectAddPropertyListenerBlock(
@@ -1537,7 +1538,7 @@ public final class RecordingManager: ObservableObject {
         if status == noErr {
             defaultOutputListenerBlock = block
         } else {
-            NSLog("Heard: Failed to install default-output listener (%d)", status)
+            DebugFileLog.event("Failed to install default-output listener (%d)", status)
         }
     }
 
@@ -1552,7 +1553,7 @@ public final class RecordingManager: ObservableObject {
             AudioObjectID(kAudioObjectSystemObject), &prop, nil, block
         )
         if status != noErr {
-            NSLog("Heard: Failed to remove default-output listener (%d)", status)
+            DebugFileLog.event("Failed to remove default-output listener (%d)", status)
         }
         defaultOutputListenerBlock = nil
     }
@@ -1590,7 +1591,7 @@ public final class RecordingManager: ObservableObject {
             do {
                 try startRecording(title: title + " (cont.)", meetingPID: pid, source: source, rosterNames: roster)
             } catch {
-                NSLog("Heard: Failed to restart recording after max duration: \(error)")
+                DebugFileLog.event("Failed to restart recording after max duration: %@", String(describing: error))
             }
         }
     }

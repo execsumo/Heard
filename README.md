@@ -314,6 +314,14 @@ swift run HeardTests
 
 **Diagnostics:** `swift scripts/diagnose.swift` prints what Heard sees from meeting app processes and power assertions — useful for debugging detection on a specific machine.
 
+**Live debug log:** with Developer Mode on (Settings → Advanced), Heard writes detection, meeting-title, and system-audio capture diagnostics to a log file. Tail it during a real call:
+
+```bash
+tail -F ~/Library/Application\ Support/Heard/dict-debug.log
+```
+
+Look for `extractMeetingTitle` / `meeting start scrape` (title capture), `app audio tap process` (which processes are tapped), `App audio —` (levels every few seconds), and `app audio self-test` (pass/fail).
+
 ## Distribution
 
 ### Release pipeline
