@@ -48,6 +48,13 @@ public enum DebugFileLog {
         log("heartbeat installed")
     }
 
+    /// Recording-chain events: always reach the unified log, and also the debug
+    /// file when Developer Mode is on (the file is the reliable channel).
+    public static func event(_ format: String, _ args: CVarArg...) {
+        let message = String(format: format, arguments: args)
+        if isEnabled { log(message) } else { NSLog("Heard: %@", message) }
+    }
+
     public static func log(_ message: String) {
         guard isEnabled else { return }
         let ts = formatter.string(from: Date())

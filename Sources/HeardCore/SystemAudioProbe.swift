@@ -37,7 +37,7 @@ enum SystemAudioProbe {
         guard sampleRate > 0,
               let toneFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)
         else {
-            NSLog("Heard: System Audio probe — no output device")
+            DebugFileLog.event("System Audio probe — no output device")
             return .unavailable
         }
         let phase = Phase()
@@ -58,7 +58,7 @@ enum SystemAudioProbe {
         do {
             try engine.start()
         } catch {
-            NSLog("Heard: System Audio probe — tone engine failed: %@", error.localizedDescription)
+            DebugFileLog.event("System Audio probe — tone engine failed: %@", error.localizedDescription)
             return .unavailable
         }
         defer { engine.stop() }
@@ -72,14 +72,14 @@ enum SystemAudioProbe {
         var tapID: AudioObjectID = 0
         let tapErr = AudioHardwareCreateProcessTap(desc, &tapID)
         guard tapErr == noErr else {
-            NSLog("Heard: System Audio probe — tap creation failed (%d)", tapErr)
+            DebugFileLog.event("System Audio probe — tap creation failed (%d)", tapErr)
             return .unavailable
         }
         defer { AudioHardwareDestroyProcessTap(tapID) }
 
         // ── Private aggregate on the default output device carrying the tap ───
         guard let outputUID = defaultOutputDeviceUID() else {
-            NSLog("Heard: System Audio probe — no default output device UID")
+            DebugFileLog.event("System Audio probe — no default output device UID")
             return .unavailable
         }
         let aggregateDict: [String: Any] = [
@@ -99,7 +99,7 @@ enum SystemAudioProbe {
         var aggregateID: AudioObjectID = 0
         let aggErr = AudioHardwareCreateAggregateDevice(aggregateDict as CFDictionary, &aggregateID)
         guard aggErr == noErr else {
-            NSLog("Heard: System Audio probe — aggregate creation failed (%d)", aggErr)
+            DebugFileLog.event("System Audio probe — aggregate creation failed (%d)", aggErr)
             return .unavailable
         }
         defer { AudioHardwareDestroyAggregateDevice(aggregateID) }
@@ -121,14 +121,14 @@ enum SystemAudioProbe {
             }
         }
         guard ioErr == noErr, let validProc = procID else {
-            NSLog("Heard: System Audio probe — IOProc creation failed (%d)", ioErr)
+            DebugFileLog.event("System Audio probe — IOProc creation failed (%d)", ioErr)
             return .unavailable
         }
         defer { AudioDeviceDestroyIOProcID(aggregateID, validProc) }
 
         let startErr = AudioDeviceStart(aggregateID, validProc)
         guard startErr == noErr else {
-            NSLog("Heard: System Audio probe — device start failed (%d)", startErr)
+            DebugFileLog.event("System Audio probe — device start failed (%d)", startErr)
             return .unavailable
         }
         try? await Task.sleep(for: .milliseconds(800))
@@ -137,9 +137,8 @@ enum SystemAudioProbe {
         let (cycles, nonZero) = queue.sync { (counters.cycles, counters.nonZero) }
 
         let outcome: Outcome = nonZero > 0 ? .verified : (cycles > 0 ? .silent : .unavailable)
-        NSLog("Heard: System Audio probe — %@ (cycles=%d, nonZeroBuffers=%d)",
+        DebugFileLog.event("System Audio probe — %@ (cycles=%d, nonZeroBuffers=%d)",
               String(describing: outcome), cycles, nonZero)
-        DebugFileLog.log("system audio probe: outcome=\(outcome) cycles=\(cycles) nonZeroBuffers=\(nonZero)")
         return outcome
     }
 
