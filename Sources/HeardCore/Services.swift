@@ -63,7 +63,7 @@ public enum MeetingApp: String, CaseIterable, Codable, Sendable {
     /// Bare placeholder window titles to ignore (no real meeting name extractable).
     public var placeholderTitles: Set<String> {
         switch self {
-        case .teams: return []
+        case .teams: return ["Microsoft Teams", "Microsoft Teams (work or school)", "Microsoft Teams classic", "Teams", "Chat", "Calendar", "Activity"]
         case .zoom:  return ["Zoom Meeting", "Zoom", "Zoom Workplace"]
         case .webex: return ["Webex", "Webex Meetings", "Cisco Webex Meetings"]
         }
@@ -113,6 +113,21 @@ public struct MeetingSnapshot {
         self.source = source
         self.meetingPID = meetingPID
         self.rosterNames = rosterNames
+    }
+
+    /// Accumulate best-effort reads; a temporarily hidden roster/title must not erase metadata.
+    public mutating func mergeMetadata(title: String?, rosterNames: [String]) {
+        if self.title.isEmpty, let title, !title.isEmpty { self.title = title }
+        self.rosterNames = RosterReader.filterNames(self.rosterNames + rosterNames)
+    }
+
+    /// Apply late metadata without changing audio paths, timing, or in-flight notes.
+    public func applyingMetadata(to session: RecordingSession) -> RecordingSession {
+        RecordingSession(title: title.isEmpty ? session.title : title,
+                         startTime: session.startTime, appAudioPath: session.appAudioPath,
+                         micAudioPath: session.micAudioPath, micDelaySeconds: session.micDelaySeconds,
+                         rosterNames: RosterReader.filterNames(session.rosterNames + rosterNames),
+                         notes: session.notes)
     }
 }
 
@@ -516,34 +531,38 @@ public final class MeetingDetector: ObservableObject {
         // below handles the not-granted case correctly without the pre-check.
         guard let pid else { return nil }
 
-        let app = AXUIElementCreateApplication(pid)
-        // Bound each AX round-trip so a hung meeting app can't hang us.
-        AXUIElementSetMessagingTimeout(app, 1.0)
-        var windowsRef: AnyObject?
-        let windowsErr = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef)
-        guard windowsErr == .success, let windows = windowsRef as? [AXUIElement] else {
-            // For a per-app Electron query, .apiDisabled (-25211) usually means the
-            // app's Chromium a11y tree is still dormant (see enableMeetingAppAccessibility),
-            // NOT that Heard is untrusted — confirm trust via the system-wide element
-            // instead. Any failure here yields an empty title -> "Meeting" fallback;
-            // the roster poll retries once the tree wakes.
-            DebugFileLog.log("extractMeetingTitle: windows query failed pid=\(pid) source=\(source.rawValue) axErr=\(windowsErr.rawValue)")
-            return nil
-        }
-        DebugFileLog.log("extractMeetingTitle: pid=\(pid) source=\(source.rawValue) windowCount=\(windows.count)")
-
-        for window in windows {
-            var titleRef: AnyObject?
-            guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
-                  let title = titleRef as? String, !title.isEmpty
-            else { continue }
-            if let cleaned = cleanWindowTitle(title, source: source) {
-                DebugFileLog.log("extractMeetingTitle: raw=\(title.debugDescription) -> cleaned=\(cleaned.debugDescription)")
-                return cleaned
+        // Teams renders its meeting window from a sibling process, so try every candidate.
+        let pids = source == .teams ? RosterReader.metadataPIDs(preferred: pid) : [pid]
+        var windowCount = 0
+        for metadataPID in pids {
+            let app = AXUIElementCreateApplication(metadataPID)
+            // Bound each AX round-trip so a hung meeting app can't hang us.
+            AXUIElementSetMessagingTimeout(app, 1.0)
+            var windowsRef: AnyObject?
+            let windowsErr = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef)
+            guard windowsErr == .success, let windows = windowsRef as? [AXUIElement] else {
+                // .apiDisabled (-25211) on a per-app Electron query usually means the app's
+                // Chromium a11y tree is still dormant (see enableMeetingAppAccessibility),
+                // NOT that Heard is untrusted. The roster poll retries once the tree wakes.
+                DebugFileLog.log("extractMeetingTitle: windows query failed pid=\(metadataPID) source=\(source.rawValue) axErr=\(windowsErr.rawValue)")
+                continue
             }
-            DebugFileLog.log("extractMeetingTitle: raw=\(title.debugDescription) rejected (empty/placeholder after suffix strip)")
+            windowCount += windows.count
+            DebugFileLog.log("extractMeetingTitle: pid=\(metadataPID) source=\(source.rawValue) windowCount=\(windows.count)")
+
+            for window in windows {
+                var titleRef: AnyObject?
+                guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
+                      let title = titleRef as? String, !title.isEmpty
+                else { continue }
+                if let cleaned = cleanWindowTitle(title, source: source) {
+                    DebugFileLog.log("extractMeetingTitle: raw=\(title.debugDescription) -> cleaned=\(cleaned.debugDescription)")
+                    return cleaned
+                }
+                DebugFileLog.log("extractMeetingTitle: raw=\(title.debugDescription) rejected (empty/placeholder after suffix strip)")
+            }
         }
-        DebugFileLog.log("extractMeetingTitle: no usable title among \(windows.count) window(s) -> nil (falls back to 'Meeting')")
+        DebugFileLog.log("extractMeetingTitle: no usable title among \(windowCount) window(s) -> nil (falls back to 'Meeting')")
         return nil
     }
 
@@ -604,16 +623,7 @@ public final class MeetingDetector: ObservableObject {
                     let chat = wantChat ? ChatReader.readChatMessages(pid: pid) : []
                     return (names, title, dump, chat)
                 }.value
-                if !names.isEmpty {
-                    let existing = Set(self.activeSnapshot?.rosterNames ?? [])
-                    let newNames = names.filter { !existing.contains($0) }
-                    if !newNames.isEmpty {
-                        self.activeSnapshot?.rosterNames.append(contentsOf: newNames)
-                    }
-                }
-                if let refreshedTitle, !refreshedTitle.isEmpty {
-                    self.activeSnapshot?.title = refreshedTitle
-                }
+                self.activeSnapshot?.mergeMetadata(title: refreshedTitle, rosterNames: names)
                 DebugFileLog.log("roster poll tick=\(tick): read=\(names.count) total=\(self.activeSnapshot?.rosterNames.count ?? 0) titleEmpty=\(needTitle) titleRefreshed=\(refreshedTitle != nil)")
                 if let treeDump {
                     rosterDumpsRemaining -= 1
@@ -1034,12 +1044,10 @@ public final class RecordingManager: ObservableObject {
         let aggregateDict: [String: Any] = [
             kAudioAggregateDeviceNameKey as String: "Heard Aggregate",
             kAudioAggregateDeviceUIDKey as String: aggregateUID,
-            kAudioAggregateDeviceMainSubDeviceKey as String: outputUID,
+            // Tap-only aggregate: adding the output hardware also adds its input
+            // streams (e.g. a headset microphone) ahead of the process-tap audio.
             kAudioAggregateDeviceIsPrivateKey as String: true,
             kAudioAggregateDeviceTapAutoStartKey as String: true,
-            kAudioAggregateDeviceSubDeviceListKey as String: [
-                [kAudioSubDeviceUIDKey as String: outputUID]
-            ],
             kAudioAggregateDeviceTapListKey as String: [
                 [kAudioSubTapDriftCompensationKey as String: true,
                  kAudioSubTapUIDKey as String: tapUID]
@@ -1077,6 +1085,11 @@ public final class RecordingManager: ObservableObject {
         }
         let sampleRate = nominalRate > 0 ? nominalRate : 48000.0
         let channels: AVAudioChannelCount = 2
+        if let existingFile, existingFile.processingFormat.sampleRate != sampleRate {
+            AudioHardwareDestroyAggregateDevice(aggregateDeviceID); aggregateDeviceID = 0
+            AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
+            throw RecordingError.deviceSetupFailed(kAudioDeviceUnsupportedFormatError)
+        }
 
         // ── Step 7: Create WAV file ────────────────────────────────────────────
         // Use non-interleaved float32 — AVAudioFile.processingFormat is always
@@ -1126,31 +1139,16 @@ public final class RecordingManager: ObservableObject {
             guard !ctx.isStopped else { return }
             ctx.renderCycles &+= 1
 
-            let abl = inInputData.pointee
-            // Tap delivers interleaved stereo float32 in a single buffer.
-            guard abl.mNumberBuffers > 0,
-                  let dataPtr = abl.mBuffers.mData else { return }
-            let byteCount = Int(abl.mBuffers.mDataByteSize)
-            guard byteCount > 0 else { return }
-
-            let ch = Int(format.channelCount)
-            let frameCount = byteCount / (ch * MemoryLayout<Float32>.size)
-            guard frameCount > 0,
-                  let buf = AVAudioPCMBuffer(pcmFormat: format,
-                                             frameCapacity: AVAudioFrameCount(frameCount)),
+            guard let buf = AudioCaptureSupport.copyInput(inInputData, format: format),
                   let channelData = buf.floatChannelData else { return }
-            buf.frameLength = AVAudioFrameCount(frameCount)
-
-            // Deinterleave: [L0,R0,L1,R1,...] → separate channel arrays.
-            let src = dataPtr.bindMemory(to: Float32.self, capacity: frameCount * ch)
-            for c in 0..<ch { channelData[c][0] = 0 } // ensure initialised
+            let frameCount = Int(buf.frameLength)
+            let ch = Int(format.channelCount)
             var localPeak: Float = 0
             var localSumSq: Double = 0
             var localNonZero = 0
             for f in 0..<frameCount {
                 for c in 0..<ch {
-                    let s = src[f * ch + c]
-                    channelData[c][f] = s
+                    let s = channelData[c][f]
                     let a = abs(s)
                     if a > 0 { localNonZero &+= 1 }
                     if a > localPeak { localPeak = a }

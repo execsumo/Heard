@@ -2984,6 +2984,8 @@ struct TestRunner {
         runRosterReaderTests()
         runRosterReaderAXTests()
         runChatReaderTests()
+        runMeetingMetadataTests()
+        runAudioCaptureSupportTests()
         runSegmentDeduplicatorTests()
         runSystemMemoryTests()
         runPermissionCenterTests()

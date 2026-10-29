@@ -16,28 +16,57 @@ public protocol AXNode {
 
 // MARK: - Live AX adapter
 
-struct AXUIElementNode: AXNode {
+final class AXReadBudget {
+    let deadline = ProcessInfo.processInfo.systemUptime + 2
+    var remaining = 5_000
+    var available: Bool { remaining > 0 && ProcessInfo.processInfo.systemUptime < deadline }
+}
+
+final class AXUIElementNode: AXNode {
     private let element: AXUIElement
-    init(_ element: AXUIElement) { self.element = element }
+    private let budget: AXReadBudget
+    init(_ element: AXUIElement, budget: AXReadBudget = AXReadBudget()) {
+        self.element = element
+        self.budget = budget
+        budget.remaining -= 1
+    }
 
     private func string(_ key: CFString) -> String? {
+        guard budget.available else { return nil }
         var ref: AnyObject?
         guard AXUIElementCopyAttributeValue(element, key, &ref) == .success else { return nil }
         return ref as? String
     }
 
-    var axRole: String?        { string(kAXRoleAttribute as CFString) }
-    var axIdentifier: String?  { string(kAXIdentifierAttribute as CFString) }
-    var axDescription: String? { string(kAXDescriptionAttribute as CFString) }
-    var axValue: String?       { string(kAXValueAttribute as CFString) }
-    var axTitle: String?       { string(kAXTitleAttribute as CFString) }
+    lazy var axRole: String? = string(kAXRoleAttribute as CFString)
+    lazy var axIdentifier: String? = string(kAXIdentifierAttribute as CFString)
+    lazy var axDescription: String? = string(kAXDescriptionAttribute as CFString)
+    lazy var axValue: String? = string(kAXValueAttribute as CFString)
+    lazy var axTitle: String? = string(kAXTitleAttribute as CFString)
 
-    var axChildren: [any AXNode]? {
+    lazy var axChildren: [any AXNode]? = {
+        guard budget.available else { return nil }
         var ref: AnyObject?
-        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &ref) == .success,
-              let elements = ref as? [AXUIElement] else { return nil }
-        return elements.map { AXUIElementNode($0) as any AXNode }
-    }
+        // Native app roots can expose AXWindows without AXChildren (WebView hosts included).
+        var elements: [AXUIElement] = []
+        for key in [kAXWindowsAttribute, kAXChildrenAttribute] {
+            guard budget.available else { break }
+            ref = nil
+            if AXUIElementCopyAttributeValue(element, key as CFString, &ref) == .success,
+               let nodes = ref as? [AXUIElement] {
+                for node in nodes {
+                    guard budget.available, elements.count < budget.remaining else { break }
+                    if !elements.contains(where: { CFEqual($0, node) }) { elements.append(node) }
+                }
+            }
+        }
+        // Application menu bars contain unrelated recent documents, not meeting metadata.
+        return elements.compactMap { node -> (any AXNode)? in
+            guard budget.available else { return nil }
+            let child = AXUIElementNode(node, budget: budget)
+            return child.axRole == "AXMenuBar" ? nil : child
+        }
+    }()
 }
 
 // MARK: - RosterReader
@@ -57,27 +86,94 @@ public enum RosterReader {
     /// Attempt to read participant names from the Teams roster.
     /// Returns an empty array if Accessibility isn't granted or the roster isn't visible.
     public static func readRoster(pid teamsPID: pid_t?) -> [String] {
-        // Skip the AXIsProcessTrusted() pre-check: it returns a stale cached false on
-        // macOS 15+ even when access is granted. AX API calls return .apiDisabled on
-        // their own when genuinely denied, so the result is the same either way.
-        guard let pid = teamsPID else { return parseWindowTitle() }
-
-        let element = AXUIElementCreateApplication(pid)
-        // Bound each AX round-trip so a busy/hung Teams can't stall the caller
-        // for the system default timeout on every node of the tree walk.
-        AXUIElementSetMessagingTimeout(element, 1.0)
-        let app = AXUIElementNode(element)
-        let names = readRosterFromNode(app)
-        return names.isEmpty ? parseWindowTitle() : names
+        // No AXIsProcessTrusted() pre-check: it returns a stale cached false on macOS 15+.
+        let budget = AXReadBudget()
+        for pid in metadataPIDs(preferred: teamsPID) {
+            guard budget.available else { break }
+            let element = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(element, 0.1)
+            let app = AXUIElementNode(element, budget: budget)
+            let names = readRosterFromNode(app)
+            if !names.isEmpty { return names }
+        }
+        return parseWindowTitle()
     }
 
     /// Testable entry point — accepts any AX tree node, including mocks.
-    /// Runs Strategy 1 (known identifiers) then Strategy 2 (AXList containers).
+    /// Prefers the current Teams Attendees outline, then legacy identifiers/list containers.
     /// Does NOT include Strategy 3 (window title parsing), which requires live NSWorkspace.
     public static func readRosterFromNode(_ app: any AXNode) -> [String] {
+        // Modern Teams has no roster identifiers; its row titles include status text.
+        // Prefer the actual name leaves in the Participants > Attendees outline.
+        if let names = findAttendees(in: app) { return names }
         if let names = findRosterPanel(in: app) { return names }
         if let names = findParticipantList(in: app) { return names }
         return []
+    }
+
+    /// Metadata UI hosts are distinct from power-assertion/audio processes in new Teams.
+    public static func isTeamsMetadataApp(bundleID: String?, localizedName: String?) -> Bool {
+        if let bundleID, ["com.microsoft.teams", "com.microsoft.teams2",
+                          "com.microsoft.teams2.helper", "com.microsoft.teams2.modulehost"].contains(bundleID) {
+            return true
+        }
+        return bundleID == nil && ["Microsoft Teams", "Microsoft Teams (work or school)",
+                                   "Microsoft Teams classic", "Microsoft Teams WebView"].contains(localizedName ?? "")
+    }
+
+    static func metadataPIDs(preferred: pid_t?) -> [pid_t] {
+        var pids = preferred.map { [$0] } ?? []
+        for app in NSWorkspace.shared.runningApplications where isTeamsMetadataApp(
+            bundleID: app.bundleIdentifier, localizedName: app.localizedName
+        ) {
+            if !pids.contains(app.processIdentifier) { pids.append(app.processIdentifier) }
+        }
+        return pids
+    }
+
+    // MARK: - Current Teams: Participants region / Attendees outline
+
+    private static func findAttendees(in node: any AXNode, inParticipants: Bool = false, depth: Int = 0) -> [String]? {
+        guard depth < 40 else { return nil }
+        let labels = [node.axTitle, node.axDescription].compactMap { $0?.lowercased() }
+        let inPane = inParticipants || (node.axRole == "AXGroup" && labels.contains("participants"))
+        if inPane, node.axRole == "AXOutline", labels.contains("attendees") {
+            var names: [String] = []
+            func nameLeaf(in element: any AXNode, depth: Int) -> String? {
+                guard depth < 12, !["AXButton", "AXImage", "AXTextField"].contains(element.axRole ?? "") else { return nil }
+                if element.axRole == "AXStaticText" {
+                    for value in [element.axValue, element.axTitle].compactMap({ $0 }) {
+                        let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let lower = text.lowercased()
+                        // Section rows, avatars and status labels are not names.
+                        guard !lower.hasPrefix("in this meeting"), !lower.hasPrefix("waiting in lobby"),
+                              !["organizer", "presenter", "attendee", "guest", "external", "muted", "unmuted"].contains(lower),
+                              !filterNames([text]).isEmpty else { continue }
+                        return text.replacingOccurrences(of: #"\s+\(You\)$"#, with: "", options: [.regularExpression, .caseInsensitive])
+                    }
+                    return nil
+                }
+                for child in element.axChildren ?? [] {
+                    if let name = nameLeaf(in: child, depth: depth + 1) { return name }
+                }
+                return nil
+            }
+            func rows(in element: any AXNode, depth: Int) {
+                guard depth < 12 else { return }
+                if element.axRole == "AXRow" {
+                    if let name = nameLeaf(in: element, depth: 0) { names.append(name) }
+                    return
+                }
+                for child in element.axChildren ?? [] { rows(in: child, depth: depth + 1) }
+            }
+            rows(in: node, depth: 0)
+            // A visible but empty roster must not fall through to unrelated app lists.
+            return filterNames(names)
+        }
+        for child in node.axChildren ?? [] {
+            if let names = findAttendees(in: child, inParticipants: inPane, depth: depth + 1) { return names }
+        }
+        return nil
     }
 
     // MARK: - Strategy 1: Known Roster Panel Identifiers
@@ -95,15 +191,18 @@ public enum RosterReader {
     }
 
     private static func searchForRosterByIdentifier(in element: any AXNode) -> [String]? {
-        let identifier = element.axIdentifier ?? element.axDescription ?? ""
+        let identifier = (element.axIdentifier ?? "") + " " + (element.axDescription ?? "")
         let rosterIdentifiers = ["roster-list", "people-pane", "roster", "participants-list", "participant-list"]
         let isRosterContainer = rosterIdentifiers.contains(where: { identifier.lowercased().contains($0) })
 
-        if isRosterContainer {
-            return extractTextChildren(from: element)
+        if isRosterContainer, element.axRole != "AXButton" {
+            if let names = extractTextChildren(from: element) {
+                let filtered = filterNames(names)
+                if !filtered.isEmpty { return filtered }
+            }
         }
 
-        return searchChildrenForRoster(in: element, depth: 0, maxDepth: 8)
+        return searchChildrenForRoster(in: element, depth: 0, maxDepth: 30)
     }
 
     private static func searchChildrenForRoster(in element: any AXNode, depth: Int, maxDepth: Int) -> [String]? {
@@ -116,7 +215,7 @@ public enum RosterReader {
             let combined = (identifier + " " + desc).lowercased()
 
             let rosterIdentifiers = ["roster", "people-pane", "participant"]
-            if rosterIdentifiers.contains(where: { combined.contains($0) }) {
+            if child.axRole != "AXButton", rosterIdentifiers.contains(where: { combined.contains($0) }) {
                 if let names = extractTextChildren(from: child) {
                     let filtered = filterNames(names)
                     if !filtered.isEmpty { return filtered }
@@ -136,7 +235,7 @@ public enum RosterReader {
         guard let windows = app.axChildren else { return nil }
 
         for window in windows {
-            if let names = findListContainers(in: window, depth: 0, maxDepth: 10) {
+            if let names = findListContainers(in: window, depth: 0, maxDepth: 30) {
                 let filtered = filterNames(names)
                 if filtered.count >= 2 { return filtered }
             }
@@ -149,8 +248,9 @@ public enum RosterReader {
 
         let role = element.axRole ?? ""
         if role == "AXList" || role == "AXTable" || role == "AXOutline" {
-            if let names = extractTextChildren(from: element), names.count >= 2 {
-                return names
+            if let names = extractTextChildren(from: element) {
+                let filtered = filterNames(names)
+                if filtered.count >= 2 { return filtered }
             }
         }
 
@@ -191,18 +291,7 @@ public enum RosterReader {
     }
 
     private static func parseWindowTitle() -> [String] {
-        let teamsNames: Set<String> = [
-            "Microsoft Teams",
-            "Microsoft Teams (work or school)",
-            "Microsoft Teams classic",
-        ]
-
-        let teamsPIDs = NSWorkspace.shared.runningApplications
-            .filter { app in
-                guard let name = app.localizedName else { return false }
-                return teamsNames.contains(name)
-            }
-            .map { $0.processIdentifier }
+        let teamsPIDs = metadataPIDs(preferred: nil)
 
         for pid in teamsPIDs {
             let app = AXUIElementCreateApplication(pid)
@@ -225,29 +314,40 @@ public enum RosterReader {
 
     // MARK: - Shared helpers
 
-    private static func extractTextChildren(from element: any AXNode) -> [String]? {
-        guard let children = element.axChildren else { return nil }
+    private static func extractTextChildren(from element: any AXNode, depth: Int = 0) -> [String]? {
+        guard depth < 16, let children = element.axChildren else { return nil }
         var texts: [String] = []
 
-        for child in children {
-            // Try direct value/title
-            if let text = child.axValue ?? child.axTitle {
+        func firstName(in node: any AXNode, depth: Int) -> String? {
+            guard depth < 16, node.axRole != "AXButton", node.axRole != "AXTextField" else { return nil }
+            // Empty AXValue must not hide a populated AXTitle.
+            for text in [node.axValue, node.axTitle].compactMap({ $0 }) {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { texts.append(trimmed) }
-                continue
+                if !filterNames([trimmed]).isEmpty { return trimmed }
             }
-
-            // Try first text child (for row containers)
-            if let subChildren = child.axChildren {
-                for sub in subChildren {
-                    if let text = sub.axValue ?? sub.axTitle {
-                        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !trimmed.isEmpty {
-                            texts.append(trimmed)
-                            break
-                        }
-                    }
-                }
+            for child in node.axChildren ?? [] {
+                if let name = firstName(in: child, depth: depth + 1) { return name }
+            }
+            return nil
+        }
+        func nestedListNames(in node: any AXNode, searchDepth: Int) -> [String]? {
+            guard searchDepth < 16, depth + searchDepth < 16,
+                  !["AXRow", "AXButton", "AXTextField"].contains(node.axRole ?? "") else { return nil }
+            if ["AXList", "AXTable", "AXOutline"].contains(node.axRole ?? "") {
+                return extractTextChildren(from: node, depth: depth + searchDepth + 1)
+            }
+            var names: [String] = []
+            for child in node.axChildren ?? [] {
+                names.append(contentsOf: nestedListNames(in: child, searchDepth: searchDepth + 1) ?? [])
+            }
+            return names.isEmpty ? nil : names
+        }
+        for child in children {
+            // People panes often wrap their list in several unlabeled AXGroups.
+            if let nested = nestedListNames(in: child, searchDepth: 0) {
+                texts.append(contentsOf: nested)
+            } else if let name = firstName(in: child, depth: 0) {
+                texts.append(name)
             }
         }
 
@@ -255,7 +355,7 @@ public enum RosterReader {
     }
 
     /// Filter out UI control strings, too-short entries, and duplicates.
-    private static func filterNames(_ names: [String]) -> [String] {
+    static func filterNames(_ names: [String]) -> [String] {
         var seen = Set<String>()
         return names.filter { name in
             let lower = name.lowercased()
