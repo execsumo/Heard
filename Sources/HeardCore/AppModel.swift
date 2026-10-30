@@ -299,7 +299,7 @@ public final class AppModel: ObservableObject {
                 self.recordingManager.updateRosterNames(snapshot.rosterNames)
                 self.recordingManager.updateTitle(snapshot.title)
                 guard let session = self.recordingManager.stopRecording() else { return }
-                self.pipelineProcessor.enqueueFinishedRecording(session, endedAt: Date())
+                self.pipelineProcessor.enqueueFinishedRecording(snapshot.applyingMetadata(to: session), endedAt: Date())
                 self.phase = .processing
             },
             onChatMessagesObserved: { [weak self] messages in
