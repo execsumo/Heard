@@ -38,7 +38,7 @@ A read-only library of prior meeting transcripts inside Heard. The transcript it
 - Rescan on tab appearance + on Refresh. No live file watcher in v1.
 - Menu bar dropdown gets one compact row, "Transcripts…", that opens Settings pre-selected to the Meetings tab (dropdown has a fixed max height — one row only).
 
-**Scope guardrails (from CLAUDE.md / spec.md):** single-process menu bar app, no new dependencies, no cloud APIs, targeted changes only. Orchestrator updates `spec.md` and `handoff.md` at integration time (delegates do not touch docs).
+**Scope guardrails (from AGENTS.md / spec.md):** single-process menu bar app, no new dependencies, no cloud APIs, targeted changes only. Orchestrator updates `spec.md` and `handoff.md` at integration time (delegates do not touch docs).
 
 ---
 
@@ -117,7 +117,7 @@ plus unit tests, so the app can list prior meeting transcripts from disk.
 - Repo: a git worktree of /Users/hgill/projects/Heard (you are already in it).
   Swift Package Manager app, macOS 15+, Apple Silicon. Build: `swift build`.
   Tests: `swift run HeardTests` (custom harness — test(...)/testAsync(...) in
-  Tests/…; NO XCTest). Read CLAUDE.md and handoff.md first.
+  Tests/…; NO XCTest). Read AGENTS.md and handoff.md first.
 - The public API in Sources/HeardCore/TranscriptLibrary.swift is a frozen
   contract — implement the stubbed bodies; do NOT change public signatures.
 - Transcript format is produced by TranscriptWriter.write in
@@ -203,7 +203,7 @@ on click, plus a menu-bar row that deep-links to the tab.
 2. CONTEXT
 - Repo: a git worktree of /Users/hgill/projects/Heard (you are already in it).
   SwiftUI menu bar app, SPM, macOS 15+. Build: `swift build`. Tests:
-  `swift run HeardTests`. Read CLAUDE.md and handoff.md first.
+  `swift run HeardTests`. Read AGENTS.md and handoff.md first.
 - Consume — do not modify — the frozen API in
   Sources/HeardCore/TranscriptLibrary.swift: TranscriptRecord and
   @MainActor TranscriptLibrary (ObservableObject; call

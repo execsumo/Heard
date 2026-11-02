@@ -1,42 +1,100 @@
-# AGENTS
+# AGENTS.md
 
-## Purpose
+## Project Overview
 
-This repository is building the macOS menu bar app described in `spec.md`.
+Heard is a macOS menu bar app that auto-detects Microsoft Teams meetings, records dual-track audio, and produces on-device transcripts with speaker diarization. See `spec.md` for the full product specification.
 
-Future Codex sessions should treat `spec.md` as the product source of truth and `handoff.md` as the current execution snapshot.
+## Build & Run
+
+```bash
+swift build                # compile
+swift run Heard            # compile and launch (terminal — mic permission goes to terminal app)
+./scripts/bundle.sh        # build, install to /Applications, and relaunch (ad-hoc signed)
+swift package clean        # clean build artifacts
+```
+
+No Xcode project — this is a Swift Package Manager executable. macOS 15.0+ required.
+
+## Key Files
+
+- `spec.md` — Product spec (source of truth for features and architecture)
+- `handoff.md` — Current implementation status and next steps
+- `Sources/Heard/MTApp.swift` — App entry point
+- `Sources/HeardCore/AppModel.swift` — Central state orchestration
+- `Sources/HeardCore/Services.swift` — Detection, recording, pipeline, permissions
+- UI: `Sources/HeardCore/MenuBarView.swift`, `SettingsView.swift`, `SettingsTabs.swift`, `SettingsComponents.swift`, `SpeakerNamingView.swift`, `TranscriptLibraryView.swift`, `DictationHUD.swift`, and `MeetingNoteComposer.swift` (all under `Sources/HeardCore/`)
+- `Sources/HeardCore/CoreModels.swift` — Data types
+- `Sources/HeardCore/Stores.swift` — Persistence layer
+- `DESIGN.md` — Design system (source of truth for all visual styling)
+- `Sources/HeardCore/DesignSystem.swift` — Design tokens and shared components implementing `DESIGN.md`
+- `Resources/Fonts/` — Bundled JetBrains Mono (OFL), loaded via `ATSApplicationFontsPath`
+- `Info.plist` — App bundle metadata
+- `Heard.entitlements` — Entitlements (audio input only, no sandbox)
+- `scripts/bundle.sh` — Build script for .app bundle
+- `scripts/dmg.sh` — Distribution pipeline: release build → sign → notarize → staple → DMG → SHA256 (called by CI, not directly)
+- `scripts/release.sh` — **Use this to ship a release.** Bumps `Info.plist` version, commits, tags `v<version>`, and pushes — triggering the CI release pipeline. Usage: `./scripts/release.sh 0.3.0`. Requires being on `main` with a clean tree. Notarization in CI needs `APPLE_ID`, `APPLE_APP_PASSWORD`, `APPLE_TEAM_ID` secrets set in GitHub Actions.
+- `.github/workflows/ci.yml` — CI: build + test on all pushes; release bundle + GitHub Release upload on tag push
 
 ## Working Rules
 
-- Preserve the architecture and scope in `spec.md` unless the user explicitly changes it.
-- Prefer implementing the real macOS-native path rather than adding alternate cross-platform abstractions that are not in the spec.
+- Treat `spec.md` as the product source of truth unless the user explicitly changes scope.
+- Read `handoff.md` before making changes to understand current state.
+- Update `handoff.md` after substantial implementation work.
+- Prefer the real macOS-native path (IOKit, CoreAudio, CoreML) over cross-platform abstractions.
 - Keep the app as a single-process menu bar application.
-- Do not introduce cloud APIs, LLM integrations, or non-English transcription support.
-- Keep v1 focused on post-meeting transcription. Dictation remains placeholder scaffolding for v2.
-- Treat `DESIGN.md` as the visual source of truth. Never hardcode a color, font, or corner radius in a view — use `HeardTheme.Terminal.*`, `HeardFont.*`, and `HeardTheme.Spacing`/`Stroke` from `DesignSystem.swift`. If a token is missing, add it there rather than inlining a literal.
+- Do not introduce cloud APIs, LLM integrations, or non-English transcription.
+- Keep v1 focused on post-meeting transcription. Dictation is v2 placeholder scaffolding.
+- Avoid broad refactors — make targeted changes that deliver the next integration step.
+- The "Simulate Meeting" buttons are intentional for testing without a real Teams call. Keep them.
+- Treat `DESIGN.md` as the visual source of truth. Never hardcode a color, font, or corner radius in a view — use `HeardTheme.Terminal.*`, `HeardFont.*`, and `HeardTheme.Spacing/Radius/Stroke`. If a token is missing, add it to `DesignSystem.swift` rather than inlining a literal.
 
-## Current Codebase Shape
+## Design System
 
-- `Package.swift` defines a macOS Swift package executable target.
-- `Sources/Heard/MTApp.swift` contains the app entry point.
-- `Sources/HeardCore/AppModel.swift` is the main app state container.
-- `Sources/HeardCore/CoreModels.swift` holds app, pipeline, speaker, transcript, and settings models.
-- `Sources/HeardCore/Stores.swift` contains persistence and file-system helpers.
-- `Sources/HeardCore/Services.swift` contains the current service scaffolding for detection, recording, models, queue processing, and transcript writing.
-- The UI is split across `MenuBarView.swift`, `SettingsView.swift`, `SettingsTabs.swift`, `SettingsComponents.swift`, `SpeakerNamingView.swift`, `TranscriptLibraryView.swift`, `DictationHUD.swift`, and `MeetingNoteComposer.swift`. (The old single `Views.swift` no longer exists.)
-- `Sources/HeardCore/DesignSystem.swift` holds every design token and shared component, implementing the system in `DESIGN.md`.
+"Modern Terminal Brutalism" (see `DESIGN.md`). The implementation lives entirely in
+`Sources/HeardCore/DesignSystem.swift`:
+
+- **Palette** — `HeardTheme.Terminal.*`. Dark values are `DESIGN.md` verbatim; light values are a derived "paper terminal" counterpart so the `AppAppearance` preference (System/Light/Dark) keeps working.
+- **Type** — `HeardFont.*`, JetBrains Mono throughout. The TTFs ship in `Resources/Fonts/` and resolve via `ATSApplicationFontsPath` **only inside the .app bundle**; under `swift run` `HeardFont` falls back to the system monospaced face.
+- **Shape** — strictly sharp. `HeardTheme.Radius.{inline,card,hero}` are all `0`; use `Rectangle()`, never `RoundedRectangle` or `Capsule`, for containers.
+- **Depth** — no shadows on cards, rows, or buttons. Depth is a 1px `border` stroke over a tonal fill. Drop shadows are reserved for floating OS-level panels (menu bar dropdown, dictation HUD, windows).
+- **Components** — `SettingsCard`, `CardHeader`, `CardRow`, `ToggleRow`, `StatusPill`, `SectionLabel`, `StatusDot`, `TerminalRule`, plus `TerminalButtonStyle`, `TerminalTextFieldStyle`, `HeardToggleStyle`, `HeroButtonStyle`.
+
+## Architecture Notes
+
+- `MenuBarExtra` with `.window` style — renders SwiftUI views in a floating panel
+- `Window` scene with id "settings" — opened via `@Environment(\.openWindow)`
+- Library target `HeardCore` + executable `Heard` + test executable `HeardTests`
+- All persistence is JSON files in `~/Library/Application Support/Heard/`
+- Pipeline stages run sequentially on a background task, one job at a time
+- Meeting detection polls every second via `IOPMCopyAssertionsByProcess()` (2 consecutive hits to start)
+- Audio capture uses `CATapDescription` (app tap) + `AVAudioEngine` (mic)
+
+## Testing
+
+```bash
+swift run HeardTests        # run the test suite
+```
+
+Manual testing:
+1. `./scripts/bundle.sh && open build/Heard.app`
+2. Click menu bar icon → "Simulate Meeting Start" to exercise the full flow
+3. Use the Settings button to open preferences
+
+## Gotchas
+
+- Running via `swift run` attributes mic permission to the terminal app, not Heard. Use the .app bundle for proper permissions.
+- The `.window` MenuBarExtra panel has a max height — keep the dropdown content compact
+- FluidAudio dependency is declared but models aren't available as CoreML yet
+- The worktree is at `.claude/worktrees/` — run commands from the worktree dir, not the main repo
 
 ## Expectations For Future Sessions
 
-- Read `handoff.md` before making changes.
-- Update `handoff.md` after substantial implementation work, especially when macOS-specific integrations land.
 - When replacing stubs with real implementations, keep the user-facing flow intact:
   - detect meeting
   - record app + mic audio
   - enqueue job
   - process sequentially
   - write markdown transcript
-- Avoid broad refactors unless they directly help deliver the next real integration step.
 
 ## Priority Order
 

@@ -238,7 +238,7 @@ Heard/
 ├── spec.md                           # Product source of truth
 ├── handoff.md                        # Current implementation status
 ├── ROADMAP.md                        # Technical-debt status and non-goals
-└── CLAUDE.md                         # Working rules for AI assistants
+└── AGENTS.md                         # Working rules for AI assistants
 ```
 
 ### Targets
@@ -355,5 +355,5 @@ Heard is built on [FluidAudio](https://github.com/FluidInference/FluidAudio) by 
 - [`spec.md`](./spec.md) — Full product specification (source of truth)
 - [`handoff.md`](./handoff.md) — Current implementation status and known issues
 - [`ROADMAP.md`](./ROADMAP.md) — Technical-debt status, completed polish, and non-goals
-- [`CLAUDE.md`](./CLAUDE.md) — Working rules for AI assistants
+- [`AGENTS.md`](./AGENTS.md) — Working rules for AI assistants
 - [`docs/screenshots/`](./docs/screenshots) — Where the README screenshots live, and how to capture new ones
