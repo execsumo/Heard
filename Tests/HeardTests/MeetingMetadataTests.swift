@@ -81,10 +81,52 @@ func runMeetingMetadataTests() {
         let row = MockAXNode(role: "AXRow", title: "Alice Smith, Muted", children: [MockAXNode(role: "AXStaticText", value: "Muted")])
         try expectEqual(RosterReader.readRosterFromNode(livePane([row])), [])
     }
+    test("Matching AX title candidates are accepted") {
+        try expectEqual(MeetingDetector.unambiguousMeetingTitle(["Sprint Planning", "Sprint Planning"]), "Sprint Planning")
+        try expectEqual(MeetingDetector.unambiguousMeetingTitle([]), nil)
+    }
+    test("Different AX window titles are not silently assigned to a meeting") {
+        try expectEqual(MeetingDetector.unambiguousMeetingTitle(["Sprint Planning", "Sales Chat"]), nil)
+        try expectEqual(MeetingDetector.unambiguousMeetingTitle(["Sales Chat", "Sprint Planning"]), nil)
+    }
     test("Teams app placeholders are not meeting titles") {
         try expectEqual(MeetingDetector.cleanWindowTitle("Microsoft Teams", source: .teams), nil)
         try expectEqual(MeetingDetector.cleanWindowTitle("Chat | Microsoft Teams", source: .teams), nil)
         try expectEqual(MeetingDetector.cleanWindowTitle("Sprint Planning | Microsoft Teams", source: .teams), "Sprint Planning")
+    }
+    test("Window-server census separates empty names from placeholder filtering") {
+        let windows = [
+            MeetingDetector.MeetingWindowInfo(ownerPID: 10, title: "", width: 1000, height: 800, layer: 0),
+            MeetingDetector.MeetingWindowInfo(ownerPID: 10, title: "Calendar | Microsoft Teams", width: 1200, height: 900, layer: 0),
+            MeetingDetector.MeetingWindowInfo(ownerPID: 10, title: "Sprint Planning | Microsoft Teams", width: 800, height: 600, layer: 0),
+            MeetingDetector.MeetingWindowInfo(ownerPID: 10, title: "Chat | Microsoft Teams", width: 400, height: 300, layer: 3),
+            MeetingDetector.MeetingWindowInfo(ownerPID: 99, title: "Other Meeting | Microsoft Teams", width: 2000, height: 1000, layer: 0),
+            MeetingDetector.MeetingWindowInfo(ownerPID: 10, title: " | Microsoft Teams", width: 100, height: 100, layer: 0),
+            MeetingDetector.MeetingWindowInfo(ownerPID: 10, title: "Standup | Microsoft Teams", width: 0, height: 100, layer: 0),
+        ]
+        let census = MeetingDetector.meetingTitleCandidateCensus(from: windows, ownerPIDs: [10], source: .teams)
+        try expectEqual(
+            census.diagnosticSummary,
+            "cgListed=7 cgOwner=6 cgVisible=4 cgNonempty=3 cgUsable=1 cgReject otherOwner=1 wrongLayer=1 zeroArea=1 empty=1 suffixOnly=1 placeholder=1"
+        )
+        // The census is diagnostic only; it must not guess a title from the
+        // size of a Teams chat or channel window.
+        let redacted = [
+            MeetingDetector.MeetingWindowInfo(ownerPID: 10, title: "", width: 1600, height: 1000, layer: 0),
+            MeetingDetector.MeetingWindowInfo(ownerPID: 10, title: "", width: 900, height: 700, layer: 0),
+        ]
+        let emptyNames = MeetingDetector.meetingTitleCandidateCensus(from: redacted, ownerPIDs: [10], source: .teams)
+        try expectEqual(emptyNames.nonempty, 0)
+        try expectEqual(emptyNames.usable, 0)
+        try expectEqual(emptyNames.rejectEmpty, 2)
+        try expectEqual(emptyNames.rejectPlaceholder, 0)
+        let filtered = [MeetingDetector.MeetingWindowInfo(ownerPID: 10, title: "Chat | Microsoft Teams", width: 900, height: 700, layer: 0)]
+        let placeholders = MeetingDetector.meetingTitleCandidateCensus(from: filtered, ownerPIDs: [10], source: .teams)
+        try expectEqual(placeholders.nonempty, 1)
+        try expectEqual(placeholders.usable, 0)
+        try expectEqual(placeholders.rejectPlaceholder, 1)
+        try expect(placeholders.diagnosticSummary.contains("Sprint") == false, "census summary must not contain a title")
+        try expect(census.diagnosticSummary.contains("Sprint") == false, "census summary must not contain a title")
     }
     test("Metadata refresh fills delayed title and accumulates roster without erasure") {
         var snapshot = MeetingSnapshot(title: "", startedAt: Date(), meetingPID: nil)
@@ -94,10 +136,10 @@ func runMeetingMetadataTests() {
         try expectEqual(snapshot.title, "Sprint Planning")
         try expectEqual(snapshot.rosterNames, ["Alice Smith", "Bob Jones"])
     }
-    test("Late metadata reaches finished session without losing timing or notes") {
+    test("Late metadata reaches finished session without losing timing, notes or chat") {
         let path = URL(fileURLWithPath: "/tmp/metadata-test.wav")
         let start = Date(timeIntervalSince1970: 100)
-        let session = RecordingSession(title: "", startTime: start, appAudioPath: path, micAudioPath: path, micDelaySeconds: 0.25, rosterNames: ["Alice Smith"], notes: [MeetingNote(offsetSeconds: 2, text: "Keep this note", createdAt: start)])
+        let session = RecordingSession(title: "", startTime: start, appAudioPath: path, micAudioPath: path, micDelaySeconds: 0.25, rosterNames: ["Alice Smith"], notes: [MeetingNote(offsetSeconds: 2, text: "Keep this note", createdAt: start)], chatMessages: [ChatMessage(offsetSeconds: 3, sender: "Alice Smith", text: "Keep this chat")])
         let snapshot = MeetingSnapshot(title: "Sprint Planning", startedAt: start, meetingPID: nil, rosterNames: ["alice smith", "Bob Jones"])
         let result = snapshot.applyingMetadata(to: session)
         try expectEqual(result.title, "Sprint Planning")
@@ -106,5 +148,6 @@ func runMeetingMetadataTests() {
         try expectEqual(result.appAudioPath, path)
         try expectEqual(result.micDelaySeconds, 0.25)
         try expectEqual(result.notes, session.notes)
+        try expectEqual(result.chatMessages, session.chatMessages)
     }
 }

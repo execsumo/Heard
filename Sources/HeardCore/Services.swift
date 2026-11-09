@@ -101,6 +101,8 @@ public enum MeetingApp: String, CaseIterable, Codable, Sendable {
 }
 
 public struct MeetingSnapshot {
+    /// Distinguishes a new meeting from a detached metadata read for an older one.
+    public let id = UUID()
     public var title: String
     public var startedAt: Date
     public var source: MeetingApp
@@ -127,7 +129,7 @@ public struct MeetingSnapshot {
                          startTime: session.startTime, appAudioPath: session.appAudioPath,
                          micAudioPath: session.micAudioPath, micDelaySeconds: session.micDelaySeconds,
                          rosterNames: RosterReader.filterNames(session.rosterNames + rosterNames),
-                         notes: session.notes)
+                         notes: session.notes, chatMessages: session.chatMessages)
     }
 }
 
@@ -236,6 +238,8 @@ public final class MeetingDetector: ObservableObject {
     /// (already deduplicated against what that poll last saw; cross-poll dedup
     /// happens downstream in `RecordingManager.updateChatMessages`).
     private let onChatMessagesObserved: @MainActor ([(sender: String, text: String)]) -> Void
+    /// Keeps the live recording header in sync when a title is found after join.
+    private let onMeetingTitleObserved: @MainActor (String) -> Void
     private var activeSnapshot: MeetingSnapshot?
     private var pollingTask: Task<Void, Never>?
     private var rosterPollingTask: Task<Void, Never>?
@@ -272,13 +276,15 @@ public final class MeetingDetector: ObservableObject {
         chatScrapeEnabled: @escaping @MainActor () -> Bool = { false },
         onMeetingStarted: @escaping @MainActor (MeetingSnapshot) -> Void,
         onMeetingEnded: @escaping @MainActor (MeetingSnapshot) -> Void,
-        onChatMessagesObserved: @escaping @MainActor ([(sender: String, text: String)]) -> Void = { _ in }
+        onChatMessagesObserved: @escaping @MainActor ([(sender: String, text: String)]) -> Void = { _ in },
+        onMeetingTitleObserved: @escaping @MainActor (String) -> Void = { _ in }
     ) {
         self.enabledSources = enabledSources
         self.chatScrapeEnabled = chatScrapeEnabled
         self.onMeetingStarted = onMeetingStarted
         self.onMeetingEnded = onMeetingEnded
         self.onChatMessagesObserved = onChatMessagesObserved
+        self.onMeetingTitleObserved = onMeetingTitleObserved
     }
 
     public func startWatching() {
@@ -349,35 +355,15 @@ public final class MeetingDetector: ObservableObject {
             if pid != result.pid {
                 DebugFileLog.log("meeting detection: assertion pid=\(result.pid) resolved to main app pid=\(pid)")
             }
-            // Title/roster scraping does blocking AX IPC into the meeting app —
-            // which is busy joining a call and can stall for seconds. Run it off
-            // the main thread, then start the meeting once the data is in hand.
-            Task { [weak self] in
-                let (title, rosterNames) = await Task.detached(priority: .userInitiated) {
-                    // Teams is an Electron/Chromium app: its accessibility tree is
-                    // dormant until a client requests it via AXManualAccessibility.
-                    // Nudge it now — the tree builds asynchronously, so this first
-                    // read often still misses; the roster poll retries title+roster.
+            // Start capture immediately; slow Accessibility IPC must not cut
+            // the beginning off a meeting. Metadata is merged asynchronously.
+            beginMeeting(source: source, pid: pid, pollRoster: source == .teams) {
+                await Task.detached(priority: .userInitiated) {
                     if source == .teams { Self.enableMeetingAppAccessibility(pid: pid, source: source) }
-                    let title = Self.extractMeetingTitle(pid: pid, source: source) ?? ""
+                    let title = Self.extractMeetingTitle(pid: pid, source: source)
                     let roster: [String] = source == .teams ? RosterReader.readRoster(pid: pid) : []
                     return (title, roster)
                 }.value
-                DebugFileLog.log("meeting start scrape: source=\(source.rawValue) pid=\(pid) title=\(title.debugDescription) rosterCount=\(rosterNames.count) — roster poll will retry title/roster every 15s")
-                guard let self else { return }
-                // The meeting may have ended (or watching been toggled off) while
-                // we were scraping — the detection state machine is the source of truth.
-                guard self.detectionState.hasActiveSnapshot, self.activeSnapshot == nil else { return }
-                let snapshot = MeetingSnapshot(
-                    title: title,
-                    startedAt: Date(),
-                    source: source,
-                    meetingPID: pid,
-                    rosterNames: rosterNames
-                )
-                self.activeSnapshot = snapshot
-                if source == .teams { self.startRosterPolling() }
-                self.onMeetingStarted(snapshot)
             }
         case .endMeeting:
             guard let snapshot = activeSnapshot else { return }
@@ -387,6 +373,36 @@ public final class MeetingDetector: ObservableObject {
                 Self.disableMeetingAppAccessibility(pid: snapshot.meetingPID, source: snapshot.source)
             }
             onMeetingEnded(snapshot)
+        }
+    }
+
+    private func beginMeeting(
+        source: MeetingApp,
+        pid: pid_t?,
+        pollRoster: Bool,
+        loadMetadata: @escaping @Sendable () async -> (String?, [String])
+    ) {
+        guard activeSnapshot == nil else { return }
+        let snapshot = MeetingSnapshot(title: "", startedAt: Date(), source: source, meetingPID: pid)
+        activeSnapshot = snapshot
+        if pollRoster { startRosterPolling() }
+        onMeetingStarted(snapshot)
+
+        Task { [weak self] in
+            let (title, roster) = await loadMetadata()
+            DebugFileLog.log("meeting start scrape: source=\(source.rawValue) pid=\(pid ?? 0) titleLength=\(title?.count ?? 0) rosterCount=\(roster.count)")
+            guard let self else { return }
+            guard self.activeSnapshot?.id == snapshot.id else {
+                // The wake may have finished after stopWatching's disable. Do
+                // not disable a newer meeting's tree, but clean up if idle.
+                if self.activeSnapshot == nil, source == .teams {
+                    Task.detached(priority: .utility) {
+                        Self.disableMeetingAppAccessibility(pid: pid, source: source)
+                    }
+                }
+                return
+            }
+            self.applyMetadata(title: title, rosterNames: roster, forMeetingID: snapshot.id)
         }
     }
 
@@ -483,10 +499,10 @@ public final class MeetingDetector: ObservableObject {
     /// `AXManualAccessibility` fails, and `disableMeetingAppAccessibility` unsets it
     /// again once the meeting ends.
     ///
-    /// The `setErr`/`fallbackSetErr` log lines are the diagnostic discriminators:
-    /// `.success` on either means the nudge was accepted (any lingering empty reads
-    /// are tree-build timing); `.apiDisabled` on both would instead mean Heard is
-    /// genuinely untrusted.
+    /// The `setErr`/`fallbackSetErr` log lines record which call was refused.
+    /// `.success` on either means that nudge was accepted. `.apiDisabled`
+    /// (-25211) on both is an observed refusal only — it does not prove whether
+    /// Heard is untrusted or the target tree is asleep.
     @discardableResult
     nonisolated private static func enableMeetingAppAccessibility(pid: pid_t?, source: MeetingApp) -> Bool {
         guard let pid else { return false }
@@ -524,16 +540,29 @@ public final class MeetingDetector: ObservableObject {
     /// Returns nil if AX is denied, no window matches, or the title is just a placeholder.
     /// Nonisolated: called from a detached task so the blocking AX IPC never
     /// runs on the main thread.
+    ///
+    /// `AXIsProcessTrusted()` is logged and is not a gate: on macOS 15+ it can
+    /// stay false after a grant. The system-wide attribute copy is the live
+    /// in-process check. Neither value is a substitute for the other.
     nonisolated private static func extractMeetingTitle(pid: pid_t?, source: MeetingApp) -> String? {
-        // Do not pre-check AXIsProcessTrusted() — it can return a stale cached false on
-        // macOS 15+ even when Accessibility IS granted. AXUIElementCopyAttributeValue
-        // returns .apiDisabled on its own when access is genuinely denied, so the guard
-        // below handles the not-granted case correctly without the pre-check.
         guard let pid else { return nil }
+
+        let axTrusted = AXIsProcessTrusted()
+        let axSystemErr = systemWideAccessibilityError()
+        let screenPreflight = CGPreflightScreenCaptureAccess()
 
         // Teams renders its meeting window from a sibling process, so try every candidate.
         let pids = source == .teams ? RosterReader.metadataPIDs(preferred: pid) : [pid]
-        var windowCount = 0
+        var axWindows = 0
+        var axTruncated = 0
+        var axNonempty = 0
+        var axUsable = 0
+        var axRejectEmpty = 0
+        var axRejectSuffixOnly = 0
+        var axRejectPlaceholder = 0
+        var axRejectTitleRead = 0
+        var axWindowErrors: [Int32: Int] = [:]
+        var axCandidates: [String] = []
         for metadataPID in pids {
             let app = AXUIElementCreateApplication(metadataPID)
             // Bound each AX round-trip so a hung meeting app can't hang us.
@@ -541,41 +570,239 @@ public final class MeetingDetector: ObservableObject {
             var windowsRef: AnyObject?
             let windowsErr = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef)
             guard windowsErr == .success, let windows = windowsRef as? [AXUIElement] else {
-                // .apiDisabled (-25211) on a per-app Electron query usually means the app's
-                // Chromium a11y tree is still dormant (see enableMeetingAppAccessibility),
-                // NOT that Heard is untrusted. The roster poll retries once the tree wakes.
-                DebugFileLog.log("extractMeetingTitle: windows query failed pid=\(metadataPID) source=\(source.rawValue) axErr=\(windowsErr.rawValue)")
+                axWindowErrors[windowsErr.rawValue, default: 0] += 1
                 continue
             }
-            windowCount += windows.count
-            DebugFileLog.log("extractMeetingTitle: pid=\(metadataPID) source=\(source.rawValue) windowCount=\(windows.count)")
-
-            for window in windows {
+            axWindows += windows.count
+            // A metadata process can expose a long window list. Cap the title
+            // reads so one poll cannot stall the detached task.
+            let inspected = windows.prefix(16)
+            axTruncated += windows.count - inspected.count
+            for window in inspected {
+                AXUIElementSetMessagingTimeout(window, 0.4)
                 var titleRef: AnyObject?
-                guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
-                      let title = titleRef as? String, !title.isEmpty
-                else { continue }
-                if let cleaned = cleanWindowTitle(title, source: source) {
-                    DebugFileLog.log("extractMeetingTitle: raw=\(title.debugDescription) -> cleaned=\(cleaned.debugDescription)")
-                    return cleaned
+                let titleErr = AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
+                guard titleErr == .success, let title = titleRef as? String else {
+                    axRejectTitleRead += 1
+                    continue
                 }
-                DebugFileLog.log("extractMeetingTitle: raw=\(title.debugDescription) rejected (empty/placeholder after suffix strip)")
+                switch classifyWindowTitle(title, source: source) {
+                case .usable(let cleaned):
+                    axNonempty += 1
+                    axUsable += 1
+                    axCandidates.append(cleaned)
+                case .empty:
+                    axRejectEmpty += 1
+                case .suffixOnly:
+                    axNonempty += 1
+                    axRejectSuffixOnly += 1
+                case .placeholder:
+                    axNonempty += 1
+                    axRejectPlaceholder += 1
+                }
             }
         }
-        DebugFileLog.log("extractMeetingTitle: no usable title among \(windowCount) window(s) -> nil (falls back to 'Meeting')")
-        return nil
+        // Window-server data is diagnostic only; don't inspect unrelated window
+        // metadata during ordinary operation when Developer Mode is disabled.
+        let cgWindows = DebugFileLog.isEnabled ? onScreenMeetingWindows() : nil
+        let cgCensus = meetingTitleCandidateCensus(
+            from: cgWindows ?? [],
+            ownerPIDs: Set(pids),
+            source: source
+        )
+        let axTitle = unambiguousMeetingTitle(axCandidates)
+        let axErrSummary = axWindowErrors.keys.sorted().map { "\($0)x\(axWindowErrors[$0] ?? 0)" }.joined(separator: ",")
+        let chosen: String
+        if let axTitle {
+            chosen = "ax len=\(axTitle.count)"
+        } else if Set(axCandidates).count > 1 {
+            chosen = "ax ambiguous"
+        } else {
+            chosen = "none"
+        }
+        // Counts and error codes only. Window titles are never written here.
+        DebugFileLog.log(
+            "title access: axTrusted=\(axTrusted) axSystemErr=\(axSystemErr) " +
+            "screenPreflight=\(screenPreflight) chosen=\(chosen) " +
+            "cgList=\(cgWindows == nil ? "unavailable" : "ok") \(cgCensus.diagnosticSummary) " +
+            "axPids=\(pids.count) axWindowErr=\(axErrSummary.isEmpty ? "none" : axErrSummary) " +
+            "axWindows=\(axWindows) axTruncated=\(axTruncated) axNonempty=\(axNonempty) " +
+            "axUsable=\(axUsable) axReject empty=\(axRejectEmpty) suffixOnly=\(axRejectSuffixOnly) " +
+            "placeholder=\(axRejectPlaceholder) titleRead=\(axRejectTitleRead)"
+        )
+        // Window-server entries are diagnostic only: a visible Teams chat or
+        // channel can belong to the same app and need not be the active meeting.
+        return axTitle
     }
 
-    /// Pure helper exposed for tests: strip the source's title suffix and reject placeholders.
-    nonisolated public static func cleanWindowTitle(_ title: String, source: MeetingApp) -> String? {
+    /// Live in-process Accessibility check. `.apiDisabled` (-25211) indicates
+    /// refusal; `.cannotComplete` is inconclusive and occurs for both trusted and
+    /// untrusted processes. Does not prompt or change trust.
+    nonisolated private static func systemWideAccessibilityError() -> Int32 {
+        let systemWide = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(systemWide, 0.5)
+        var value: AnyObject?
+        return AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &value).rawValue
+    }
+
+    /// One on-screen window, as reported by `CGWindowListCopyWindowInfo`.
+    public struct MeetingWindowInfo: Equatable, Sendable {
+        public var ownerPID: Int32
+        public var title: String
+        public var width: Double
+        public var height: Double
+        public var layer: Int
+
+        public init(ownerPID: Int32, title: String, width: Double, height: Double, layer: Int) {
+            self.ownerPID = ownerPID
+            self.title = title
+            self.width = width
+            self.height = height
+            self.layer = layer
+        }
+    }
+
+    /// A candidate is safe only when every usable AX read agrees. Choosing the
+    /// largest window or first title can attach an unrelated chat to a meeting.
+    nonisolated public static func unambiguousMeetingTitle(_ candidates: [String]) -> String? {
+        let unique = Set(candidates.filter { !$0.isEmpty })
+        return unique.count == 1 ? unique.first : nil
+    }
+
+    /// Counts for one window-server snapshot. Reject categories are exclusive
+    /// and are evaluated before a title is classified: another owner, a
+    /// non-zero layer, and a zero area never also count as empty or placeholder.
+    public struct MeetingTitleCandidateCensus: Equatable, Sendable {
+        public var listed: Int
+        public var ownerMatch: Int
+        public var visible: Int
+        public var nonempty: Int
+        public var usable: Int
+        public var rejectOtherOwner: Int
+        public var rejectWrongLayer: Int
+        public var rejectZeroArea: Int
+        public var rejectEmpty: Int
+        public var rejectSuffixOnly: Int
+        public var rejectPlaceholder: Int
+
+        public init(
+            listed: Int = 0, ownerMatch: Int = 0, visible: Int = 0, nonempty: Int = 0, usable: Int = 0,
+            rejectOtherOwner: Int = 0, rejectWrongLayer: Int = 0, rejectZeroArea: Int = 0,
+            rejectEmpty: Int = 0, rejectSuffixOnly: Int = 0, rejectPlaceholder: Int = 0
+        ) {
+            self.listed = listed
+            self.ownerMatch = ownerMatch
+            self.visible = visible
+            self.nonempty = nonempty
+            self.usable = usable
+            self.rejectOtherOwner = rejectOtherOwner
+            self.rejectWrongLayer = rejectWrongLayer
+            self.rejectZeroArea = rejectZeroArea
+            self.rejectEmpty = rejectEmpty
+            self.rejectSuffixOnly = rejectSuffixOnly
+            self.rejectPlaceholder = rejectPlaceholder
+        }
+
+        public static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.listed == rhs.listed && lhs.ownerMatch == rhs.ownerMatch && lhs.visible == rhs.visible
+                && lhs.nonempty == rhs.nonempty && lhs.usable == rhs.usable
+                && lhs.rejectOtherOwner == rhs.rejectOtherOwner && lhs.rejectWrongLayer == rhs.rejectWrongLayer
+                && lhs.rejectZeroArea == rhs.rejectZeroArea && lhs.rejectEmpty == rhs.rejectEmpty
+                && lhs.rejectSuffixOnly == rhs.rejectSuffixOnly && lhs.rejectPlaceholder == rhs.rejectPlaceholder
+        }
+
+        /// Metadata only. This string never includes a window title.
+        public var diagnosticSummary: String {
+            "cgListed=\(listed) cgOwner=\(ownerMatch) cgVisible=\(visible) cgNonempty=\(nonempty) cgUsable=\(usable) " +
+            "cgReject otherOwner=\(rejectOtherOwner) wrongLayer=\(rejectWrongLayer) zeroArea=\(rejectZeroArea) " +
+            "empty=\(rejectEmpty) suffixOnly=\(rejectSuffixOnly) placeholder=\(rejectPlaceholder)"
+        }
+    }
+
+    nonisolated public static func meetingTitleCandidateCensus(
+        from windows: [MeetingWindowInfo],
+        ownerPIDs: Set<Int32>,
+        source: MeetingApp
+    ) -> MeetingTitleCandidateCensus {
+        var census = MeetingTitleCandidateCensus()
+        for window in windows {
+            census.listed += 1
+            guard ownerPIDs.contains(window.ownerPID) else {
+                census.rejectOtherOwner += 1
+                continue
+            }
+            census.ownerMatch += 1
+            guard window.layer == 0 else {
+                census.rejectWrongLayer += 1
+                continue
+            }
+            guard window.width * window.height > 0 else {
+                census.rejectZeroArea += 1
+                continue
+            }
+            census.visible += 1
+            switch classifyWindowTitle(window.title, source: source) {
+            case .usable:
+                census.nonempty += 1
+                census.usable += 1
+            case .empty:
+                census.rejectEmpty += 1
+            case .suffixOnly:
+                census.nonempty += 1
+                census.rejectSuffixOnly += 1
+            case .placeholder:
+                census.nonempty += 1
+                census.rejectPlaceholder += 1
+            }
+        }
+        return census
+    }
+
+    nonisolated private static func onScreenMeetingWindows() -> [MeetingWindowInfo]? {
+        guard let raw = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) else {
+            return nil
+        }
+        var windows: [MeetingWindowInfo] = []
+        for case let dict as NSDictionary in raw as NSArray {
+            guard let pid = dict[kCGWindowOwnerPID] as? NSNumber else { continue }
+            let bounds = dict[kCGWindowBounds] as? NSDictionary
+            windows.append(MeetingWindowInfo(
+                ownerPID: pid.int32Value,
+                title: dict[kCGWindowName] as? String ?? "",
+                width: (bounds?["Width"] as? NSNumber)?.doubleValue ?? 0,
+                height: (bounds?["Height"] as? NSNumber)?.doubleValue ?? 0,
+                layer: (dict[kCGWindowLayer] as? NSNumber)?.intValue ?? 0
+            ))
+        }
+        return windows
+    }
+
+    private enum WindowTitleClass {
+        case usable(String)
+        case empty
+        case suffixOnly
+        case placeholder
+    }
+
+    /// Same normalization as `cleanWindowTitle`, with the nil cases split so a
+    /// log can tell an empty name from a placeholder without recording either.
+    nonisolated private static func classifyWindowTitle(_ title: String, source: MeetingApp) -> WindowTitleClass {
         let cleaned = title.replacingOccurrences(
             of: source.titleSuffixPattern,
             with: "",
             options: .regularExpression
         ).trimmingCharacters(in: .whitespaces)
-        if cleaned.isEmpty { return nil }
-        if source.placeholderTitles.contains(cleaned) { return nil }
-        return cleaned
+        if cleaned.isEmpty {
+            return title.trimmingCharacters(in: .whitespaces).isEmpty ? .empty : .suffixOnly
+        }
+        if source.placeholderTitles.contains(cleaned) { return .placeholder }
+        return .usable(cleaned)
+    }
+
+    /// Pure helper exposed for tests: strip the source's title suffix and reject placeholders.
+    nonisolated public static func cleanWindowTitle(_ title: String, source: MeetingApp) -> String? {
+        if case .usable(let cleaned) = classifyWindowTitle(title, source: source) { return cleaned }
+        return nil
     }
 
     // MARK: - Roster Polling
@@ -623,7 +850,11 @@ public final class MeetingDetector: ObservableObject {
                     let chat = wantChat ? ChatReader.readChatMessages(pid: pid) : []
                     return (names, title, dump, chat)
                 }.value
-                self.activeSnapshot?.mergeMetadata(title: refreshedTitle, rosterNames: names)
+                // The detached scrape may finish after this meeting ended or a new
+                // one started. Never attach its title, roster, or chat to that meeting.
+                guard !Task.isCancelled,
+                      self.applyMetadata(title: refreshedTitle, rosterNames: names, forMeetingID: snapshot.id)
+                else { break }
                 DebugFileLog.log("roster poll tick=\(tick): read=\(names.count) total=\(self.activeSnapshot?.rosterNames.count ?? 0) titleEmpty=\(needTitle) titleRefreshed=\(refreshedTitle != nil)")
                 if let treeDump {
                     rosterDumpsRemaining -= 1
@@ -642,6 +873,16 @@ public final class MeetingDetector: ObservableObject {
         rosterPollingTask = nil
     }
 
+    @discardableResult
+    private func applyMetadata(title: String?, rosterNames: [String], forMeetingID id: UUID) -> Bool {
+        guard let snapshot = activeSnapshot, snapshot.id == id else { return false }
+        activeSnapshot?.mergeMetadata(title: title, rosterNames: rosterNames)
+        if let newTitle = activeSnapshot?.title, snapshot.title.isEmpty, !newTitle.isEmpty {
+            onMeetingTitleObserved(newTitle)
+        }
+        return true
+    }
+
     // MARK: - Simulation (development only)
 
     public func simulateMeetingStart(title: String) {
@@ -649,6 +890,20 @@ public final class MeetingDetector: ObservableObject {
         let snapshot = MeetingSnapshot(title: title, startedAt: Date(), source: .teams, meetingPID: nil)
         activeSnapshot = snapshot
         onMeetingStarted(snapshot)
+    }
+
+    /// Exercise real start ordering with a controllable metadata read.
+    public func simulateMeetingStartWithMetadata(
+        _ loadMetadata: @escaping @Sendable () async -> (String?, [String])
+    ) {
+        isSimulated = true
+        beginMeeting(source: .teams, pid: nil, pollRoster: false, loadMetadata: loadMetadata)
+    }
+
+    /// Exercise late metadata, including a stale poll, without querying another app.
+    public func simulateMeetingMetadata(title: String?, rosterNames: [String] = [], forMeetingID id: UUID? = nil) {
+        guard isSimulated, let snapshot = activeSnapshot else { return }
+        applyMetadata(title: title, rosterNames: rosterNames, forMeetingID: id ?? snapshot.id)
     }
 
     public func simulateMeetingEnd() {
@@ -660,6 +915,55 @@ public final class MeetingDetector: ObservableObject {
 }
 
 // MARK: - Audio Recording
+
+/// Bounds writes even if the main-actor split timer is delayed. Reserve ample
+/// room for AVAudioFile's header and any RIFF padding, not just the data field.
+public struct WAVCaptureLimit {
+    public static let maxPayloadBytes: UInt64 = UInt64(UInt32.max) - 1_048_576
+    private let maxFrames: UInt64
+    private var frames: UInt64
+
+    public init(bytesPerFrame: UInt32, existingFrames: UInt64 = 0, maxPayloadBytes: UInt64 = Self.maxPayloadBytes) {
+        maxFrames = bytesPerFrame > 0 ? maxPayloadBytes / UInt64(bytesPerFrame) : 0
+        frames = existingFrames
+    }
+
+    /// The caller writes only the returned frames and requests a segment split
+    /// when `split` is true. `dropped` makes a delayed split visible to the user.
+    public mutating func reserve(_ requested: UInt32) -> (frames: UInt32, dropped: UInt32, split: Bool) {
+        let remaining = frames < maxFrames ? maxFrames - frames : 0
+        let accepted = UInt32(min(UInt64(requested), remaining))
+        frames += UInt64(accepted)
+        return (accepted, requested - accepted, frames >= maxFrames)
+    }
+
+    public static func splitAfter(sampleRate: Double, bytesPerFrame: UInt32) -> Double {
+        guard sampleRate.isFinite, sampleRate > 0, bytesPerFrame > 0 else { return 0 }
+        let limit = Double(maxPayloadBytes) / (sampleRate * Double(bytesPerFrame))
+        return max(0, min(4 * 3600, limit - 60))
+    }
+}
+
+/// Tracks a context by identity, without extending the lifetime of its writer.
+public struct AppAudioHealthSnapshot {
+    public private(set) var identity: ObjectIdentifier?
+    public private(set) var nonZero = 0
+    public private(set) var cycles = 0
+
+    public init() {}
+
+    public mutating func observe(_ context: AnyObject, nonZero: Int, cycles: Int) -> (receivedAudio: Bool, callbacksFiring: Bool) {
+        let id = ObjectIdentifier(context)
+        if identity != id { self.nonZero = 0; self.cycles = 0 }
+        let result = (nonZero > self.nonZero, cycles > self.cycles)
+        identity = id
+        self.nonZero = nonZero
+        self.cycles = cycles
+        return result
+    }
+
+    public mutating func reset() { self = AppAudioHealthSnapshot() }
+}
 
 @MainActor
 public final class RecordingManager: ObservableObject {
@@ -681,8 +985,15 @@ public final class RecordingManager: ObservableObject {
     // Stats fields are word-sized scalars updated from the IOProc and read from the
     // logging task; torn reads are acceptable for diagnostic output.
     private final class AppAudioInputContext: @unchecked Sendable {
-        let file: AVAudioFile
+        /// Released on teardown before the WAV header is patched. The IOProc
+        /// block retains this context; clearing `file` drops the `AVAudioFile`
+        /// even if CoreAudio has not released the block yet, so a late callback
+        /// cannot rewrite the header after finalization.
+        var file: AVAudioFile?
         let format: AVAudioFormat
+        var limit: WAVCaptureLimit
+        var splitRequested = false
+        var lossReported = false
         var isStopped = false
 
         // Lifetime stats (monotonically increasing, written by IOProc)
@@ -696,7 +1007,12 @@ public final class RecordingManager: ObservableObject {
         var firstAudioAt: CFTimeInterval = 0  // 0 = never
 
         init(file: AVAudioFile, format: AVAudioFormat) {
-            self.file = file; self.format = format
+            self.file = file
+            self.format = format
+            self.limit = WAVCaptureLimit(
+                bytesPerFrame: file.fileFormat.streamDescription.pointee.mBytesPerFrame,
+                existingFrames: UInt64(max(0, file.length))
+            )
         }
     }
 
@@ -709,6 +1025,7 @@ public final class RecordingManager: ObservableObject {
     private var tapObjectID: AudioObjectID = 0
     private var aggregateDeviceID: AudioObjectID = 0
     private var maxDurationTask: Task<Void, Never>?
+    private var captureGeneration = UUID()
     private var appAudioMonitorTask: Task<Void, Never>?
     private var appAudioHealth = AppAudioHealthMonitor()
     /// When the tap chain last went down for a file-preserving rebuild; the gap is
@@ -725,6 +1042,12 @@ public final class RecordingManager: ObservableObject {
 
     /// Callback for max-duration split: enqueue current session, optionally restart.
     public var onMaxDurationReached: (@MainActor (RecordingSession) -> Void)?
+    /// Called if a delayed split causes frames to be dropped at the RIFF limit.
+    public var onCaptureGapDetected: (@MainActor () -> Void)?
+    /// Called on the first write failure for a recording track.
+    public var onCaptureWriteFailure: (@MainActor (String) -> Void)?
+    /// Called if recording cannot resume after a duration/size split.
+    public var onCaptureRestartFailed: (@MainActor () -> Void)?
     /// Called once when the self-test confirms non-zero app audio is flowing.
     public var onAppAudioCaptureConfirmed: (() -> Void)?
     /// Called when the tap has delivered only silence for the whole recording while
@@ -742,6 +1065,7 @@ public final class RecordingManager: ObservableObject {
 
     public func startRecording(title: String, meetingPID: pid_t?, source: MeetingApp = .teams, rosterNames: [String] = []) throws {
         guard activeSession == nil else { return }
+        captureGeneration = UUID()
 
         let stamp = Formatting.recordingFileFormatter.string(from: Date())
         let base = FileManager.default.heardAppSupportDirectory
@@ -814,9 +1138,17 @@ public final class RecordingManager: ObservableObject {
             rosterNames: rosterNames
         )
 
-        // 4-hour max recording duration
+        // Split before either track approaches RIFF's 32-bit container limit.
+        // The per-write limit also covers late-starting tracks and delayed timers.
+        let duration = [appAudioFile, micAudioFile].compactMap { file -> Double? in
+            guard let file else { return nil }
+            return WAVCaptureLimit.splitAfter(
+                sampleRate: file.fileFormat.sampleRate,
+                bytesPerFrame: file.fileFormat.streamDescription.pointee.mBytesPerFrame
+            )
+        }.min() ?? 0
         maxDurationTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(4 * 3600))
+            try? await Task.sleep(for: .seconds(duration))
             guard let self, !Task.isCancelled else { return }
             self.handleMaxDurationReached()
         }
@@ -859,7 +1191,7 @@ public final class RecordingManager: ObservableObject {
     public func updateTitle(_ title: String) {
         let trimmed = title.trimmingCharacters(in: .whitespaces)
         guard activeSession != nil, !trimmed.isEmpty else { return }
-        DebugFileLog.log("recording title updated: \(currentTitle.debugDescription) -> \(trimmed.debugDescription)")
+        DebugFileLog.log("recording title updated: oldLength=\(currentTitle.count) newLength=\(trimmed.count)")
         activeSession?.title = trimmed
         currentTitle = trimmed
     }
@@ -918,6 +1250,10 @@ public final class RecordingManager: ObservableObject {
             AVLinearPCMIsBigEndianKey: false,
         ]
         let file = try AVAudioFile(forWriting: url, settings: fileSettings)
+        guard WAVCaptureLimit.splitAfter(
+            sampleRate: file.fileFormat.sampleRate,
+            bytesPerFrame: file.fileFormat.streamDescription.pointee.mBytesPerFrame
+        ) > 0 else { throw RecordingError.deviceSetupFailed(kAudioDeviceUnsupportedFormatError) }
         micAudioFile = file
 
         // Set up AsyncStream for v2 dictation
@@ -935,17 +1271,39 @@ public final class RecordingManager: ObservableObject {
 
         // Log-once flag for write failures; the tap fires ~10×/s so logging
         // every failure would flood the log. Torn read at worst logs twice.
-        final class WriteFailureFlag: @unchecked Sendable { var logged = false }
-        let writeFailure = WriteFailureFlag()
+        final class WriteState: @unchecked Sendable {
+            var logged = false
+            var limit: WAVCaptureLimit
+            var splitRequested = false
+            var lossReported = false
+            init(bytesPerFrame: UInt32) { limit = WAVCaptureLimit(bytesPerFrame: bytesPerFrame) }
+        }
+        let state = WriteState(bytesPerFrame: file.fileFormat.streamDescription.pointee.mBytesPerFrame)
+        let generation = captureGeneration
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: monoFormat) {
             [weak self] buffer, _ in
-            do {
-                try file.write(from: buffer)
-            } catch {
-                if !writeFailure.logged {
-                    writeFailure.logged = true
-                    DebugFileLog.event("Mic WAV write failed (disk full?): %@", error.localizedDescription)
+            let originalLength = buffer.frameLength
+            let reservation = state.limit.reserve(originalLength)
+            if reservation.frames > 0 {
+                buffer.frameLength = reservation.frames
+                do {
+                    try file.write(from: buffer)
+                } catch {
+                    if !state.logged {
+                        state.logged = true
+                        DebugFileLog.event("Mic WAV write failed (disk full?): %@", error.localizedDescription)
+                        Task { @MainActor [weak self] in self?.onCaptureWriteFailure?("Microphone") }
+                    }
                 }
+                buffer.frameLength = originalLength
+            }
+            if reservation.split && !state.splitRequested {
+                state.splitRequested = true
+                Task { @MainActor [weak self] in self?.splitAtCaptureLimit(generation: generation) }
+            }
+            if reservation.dropped > 0 && !state.lossReported {
+                state.lossReported = true
+                Task { @MainActor [weak self] in self?.onCaptureGapDetected?() }
             }
             self?.micBufferContinuation?.yield(buffer)
         }
@@ -1111,6 +1469,14 @@ public final class RecordingManager: ObservableObject {
             AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
             throw error
         }
+        guard WAVCaptureLimit.splitAfter(
+            sampleRate: file.fileFormat.sampleRate,
+            bytesPerFrame: file.fileFormat.streamDescription.pointee.mBytesPerFrame
+        ) > 0 else {
+            AudioHardwareDestroyAggregateDevice(aggregateDeviceID); aggregateDeviceID = 0
+            AudioHardwareDestroyProcessTap(tapObjectID); tapObjectID = 0
+            throw RecordingError.deviceSetupFailed(kAudioDeviceUnsupportedFormatError)
+        }
         appAudioFile = file
         // processingFormat is the format write(from:) actually expects.
         let format = file.processingFormat
@@ -1132,11 +1498,12 @@ public final class RecordingManager: ObservableObject {
         let ctx = AppAudioInputContext(file: file, format: format)
         appHALContext = ctx
 
+        let generation = captureGeneration
         var ioProc: AudioDeviceIOProcID?
         let ioErr = AudioDeviceCreateIOProcIDWithBlock(
             &ioProc, aggregateDeviceID, appIOProcQueue
-        ) { [ctx, format] _, inInputData, _, _, _ in
-            guard !ctx.isStopped else { return }
+        ) { [weak self, ctx, format] _, inInputData, _, _, _ in
+            guard !ctx.isStopped, let file = ctx.file else { return }
             ctx.renderCycles &+= 1
 
             guard let buf = AudioCaptureSupport.copyInput(inInputData, format: format),
@@ -1163,21 +1530,33 @@ public final class RecordingManager: ObservableObject {
                 ctx.firstAudioAt = CACurrentMediaTime()
             }
 
-            do {
-                try ctx.file.write(from: buf)
-            } catch {
-                // Surface write failures (disk full, volume gone) instead of
-                // silently producing an empty WAV. Counted into the periodic
-                // stats line; logged in full once.
-                ctx.renderErrorCount &+= 1
-                ctx.lastRenderError = OSStatus(truncatingIfNeeded: (error as NSError).code)
-                if ctx.renderErrorCount == 1 {
-                    DebugFileLog.event("App audio WAV write failed (disk full?): %@", error.localizedDescription)
+            let reservation = ctx.limit.reserve(buf.frameLength)
+            if reservation.frames > 0 {
+                buf.frameLength = reservation.frames
+                do {
+                    try file.write(from: buf)
+                } catch {
+                    // Count and log write failures instead of silently losing audio.
+                    ctx.renderErrorCount &+= 1
+                    ctx.lastRenderError = OSStatus(truncatingIfNeeded: (error as NSError).code)
+                    if ctx.renderErrorCount == 1 {
+                        DebugFileLog.event("App audio WAV write failed (disk full?): %@", error.localizedDescription)
+                        Task { @MainActor [weak self] in self?.onCaptureWriteFailure?("System audio") }
+                    }
                 }
+            }
+            if reservation.split && !ctx.splitRequested {
+                ctx.splitRequested = true
+                Task { @MainActor [weak self] in self?.splitAtCaptureLimit(generation: generation) }
+            }
+            if reservation.dropped > 0 && !ctx.lossReported {
+                ctx.lossReported = true
+                Task { @MainActor [weak self] in self?.onCaptureGapDetected?() }
             }
         }
         guard ioErr == noErr, let validProc = ioProc else {
             DebugFileLog.event("AudioDeviceCreateIOProcIDWithBlock failed (%d)", ioErr)
+            ctx.file = nil
             appHALContext = nil
             if existingFile == nil { appAudioFile = nil }
             AudioHardwareDestroyAggregateDevice(aggregateDeviceID); aggregateDeviceID = 0
@@ -1189,6 +1568,10 @@ public final class RecordingManager: ObservableObject {
         guard startErr == noErr else {
             DebugFileLog.event("AudioDeviceStart failed (%d)", startErr)
             AudioDeviceDestroyIOProcID(aggregateDeviceID, validProc)
+            appIOProcQueue.sync {
+                ctx.isStopped = true
+                ctx.file = nil
+            }
             appHALContext = nil
             if existingFile == nil { appAudioFile = nil }
             AudioHardwareDestroyAggregateDevice(aggregateDeviceID); aggregateDeviceID = 0
@@ -1218,13 +1601,26 @@ public final class RecordingManager: ObservableObject {
         for c in 0..<Int(format.channelCount) {
             channelData[c].update(repeating: 0, count: Int(chunk))
         }
+        var limit = WAVCaptureLimit(
+            bytesPerFrame: file.fileFormat.streamDescription.pointee.mBytesPerFrame,
+            existingFrames: UInt64(max(0, file.length))
+        )
         while remaining > 0 {
-            buf.frameLength = min(chunk, remaining)
-            do { try file.write(from: buf) } catch {
-                DebugFileLog.event("Padding app WAV with silence failed: %@", error.localizedDescription)
+            let reservation = limit.reserve(min(chunk, remaining))
+            if reservation.frames > 0 {
+                buf.frameLength = reservation.frames
+                do { try file.write(from: buf) } catch {
+                    DebugFileLog.event("Padding app WAV with silence failed: %@", error.localizedDescription)
+                    return
+                }
+                remaining -= reservation.frames
+            }
+            if reservation.split {
+                if reservation.dropped > 0 || remaining > 0 { onCaptureGapDetected?() }
+                let generation = captureGeneration
+                Task { @MainActor [weak self] in self?.splitAtCaptureLimit(generation: generation) }
                 return
             }
-            remaining -= buf.frameLength
         }
         DebugFileLog.event("Padded app WAV with %.2fs of silence for the rebuild gap", seconds)
     }
@@ -1305,10 +1701,26 @@ public final class RecordingManager: ObservableObject {
         appAudioMonitorTask = nil
         removeDefaultOutputDeviceListener()
 
+        let path = appWAVPath
         let finalContext = appHALContext
         teardownAppAudioChainOnly()
         if let ctx = finalContext {
             logAppAudioStats(prefix: "App audio capture stopped", context: ctx)
+        }
+        // The pipeline and any player trust the data-chunk size. Patch it from
+        // the file length after the writer has released the file.
+        if let path, FileManager.default.fileExists(atPath: path.path) {
+            do {
+                if let repair = try WAVHeaderFinalizer.finalize(at: path) {
+                    DebugFileLog.event(
+                        "App WAV header finalized — previousDataBytes=%u dataBytes=%u",
+                        repair.previousDataSize, repair.dataSize
+                    )
+                }
+            } catch {
+                // The pipeline will retry recovery and surface any failure as a job error.
+                DebugFileLog.event("App WAV finalization failed: %@", error.localizedDescription)
+            }
         }
     }
 
@@ -1317,21 +1729,25 @@ public final class RecordingManager: ObservableObject {
     /// `keepFile`, the app WAV stays open for a file-preserving rebuild and the
     /// moment the chain went down is recorded so the gap can be padded.
     private func teardownAppAudioChainOnly(keepFile: Bool = false) {
-        appHALContext?.isStopped = true
         if let procID = appIOProcID {
             AudioDeviceStop(aggregateDeviceID, procID)
             AudioDeviceDestroyIOProcID(aggregateDeviceID, procID)
             appIOProcID = nil
         }
-        // Drain IOProc blocks already queued so nothing writes to the file while
-        // the rebuild pads it from the main actor.
-        appIOProcQueue.sync {}
+        // Drain queued callbacks and detach the writer even on a preserving
+        // rebuild. Only appAudioFile owns it while the chain is down.
+        let context = appHALContext
+        appIOProcQueue.sync {
+            context?.isStopped = true
+            context?.file = nil
+        }
+        appHealthSnapshot.reset()
+        if !keepFile { appAudioFile = nil }
         appHALContext = nil
         if keepFile {
             // Keep the earliest down time if earlier retries already failed.
             appChainDownAt = appChainDownAt ?? CACurrentMediaTime()
         } else {
-            appAudioFile = nil
             appChainDownAt = nil
         }
 
@@ -1354,7 +1770,7 @@ public final class RecordingManager: ObservableObject {
     /// Cancellation: teardownAppAudioRecording cancels this task.
     private func startAppAudioMonitor(pid: pid_t) {
         appAudioMonitorTask?.cancel()
-        appHealthSnapshot = (nil, 0, 0)
+        appHealthSnapshot.reset()
         appChainRetryElapsed = 0
         appAudioMonitorTask = Task { [weak self] in
             var tick = 0
@@ -1372,7 +1788,7 @@ public final class RecordingManager: ObservableObject {
 
     private static let appAudioHealthInterval: Double = 2
     private static let appChainRetrySeconds: Double = 10
-    private var appHealthSnapshot: (ctx: AppAudioInputContext?, nonZero: Int, cycles: Int) = (nil, 0, 0)
+    private var appHealthSnapshot = AppAudioHealthSnapshot()
     private var appChainRetryElapsed: Double = 0
 
     private func appAudioHealthTick(pid: pid_t) {
@@ -1392,12 +1808,9 @@ public final class RecordingManager: ObservableObject {
         var receivedAudio = false
         var callbacksFiring = true
         if let ctx = appHALContext {
-            if appHealthSnapshot.ctx !== ctx {
-                appHealthSnapshot = (ctx, 0, 0)
-            }
-            receivedAudio = ctx.nonZeroFrames > appHealthSnapshot.nonZero
-            callbacksFiring = ctx.renderCycles > appHealthSnapshot.cycles
-            appHealthSnapshot = (ctx, ctx.nonZeroFrames, ctx.renderCycles)
+            let observed = appHealthSnapshot.observe(ctx, nonZero: ctx.nonZeroFrames, cycles: ctx.renderCycles)
+            receivedAudio = observed.receivedAudio
+            callbacksFiring = observed.callbacksFiring
         }
         let outputActive = meetingAppOutputActive(pid: pid)
 
@@ -1415,7 +1828,8 @@ public final class RecordingManager: ObservableObject {
                 DebugFileLog.log("app audio self-test: result=passed elapsedSeconds=\(Int(health.elapsed))")
                 onAppAudioCaptureConfirmed?()
             case .rebuildFresh:
-                rebuildAppAudioChain(pid: pid, preserveFile: false, reason: "no audio at startup")
+                // Even a silent prefix is captured data; do not truncate it on retry.
+                rebuildAppAudioChain(pid: pid, preserveFile: true, reason: "no audio at startup")
             case .rebuildPreservingFile:
                 let reason = callbacksFiring
                     ? "silent \(Int(health.silentSeconds))s while \(meetingAppName) output active"
@@ -1574,23 +1988,29 @@ public final class RecordingManager: ObservableObject {
         return Self.copyDeviceStringProperty(deviceID, selector: selector)
     }
 
+    private func splitAtCaptureLimit(generation: UUID) {
+        guard generation == captureGeneration, activeSession != nil else { return }
+        DebugFileLog.event("WAV size limit reached — splitting recording")
+        handleMaxDurationReached()
+    }
+
     private func handleMaxDurationReached() {
         guard let session = stopRecording() else { return }
 
         // Enqueue the finished session
         onMaxDurationReached?(session)
 
-        // Restart recording if we had a meeting-app PID (meeting still active)
+        // Manual recordings have no meeting PID, but must continue after a split
+        // too. A failed restart must not leave the user assuming it is recording.
         let pid = currentMeetingPID
         let source = currentSource
         let title = currentTitle
         let roster = currentRosterNames
-        if pid != nil {
-            do {
-                try startRecording(title: title + " (cont.)", meetingPID: pid, source: source, rosterNames: roster)
-            } catch {
-                DebugFileLog.event("Failed to restart recording after max duration: %@", String(describing: error))
-            }
+        do {
+            try startRecording(title: title + " (cont.)", meetingPID: pid, source: source, rosterNames: roster)
+        } catch {
+            DebugFileLog.event("Failed to restart recording after max duration: %@", String(describing: error))
+            onCaptureRestartFailed?()
         }
     }
 }
@@ -1836,7 +2256,7 @@ public final class PermissionCenter: ObservableObject {
             PermissionStatus(
                 id: "screenCapture",
                 title: "Screen Recording",
-                purpose: "Tap Teams audio to record the other participants' voices. Required for dual-track recording.",
+                purpose: "Allows window metadata diagnostics. System Audio uses a separate permission.",
                 state: screenCaptureState()
             ),
             PermissionStatus(
@@ -1855,13 +2275,7 @@ public final class PermissionCenter: ObservableObject {
     }
 
     public var isAccessibilityGranted: Bool {
-        if AXIsProcessTrusted() { return true }
-        // AXIsProcessTrusted can return a stale false on macOS 15+. Fall back to a live
-        // AX API call: only kAXErrorAPIDisabled means "no permission".
-        let sysWide = AXUIElementCreateSystemWide()
-        var value: AnyObject?
-        let err = AXUIElementCopyAttributeValue(sysWide, kAXFocusedApplicationAttribute as CFString, &value)
-        return err != .apiDisabled
+        accessibilityState() == .granted
     }
 
     public var isScreenCaptureGranted: Bool {
@@ -2087,18 +2501,13 @@ public final class PermissionCenter: ObservableObject {
 
     private func accessibilityState() -> PermissionState {
         if AXIsProcessTrusted() { return .granted }
-        // AXIsProcessTrusted can return stale TCC data on macOS 15+. Confirm with a
-        // live AX API call: only kAXErrorAPIDisabled means "no permission" — all other
-        // results (including kAXErrorNoValue for "no focused app") mean the process IS
-        // trusted. Note: AXError has no .notTrusted member; the enum jumps directly
-        // from .apiDisabled to .noValue.
+        // The trust bit can be stale. A live query can indicate denial, but
+        // even success does not prove this process can read other apps.
         let sysWide = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(sysWide, 0.5)
         var value: AnyObject?
         let err = AXUIElementCopyAttributeValue(sysWide, kAXFocusedApplicationAttribute as CFString, &value)
-        return Self.accessibilityPermissionState(
-            isTrusted: false,
-            liveGranted: err != .apiDisabled
-        )
+        return Self.accessibilityPermissionState(isTrusted: false, liveError: err)
     }
 
     // MARK: - Testable state helpers
@@ -2117,10 +2526,12 @@ public final class PermissionCenter: ObservableObject {
         return unverified ? .unverified : .recommended
     }
 
-    /// Exposed for unit tests. Accessibility is granted if either AXIsProcessTrusted()
-    /// or the live AX API fallback confirms it.
-    public nonisolated static func accessibilityPermissionState(isTrusted: Bool, liveGranted: Bool) -> PermissionState {
-        (isTrusted || liveGranted) ? .granted : .recommended
+    /// System-wide AX results do not prove access to other applications: even
+    /// `.success` has been observed while all target-app reads were refused.
+    public nonisolated static func accessibilityPermissionState(isTrusted: Bool, liveError: AXError) -> PermissionState {
+        if isTrusted { return .granted }
+        if liveError == .apiDisabled { return .recommended }
+        return .unverified
     }
 
     private func openSystemSettings(_ urlString: String) {

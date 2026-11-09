@@ -157,7 +157,11 @@ public final class AppModel: ObservableObject {
         // Wire dictation: text injection on finalized utterances, targeting the
         // field that was focused when the session started.
         dictationManager.onUtterance = { [weak model] text in
-            TextInjector.inject(text, restoringFocusTo: model?.dictationFocusTarget)
+            guard let model else { return }
+            if !TextInjector.inject(text, restoringFocusTo: model.dictationFocusTarget) {
+                model.dictationAXLost = true
+                model.dictationError = "Could not paste dictation: Accessibility access could not be verified."
+            }
         }
         // Surface silent "no speech captured" stops so a dropped/stalled mic
         // isn't an invisible failure. Cleared on the next dictation start.
@@ -237,6 +241,16 @@ public final class AppModel: ObservableObject {
             guard let self else { return }
             self.pipelineProcessor.enqueueFinishedRecording(session, endedAt: Date())
         }
+        self.recordingManager.onCaptureGapDetected = { [weak self] in
+            self?.errorMessage = "Some audio may be missing: the recording reached its file-size limit before it could split."
+        }
+        self.recordingManager.onCaptureWriteFailure = { [weak self] track in
+            self?.errorMessage = "\(track) could not be saved. Check available disk space; this recording may be incomplete."
+        }
+        self.recordingManager.onCaptureRestartFailed = { [weak self] in
+            self?.phase = .error
+            self?.errorMessage = "Recording stopped after a segment split and could not restart."
+        }
 
         // Forward child store changes so SwiftUI views observing `AppModel`
         // re-render when nested ObservableObjects update (queue progresses through
@@ -304,6 +318,9 @@ public final class AppModel: ObservableObject {
             },
             onChatMessagesObserved: { [weak self] messages in
                 self?.recordingManager.updateChatMessages(messages)
+            },
+            onMeetingTitleObserved: { [weak self] title in
+                self?.recordingManager.updateTitle(title)
             }
         )
 
@@ -600,19 +617,19 @@ public var filteredSpeakers: [SpeakerProfile] {
         hotkeyManager.activate()
     }
 
-    /// Polls AXIsProcessTrusted() while dictation is active. If access is revoked mid-session,
-    /// stops dictation and raises dictationAXLost so the menu bar can show a re-grant banner.
+    /// Polls verified Accessibility access while dictation is active. If access
+    /// cannot be verified, stop and surface the state instead of silently losing text.
     private func startAXPolling() {
         Task { [weak self] in
             while self?.isDictating == true {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self, self.isDictating else { break }
-                if !AXIsProcessTrusted() {
+                if !TextInjector.accessibilityAccessVerified(restoringFocusTo: self.dictationFocusTarget) {
                     self.dictationAXLost = true
                     self.isDictating = false
                     if self.settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
                     await self.dictationManager.stop()
-                    NSLog("Heard: Dictation stopped — Accessibility access revoked mid-session")
+                    NSLog("Heard: Dictation stopped — Accessibility access could not be verified")
                     break
                 }
             }

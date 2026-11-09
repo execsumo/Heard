@@ -100,9 +100,13 @@ public enum AudioPreprocessor {
 
     /// Preprocess a recorded WAV file into a 16 kHz mono float buffer with VAD trimming.
     public static func preprocess(wavURL: URL) async throws -> PreprocessedTrack {
-        // Step 1: Load and resample to 16kHz mono using FluidAudio's AudioConverter
+        // Step 1: Load and resample to 16kHz mono using FluidAudio's AudioConverter.
+        // A short RIFF header hides the rest of the PCM from AVAudioFile; read a
+        // repaired clone and leave the recording itself unchanged.
+        let reading = try WAVHeaderFinalizer.readingURL(for: wavURL)
+        defer { reading.cleanup() }
         let converter = AudioConverter()
-        let samples = try converter.resampleAudioFile(wavURL)
+        let samples = try converter.resampleAudioFile(reading.url)
 
         // Step 2: Run Silero VAD to detect speech segments
         let vadManager = try await VadManager()

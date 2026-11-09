@@ -1,15 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build Heard.app, install it to /Applications, and relaunch.
-# Usage: ./scripts/bundle.sh [--release] [--sign IDENTITY] [--reset]
+# Build Heard.app; optionally install it to /Applications and launch it.
+# Usage: ./scripts/bundle.sh [--release] [--sign IDENTITY] [--stage-only]
 #
 # Options:
-#   --release     Build in release mode (optimized)
-#   --sign ID     Code sign with the given identity (e.g., "Developer ID Application: ...")
-#   --output DIR  Output directory for the staging .app bundle (default: ./build)
-#   --reset       Reset Microphone, Screen Recording, Accessibility, and AudioCapture
-#                 grants and saved window sizes for com.execsumo.heard before launch.
+#   --release              Build in release mode (optimized)
+#   --sign ID              Code sign with the given identity
+#   --output DIR           Output directory for the staging .app bundle (default: ./build)
+#   --stage-only           Build and sign without touching the installed app or TCC
+#   --allow-signing-change Explicitly allow replacing an app with a different signer
+#   --reset                Reset privacy grants and saved window sizes before launch
 
 BUNDLE_ID="com.execsumo.heard"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,20 +18,45 @@ BUILD_CONFIG="debug"
 SIGN_IDENTITY=""
 OUTPUT_DIR="$REPO_ROOT/build"
 RESET_TCC=0
+STAGE_ONLY=0
+ALLOW_SIGNING_CHANGE=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --release)    BUILD_CONFIG="release"; shift ;;
-        --sign)       SIGN_IDENTITY="$2"; shift 2 ;;
-        --output)     OUTPUT_DIR="$2"; shift 2 ;;
-        --reset)      RESET_TCC=1; shift ;;
+        --release)              BUILD_CONFIG="release"; shift ;;
+        --sign)                 SIGN_IDENTITY="$2"; shift 2 ;;
+        --output)               OUTPUT_DIR="$2"; shift 2 ;;
+        --stage-only)           STAGE_ONLY=1; shift ;;
+        --allow-signing-change) ALLOW_SIGNING_CHANGE=1; shift ;;
+        --reset)                RESET_TCC=1; shift ;;
         *)            echo "Unknown option: $1"; exit 1 ;;
     esac
 done
 
 APP_NAME="Heard"
+# Resolve the output path before deleting its previous build: staging directly
+# over /Applications/Heard.app would bypass the install and signer safeguards.
+mkdir -p "$OUTPUT_DIR"
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd -P)"
 APP_BUNDLE="$OUTPUT_DIR/$APP_NAME.app"
-INSTALLED="/Applications/$APP_NAME.app"
+INSTALLED="$(cd /Applications && pwd -P)/$APP_NAME.app"
+# The repository root is resolved dynamically.
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/bundle-safety.sh"
+
+if [[ "$APP_BUNDLE" == "$INSTALLED" ]]; then
+    echo "ERROR: The staging bundle cannot be the installed app. Choose another --output directory."
+    exit 1
+fi
+if [[ "$STAGE_ONLY" -eq 1 && "$RESET_TCC" -eq 1 ]]; then
+    echo "ERROR: --stage-only cannot be combined with --reset."
+    exit 1
+fi
+if [[ "$STAGE_ONLY" -eq 0 ]] && pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+    echo "ERROR: Heard is running. Stop the recording, let it queue, and quit Heard before installing."
+    echo "       Use --stage-only to build without interrupting it."
+    exit 1
+fi
 
 echo "==> Cleaning previous build artifacts..."
 swift package clean --package-path "$REPO_ROOT"
@@ -83,43 +109,46 @@ mkdir -p "$APP_BUNDLE/Contents/Resources/Fonts"
 cp "$REPO_ROOT/Resources/Fonts/"*.ttf "$APP_BUNDLE/Contents/Resources/Fonts/"
 cp "$REPO_ROOT/Resources/Fonts/OFL.txt" "$APP_BUNDLE/Contents/Resources/Fonts/"
 
-# Auto-detect signing identity if not explicitly provided.
-# Prefer Developer ID Application (stable TCC grants across rebuilds), fall back to Dev Cert.
+# Auto-detect a Developer ID identity, without hard-coding a person's name or
+# exposing the certificate. If multiple identities are available, require an
+# explicit choice rather than silently changing the installed app's identity.
 if [[ -z "$SIGN_IDENTITY" ]]; then
-    if security find-identity -v -p codesigning | grep -q '"Developer ID Application: Herwin Gill"'; then
-        SIGN_IDENTITY="Developer ID Application: Herwin Gill (577WHA43TF)"
-        echo "==> Using Developer ID Application cert"
+    developer_identities=$(security find-identity -v -p codesigning | grep '"Developer ID Application:' || true)
+    developer_count=$(printf '%s\n' "$developer_identities" | grep -c '"Developer ID Application:' || true)
+    if [[ "$developer_count" -gt 1 ]]; then
+        echo "ERROR: Multiple Developer ID identities found. Select one with --sign."
+        exit 1
+    elif [[ "$developer_count" -eq 1 ]]; then
+        SIGN_IDENTITY=$(printf '%s\n' "$developer_identities" | cut -d '"' -f 2)
+        echo "==> Using the available Developer ID Application identity"
     elif security find-identity -v -p codesigning | grep -q '"Dev Cert"'; then
         SIGN_IDENTITY="Dev Cert"
-        echo "==> Found 'Dev Cert' — using it for signing"
+        echo "==> Using the available development identity"
     fi
 fi
 
 # Code sign
 if [[ -n "$SIGN_IDENTITY" ]]; then
-    echo "==> Signing with identity: $SIGN_IDENTITY"
+    echo "==> Signing the app bundle"
     # Developer ID Application certs (issued by Apple) require --options runtime (Hardened
     # Runtime) and --timestamp for notarization. Self-signed / local certs must NOT use
     # --options runtime: macOS performs stricter CT/chain validation that fails for non-Apple
     # certs, causing TCC (Accessibility, Screen Recording) to not persist across restarts.
-    CODESIGN_EXTRA_FLAGS=""
+    sign_bundle() {
+        codesign --force "$@" \
+            --entitlements "$REPO_ROOT/Heard.entitlements" \
+            --sign "$SIGN_IDENTITY" \
+            "$APP_BUNDLE"
+    }
     if [[ "$SIGN_IDENTITY" == Developer\ ID\ Application:* ]]; then
-        CODESIGN_EXTRA_FLAGS="--options runtime --timestamp"
+        sign_bundle --options runtime --timestamp
+    else
+        sign_bundle
     fi
-    codesign --force \
-        $CODESIGN_EXTRA_FLAGS \
-        --entitlements "$REPO_ROOT/Heard.entitlements" \
-        --sign "$SIGN_IDENTITY" \
-        "$APP_BUNDLE"
     echo "==> Verifying signature..."
     codesign --verify --verbose "$APP_BUNDLE"
-    echo ""
-    echo "    NOTE: After each rebuild, you may need to re-grant TCC permissions."
-    echo "    If permissions show 'Grant' after restart, run:"
-    echo "      tccutil reset Accessibility com.execsumo.heard"
-    echo "      tccutil reset ScreenCapture com.execsumo.heard"
-    echo "      tccutil reset AudioCapture com.execsumo.heard"
-    echo "    Then re-grant in System Settings → Privacy & Security."
+    echo "    If macOS rejects a permission, inspect its System Settings entry first."
+    echo "    A signing change can require re-adding Heard; do not reset unrelated grants."
 else
     # Ad-hoc sign so macOS will run it locally
     echo "==> Ad-hoc signing (no 'Dev Cert' found)..."
@@ -128,32 +157,76 @@ else
         "$APP_BUNDLE"
 fi
 
-echo ""
-echo "==> Quitting any running $APP_NAME..."
-osascript -e "tell application \"$APP_NAME\" to quit" >/dev/null 2>&1 || true
-pkill -x "$APP_NAME" 2>/dev/null || true
-# Give launchd a moment to release the bundle before we replace it.
-sleep 1
+if [[ "$STAGE_ONLY" -eq 1 ]]; then
+    echo "==> Staged build only; installed app and permissions were not changed."
+    exit 0
+fi
 
+# Check again after the build in case a meeting started while it was compiling.
+if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+    echo "ERROR: Heard started while building. Stop its recording and quit before installing."
+    exit 1
+fi
+if [[ -d "$INSTALLED" ]] && ! heard_signing_compatible "$INSTALLED" "$APP_BUNDLE"; then
+    if [[ "$ALLOW_SIGNING_CHANGE" -ne 1 ]]; then
+        echo "ERROR: The staged build does not satisfy the installed app's signing requirement."
+        echo "       Replacing it can invalidate Accessibility and other macOS grants."
+        echo "       Use the same signing identity, or explicitly pass --allow-signing-change."
+        exit 1
+    fi
+    echo "WARNING: Installing with a different signing identity; macOS may require reauthorization."
+fi
+
+echo "==> Installing to $INSTALLED..."
+# Copy first and keep the previous app so a failed replacement can be rolled back.
+install_stage=$(mktemp -d /Applications/.heard-install.XXXXXX)
+ditto "$APP_BUNDLE" "$install_stage/$APP_NAME.app"
+if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+    rm -rf "$install_stage"
+    echo "ERROR: Heard started during installation preparation. Stop its recording and quit before installing."
+    exit 1
+fi
+backup_dir=""
+if [[ -d "$INSTALLED" ]]; then
+    backup_dir=$(mktemp -d "${TMPDIR:-/tmp}/heard-before-install.XXXXXX")
+    mv "$INSTALLED" "$backup_dir/$APP_NAME.app"
+fi
+if ! mv "$install_stage/$APP_NAME.app" "$INSTALLED"; then
+    if [[ -n "$backup_dir" ]]; then
+        mv "$backup_dir/$APP_NAME.app" "$INSTALLED" || echo "ERROR: Restore the prior app from $backup_dir."
+    fi
+    echo "ERROR: Could not install the staged app."
+    exit 1
+fi
+if ! codesign --verify --deep --strict "$INSTALLED" >/dev/null 2>&1 ||
+   ! cmp -s "$APP_BUNDLE/Contents/MacOS/$APP_NAME" "$INSTALLED/Contents/MacOS/$APP_NAME"; then
+    mv "$INSTALLED" "$install_stage/failed-$APP_NAME.app"
+    if [[ -n "$backup_dir" ]]; then
+        mv "$backup_dir/$APP_NAME.app" "$INSTALLED" || echo "ERROR: Restore the prior app from $backup_dir."
+    fi
+    echo "ERROR: Installed app failed verification; the prior app was restored when available."
+    exit 1
+fi
+rmdir "$install_stage"
+if [[ -n "$backup_dir" ]]; then
+    echo "==> Previous app backed up at $backup_dir/$APP_NAME.app"
+fi
+
+# A requested reset happens only after installation succeeds; failures are
+# visible rather than being reported as successful resets.
 if [[ "$RESET_TCC" -eq 1 ]]; then
     echo "==> Resetting TCC grants for $BUNDLE_ID..."
-    tccutil reset Microphone "$BUNDLE_ID" || true
-    tccutil reset ScreenCapture "$BUNDLE_ID" || true
-    tccutil reset Accessibility "$BUNDLE_ID" || true
-    tccutil reset AudioCapture "$BUNDLE_ID" || true
-    # Also clear the UserDefaults keys that persist confirmed-granted state across
-    # app restarts — without this, the app would still show permissions as Granted
-    # after a --reset, because the cached UserDefaults values survive tccutil.
+    for service in Microphone ScreenCapture Accessibility AudioCapture; do
+        if ! tccutil reset "$service" "$BUNDLE_ID"; then
+            echo "WARNING: Could not reset $service; inspect its System Settings entry."
+        fi
+    done
     defaults delete "$BUNDLE_ID" screenCaptureTCCGranted 2>/dev/null || true
     defaults delete "$BUNDLE_ID" audioCaptureTCCGranted 2>/dev/null || true
     echo "==> Resetting saved window sizes for $BUNDLE_ID..."
     defaults delete "$BUNDLE_ID" "NSWindow Frame settings" 2>/dev/null || true
     defaults delete "$BUNDLE_ID" "NSWindow Frame speaker-naming" 2>/dev/null || true
 fi
-
-echo "==> Installing to $INSTALLED..."
-rm -rf "$INSTALLED"
-cp -R "$APP_BUNDLE" "$INSTALLED"
 
 echo "==> Launching $INSTALLED..."
 open "$INSTALLED"

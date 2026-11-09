@@ -159,7 +159,7 @@ struct PermissionRow: View {
                     Text(permission.title)
                         .font(HeardFont.bodyMedium)
                         .foregroundStyle(HeardTheme.Terminal.ink)
-                    if permission.id == "microphone" || permission.id == "screenCapture" {
+                    if permission.id == "microphone" {
                         StatusPill(text: "Required",
                                    fg: HeardTheme.Terminal.bad,
                                    bg: HeardTheme.Terminal.badSoft)

@@ -98,9 +98,9 @@ Always record two independent audio streams:
 
 **Track alignment:** Measure the start-time offset between both capture paths during `start()`. Store as `micDelaySeconds`. The audio tracks are **never mixed**. Instead, apply this offset mathematically to the mic track's segment timestamps during the Stage 3 merge phase to align them with the app track. Wall-clock timing is accurate within 10–20ms, which is sufficient for transcript timestamps at second-level granularity.
 
-**Intermediate format:** Record to raw WAV at native sample rates. Files are ~330 MB/hour per track, which is acceptable for temporary storage on modern Macs. WAV is simpler — no encode/decode steps, easy to inspect with any audio tool.
+**Intermediate format:** Record to PCM WAV at native sample rates. At 48 kHz, a 32-bit float stereo app track uses approximately 1.38 GB/hour; a 16-bit mono mic track uses approximately 346 MB/hour. WAV avoids a lossy encode/decode step and is easy to inspect.
 
-**No mix step during recording.** Each track is recorded independently and stays separate. The 48 kHz → 16 kHz conversion happens in the preprocessing pipeline stage, not during recording stop. This keeps the recording stop path fast (just close the files).
+**No mix step during recording.** Each track is recorded independently and stays separate. The 48 kHz → 16 kHz conversion happens in preprocessing. At recording stop, close the files and safely finalize an incomplete WAV header when needed; keep the original if recovery fails.
 
 **File naming convention:**
 ```
@@ -110,7 +110,7 @@ Always record two independent audio streams:
 
 **Temp file retention:** All intermediate audio files (app, mic, mix WAVs) are stored in a temp directory and automatically deleted after 48 hours. This window allows retry of failed pipeline jobs without keeping audio indefinitely. On app launch, scan the temp directory and delete files older than 48 hours. Also delete orphaned files from previous crashes (any `.wav` in the temp dir not referenced by an active pipeline job). If the user manually deletes/dismisses a pending or failed job from the UI, its corresponding `.wav` files are deleted immediately.
 
-**Maximum recording duration:** 4 hours. If reached, stop recording, enqueue the job, and immediately start a new recording if the meeting is still active. This prevents unbounded file sizes and ensures processing starts within a reasonable time.
+**Maximum recording duration:** 4 hours, or earlier to stay below WAV's 32-bit RIFF size limit for the actual track format. Stop and enqueue the completed segment, then immediately start a continuation if the meeting or manual recording is still active. Bound each write even if the split is delayed, and visibly warn if frames are dropped or continuation fails.
 
 ### Local User Identification
 
@@ -430,7 +430,7 @@ The implementation exposes these tabs: **General**, **Recording**, **Dictation**
 |-----------|-----------|----------|
 | Microphone | Yes | Recording local user's voice |
 | System Audio | Recommended | Capturing the meeting app's audio track |
-| Screen Recording | Recommended | Capturing the meeting app's audio track |
+| Screen Recording | Optional | Window metadata diagnostics; it does not grant System Audio capture |
 | Accessibility | Recommended | Teams title/roster reading and dictation text injection |
 
 The app must function with only Microphone permission. Screen Recording and Accessibility enhance functionality but are not required for core meeting recording and transcription.

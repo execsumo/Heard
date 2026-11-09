@@ -80,7 +80,7 @@ mkdir -p "$OUTPUT_DIR"
 
 # ── 1. Build release .app (bundle.sh now adds --options runtime --timestamp for Developer ID)
 echo "==> Building release app bundle..."
-"$REPO_ROOT/scripts/bundle.sh" --release --sign "$SIGN_IDENTITY" --output "$BUILD_DIR"
+"$REPO_ROOT/scripts/bundle.sh" --release --sign "$SIGN_IDENTITY" --output "$BUILD_DIR" --stage-only
 
 echo ""
 echo "==> Verifying hardened runtime..."

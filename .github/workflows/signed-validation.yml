@@ -1,0 +1,80 @@
+name: Signed validation build
+
+# An owner-pushed signed-validation/* branch can be tested before merge. Manual
+# dispatch requires this workflow on the default branch; use only trusted refs.
+# Both paths produce a downloadable artifact, never a GitHub release or tag.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['signed-validation/**']
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  signed-validation:
+    # Never use repository signing credentials in forked repositories or for
+    # a branch push by another actor. Manual dispatch remains an explicit act
+    # by a collaborator with write access.
+    if: ${{ !github.event.repository.fork && (github.event_name == 'workflow_dispatch' || github.actor == github.repository_owner) }}
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache SPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Build and test
+        run: |
+          swift build
+          swift run HeardTests
+          bash scripts/test-bundle-safety.sh
+
+      - name: Build and notarize a Developer ID validation DMG
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          SIGNING_DIR=$(mktemp -d "$RUNNER_TEMP/heard-signing.XXXXXX")
+          KEYCHAIN="$SIGNING_DIR/validation.keychain-db"
+          KEYCHAIN_PWD=$(openssl rand -hex 16)
+          cleanup() {
+            security delete-keychain "$KEYCHAIN" >/dev/null 2>&1 || true
+            rm -rf "$SIGNING_DIR"
+          }
+          trap cleanup EXIT
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$SIGNING_DIR/cert.p12"
+          printf '%s' "$APPLE_API_KEY" | base64 --decode > "$SIGNING_DIR/AuthKey.p8"
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security import "$SIGNING_DIR/cert.p12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PWD" "$KEYCHAIN"
+          ./scripts/dmg.sh \
+            --sign "$APPLE_DEVELOPER_ID" \
+            --api-key-path "$SIGNING_DIR/AuthKey.p8" \
+            --api-key-id "$APPLE_API_KEY_ID" \
+            --api-issuer-id "$APPLE_API_ISSUER_ID" \
+            --output dist
+
+      - name: Upload validation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: heard-signed-validation-${{ github.sha }}
+          path: dist/Heard-*.dmg
+          if-no-files-found: error
+          retention-days: 3

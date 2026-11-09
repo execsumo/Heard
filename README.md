@@ -124,9 +124,9 @@ After launching, grant Microphone (always required) and Accessibility (required 
 
 ### Meeting Transcription
 - **Meeting auto-detection** — Polls `IOPMCopyAssertionsByProcess()` every second for audio/video power assertions (`PreventUserIdleDisplaySleep` / `NoDisplaySleepAssertion` / "Call in progress"). Requires 2 consecutive hits before triggering; applies a 5-second cooldown on end. Recognises Microsoft Teams (bundle IDs `com.microsoft.teams` / `com.microsoft.teams2`, with localized-name fallbacks), Zoom (`us.zoom.xos`, localized-name fallbacks, and process-family matching), and Webex (`Cisco-Systems.Spark` / `com.cisco.webexmeetingsapp`). When Developer Mode is enabled, each poll records assertion and match diagnostics in `dict-debug.log`.
-- **Meeting title extraction** — Reads the active meeting window title via the Accessibility API and strips app-specific suffixes (e.g. ` | Microsoft Teams`) for clean transcript filenames.
+- **Meeting title extraction** — Reads meeting-app window titles via Accessibility and strips app-specific suffixes (e.g. ` | Microsoft Teams`). If usable titles disagree, Heard leaves the title blank rather than guessing; window-server titles are diagnostics only.
 - **Dual-track recording** — The mic track is captured via `AVAudioEngine`; the app track is captured via `CATapDescription` + a private aggregate device + a raw AUHAL output unit. The tap collects **all supported meeting-app process-family** CoreAudio object IDs (main + renderer children) so audio from Electron/Chromium sub-processes isn't lost. Both tracks land on disk as 48 kHz WAVs and are never mixed during recording.
-- **Recording reliability** — The app-audio tap self-tests after 2 seconds. If it is silent, Heard rebuilds the tap/aggregate/IOProc chain once with a fresh helper-process scan; persistent silence marks the job as mic-only and the menu bar shows "Recording (mic only)". Turning watching off during an active meeting synchronously finalizes that recording and preserves the processing state.
+- **Recording reliability** — Heard monitors app-audio callbacks and sustained silence throughout the recording, retries the tap while preserving the existing audio, and warns if audio is not flowing. Turning watching off during an active meeting finalizes and queues that segment. File-write failures, delayed size-limit splits, and failed continuations are surfaced.
 - **Roster scraping** — Reads Microsoft Teams participant names via Accessibility APIs every 15 s while a Teams meeting is active. Three strategies: known roster-panel identifiers → AXList/AXTable containers → window-title parsing. Filters out UI control strings (mute, raise hand, etc.).
 - **On-device pipeline** — Sequential stages per job: preprocessing (48 kHz → 16 kHz mono via `AVAudioConverter`, in-memory Silero VAD trimming + `VadSegmentMap`) → Parakeet TDT V2/V3 transcription (each track separately, with CTC vocabulary boosting) → Inverse Text Normalization (punctuation formatting) → mic-bleed deduplication → LS-EEND + WeSpeaker diarization → speaker assignment and Markdown output.
 - **Speaker identification** — Cosine-distance matching (default threshold 0.30, confidence margin 0.10) against a persistent speaker database, with embedding diversity management and auto-update on confident matches. The threshold is configurable in Advanced. Uses UUID-based placeholders (e.g. `Speaker_1AB23C`) to guarantee universally unique speaker profiles.
@@ -135,7 +135,7 @@ After launching, grant Microphone (always required) and Accessibility (required 
 - **Speaker naming window** — When unmatched speakers remain, a dedicated "Name Speakers" window is available from the menu bar or Speakers tab. It has a **playable audio clip** (~10 s of each speaker's clearest speech, extracted from the 48 kHz recording), a text field pre-populated with any roster suggestion, and user-paced save/skip/split/discard actions. Pending candidates persist across app restarts; there is no auto-open or countdown.
 - **Custom vocabulary boosting** — CTC-based keyword boosting via `Parakeet CTC 110M` is applied to both meeting transcription and dictation. Terms are added from Settings → Recording (minimum 2 characters, max 50 terms). Falls back gracefully if the CTC model can't be loaded.
 - **Persistent job queue** — `pipeline_queue.json` survives app restarts; failed jobs are re-queued on relaunch up to a lifetime cap of 6 retries. Non-retryable errors (no audio, too short) fail immediately; transient errors retry 3× per session with exponential backoff (5 s, 30 s, 5 min). User-initiated retry resets the count.
-- **Long-meeting handling** — 4 h hard cap; on hit, the current recording is finalized and a fresh one starts if the meeting is still active.
+- **Long-meeting handling** — Segments split before the four-hour cap or the WAV size limit, whichever comes first. At 48 kHz stereo float32, that is roughly 3 h 5 m. A delayed split that drops audio or a failed restart is surfaced to the user.
 - **Markdown output** — Timestamped, speaker-labeled transcripts written to a configurable output folder. Filename dates are configurable (`YYMMDD` or `YYYY-MM-DD`). Consecutive segments from the same speaker are merged into continuous blocks. When laptop mic + speakers cause remote audio to bleed into the mic track, overlapping mic segments are dropped when the app track already contains the same words.
 - **Notes (in-meeting and standalone)** — Press the global hotkey (default ⌃⇧N, configurable in Settings → General) to open a floating composer. ⌘↩ saves, Esc cancels. During an active recording the note's timestamp is captured at panel-open time so a slow typer's note still anchors to the moment they reacted; notes are interleaved chronologically with spoken segments and rendered as `[mm:ss] _**Note from <Your Name>:** …_`. Survives crashes via `pipeline_queue.json`; if the meeting ends while the composer is still open, the note attaches to the just-finished job. **Outside a meeting** the same hotkey writes a standalone Markdown file (`yyyy-MM-dd_HH-mm-ss_note.md`) directly to the configured output folder — useful for capturing quick thoughts between meetings without opening a separate app.
 
@@ -169,22 +169,23 @@ swift build
 # Run from the terminal (⚠ mic permission is attributed to the terminal, not Heard)
 swift run Heard
 
-# Build a .app bundle and launch it (recommended for day-to-day use).
-# bundle.sh auto-signs with your "Developer ID Application" cert if present,
-# else a local "Dev Cert", else ad-hoc. A stable (non-ad-hoc) identity is
-# required for dictation so the Accessibility grant persists across rebuilds.
-./scripts/bundle.sh
-open build/Heard.app
+# Build and sign a bundle without touching the installed app or its permissions.
+./scripts/bundle.sh --stage-only
 
-# Force a specific signing identity instead of auto-detection:
+# Install and launch: stop any recording and quit Heard first.
+# If no explicit --sign identity is supplied, bundle.sh prefers an available
+# Developer ID Application identity, then "Dev Cert", then ad-hoc signing.
 ./scripts/bundle.sh --sign "Dev Cert"
-open build/Heard.app
 
-# Release build
-./scripts/bundle.sh --release
+# To intentionally change the installed app's signing identity, acknowledge
+# that macOS may require reauthorization:
+./scripts/bundle.sh --sign "Dev Cert" --allow-signing-change
+
+# Stage a release build without installing it.
+./scripts/bundle.sh --release --stage-only
 ```
 
-> **Tip:** If dictation's Accessibility grant gets stuck after rebuilds, reset it with `tccutil reset Accessibility com.execsumo.heard` and re-grant.
+> **Accessibility:** macOS associates the grant with the app's signing identity. If the installed identity changes, inspect Heard's Accessibility entry in System Settings and, if necessary, remove and re-add the installed app. Don't reset unrelated permissions.
 
 ## Architecture
 
@@ -231,7 +232,8 @@ Heard/
 │   └── diagnose.swift                # Print what Heard sees from meeting apps & power assertions
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                    # Build + test on all pushes; release bundle + GitHub Release on tag push
+│       ├── ci.yml                    # Build + test; publish signed releases on tag/dispatch
+│       └── signed-validation.yml     # Owner branch / manual signed test artifact, no release
 ├── Info.plist                        # LSUIElement, NSMicrophoneUsageDescription
 ├── Heard.entitlements                # Audio input only (no sandbox)
 ├── Package.swift                     # SPM config, FluidAudio 0.15.5+
@@ -326,25 +328,22 @@ Look for `extractMeetingTitle` / `meeting start scrape` (title capture), `app au
 
 ### Release pipeline
 
-Releases are built locally with `scripts/dmg.sh`:
+Official releases use the Developer ID identity configured in GitHub Actions. `scripts/release.sh` bumps the version on a clean `main`, commits and pushes a `v*` tag; the release workflow signs and notarizes the DMG, publishes it, and updates the Homebrew cask. A manual dispatch of the **CI** workflow also publishes a release, so do not use that dispatch for a test build.
+
+For a **signed validation build without a release**, an owner push to `signed-validation/**` triggers `.github/workflows/signed-validation.yml`. It runs tests, signs and notarizes using the existing GitHub configuration, and uploads a short-lived Actions artifact; it does not create a release, tag, or cask update. Once that workflow is on the default branch, it can also be manually dispatched for a trusted ref. This repository is public: the branch is public, and the artifact is available to repository readers. Only run the workflow for reviewed, trusted code.
+
+For local packaging on a machine with the Developer ID identity and notarization credentials:
 
 ```bash
 ./scripts/dmg.sh --sign "Developer ID Application: Your Name (TEAMID)"
 ```
 
-The script: builds a hardened release `.app` → notarizes it via `xcrun notarytool` → assembles a DMG with an `/Applications` symlink → signs and notarizes the DMG → prints the SHA256. The SHA256 is needed to update `Casks/heard.rb` in [execsumo/homebrew-tap](https://github.com/execsumo/homebrew-tap) after publishing the GitHub Release.
-
-Pass `--skip-notarize` for local testing without Apple Developer credentials.
+The packaging script stages the app without replacing the installed copy, then signs and notarizes the app and DMG. `--skip-notarize` is for local testing only.
 
 ### CI (`.github/workflows/ci.yml`)
 
-- **All pushes / PRs:** `swift build` + `swift run HeardTests`
-- **Tag pushes (`v*`):** additionally builds a release bundle via `bundle.sh --release`, zips it with `ditto` (preserves macOS resource forks), and uploads to GitHub Releases via `softprops/action-gh-release`
-- **Notarization:** stubbed out (commented step) — enable by adding `APPLE_ID`, `APPLE_APP_PASSWORD`, `APPLE_TEAM_ID` as repository secrets
-
-### Homebrew Cask
-
-After a notarized DMG is published to GitHub Releases, update `Casks/heard.rb` in [execsumo/homebrew-tap](https://github.com/execsumo/homebrew-tap) with the new `version` and `sha256` from the `dmg.sh` output.
+- **All branch pushes / PRs:** this workflow builds and runs the Swift and signing-safeguard tests without signing. A qualifying `signed-validation/**` push also triggers the separate validation workflow above.
+- **Tag pushes (`v*`) / CI manual dispatch:** sign and notarize a release, publish it, and update the Homebrew cask.
 
 ## Acknowledgements
 
