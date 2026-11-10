@@ -38,6 +38,9 @@ jobs:
       - name: Test
         run: swift run HeardTests
 
+      - name: Test signing safeguards
+        run: bash scripts/test-bundle-safety.sh
+
   release:
     runs-on: macos-15
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
@@ -118,9 +121,11 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           DMG="dist/Heard-${VERSION}.dmg"
           SHA256=$(shasum -a 256 "$DMG" | awk '{print $1}')
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
-          echo "dmg=${DMG}" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=${VERSION}"
+            echo "sha256=${SHA256}"
+            echo "dmg=${DMG}"
+          } >> "$GITHUB_OUTPUT"
 
       # tag_name makes this work for workflow_dispatch too: the action creates the
       # tag at the built commit if it doesn't exist yet (no-op on tag-push runs).

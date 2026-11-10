@@ -2,6 +2,8 @@
 
 ## Current Status
 
+**Recording and signing safeguards (2026-11-09; signed validation pending).** Recording starts before meeting-metadata queries, ambiguous titles are not guessed, and indeterminate Accessibility checks are not reported as granted. WAV-header recovery preserves the original on failure, and recordings split before the RIFF size limit; failures and dropped frames are surfaced. Local installation refuses to replace a differently signed or running app without the appropriate explicit action. A dedicated signed-validation workflow can produce a Developer ID–signed, notarized test artifact without publishing a release. The Swift suite passes 287/287 and the release configuration compiles. A real signed upgrade, a live long-duration split, and recovery of historical oversized short-RIFF files remain unverified or unsupported.
+
 > ⚠️ **The terminal design-system conversion (2026-09-01) is on
 > `design/terminal-design-system`, not merged.** It compiles and passes tests on macOS
 > (verified in CI), but **nobody has looked at it** — no screenshot, no run. See

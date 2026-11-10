@@ -1549,6 +1549,46 @@ func runMeetingAppIdentificationTests() {
         try expect(!detector.isWatching)
     }
 
+    test("Late meeting title is published during recording and retained at end") {
+        var observedTitles: [String] = []
+        var endedTitles: [String] = []
+        let detector = MeetingDetector(
+            onMeetingStarted: { _ in },
+            onMeetingEnded: { endedTitles.append($0.title) },
+            onMeetingTitleObserved: { observedTitles.append($0) }
+        )
+
+        detector.simulateMeetingStart(title: "")
+        detector.simulateMeetingMetadata(title: nil)
+        detector.simulateMeetingMetadata(title: "Sprint Planning")
+        detector.simulateMeetingMetadata(title: "Chat")
+        try expectEqual(observedTitles, ["Sprint Planning"])
+        detector.simulateMeetingEnd()
+        detector.simulateMeetingMetadata(title: "Too Late")
+        try expectEqual(endedTitles, ["Sprint Planning"])
+        try expectEqual(observedTitles, ["Sprint Planning"])
+    }
+
+    test("A late scrape cannot put an old meeting title on a new meeting") {
+        var meetingIDs: [UUID] = []
+        var observedTitles: [String] = []
+        var endedTitles: [String] = []
+        let detector = MeetingDetector(
+            onMeetingStarted: { meetingIDs.append($0.id) },
+            onMeetingEnded: { endedTitles.append($0.title) },
+            onMeetingTitleObserved: { observedTitles.append($0) }
+        )
+        detector.simulateMeetingStart(title: "")
+        detector.simulateMeetingEnd()
+        detector.simulateMeetingStart(title: "")
+        detector.simulateMeetingMetadata(title: "Old meeting", forMeetingID: meetingIDs[0])
+        try expectEqual(observedTitles, [])
+        detector.simulateMeetingMetadata(title: "New meeting", forMeetingID: meetingIDs[1])
+        detector.simulateMeetingEnd()
+        try expectEqual(observedTitles, ["New meeting"])
+        try expectEqual(endedTitles, ["", "New meeting"])
+    }
+
     test("stopWatching with no active meeting does not fire onMeetingEnded") {
         var endedTitles: [String] = []
         let detector = MeetingDetector(
@@ -1576,6 +1616,56 @@ func runMeetingAppIdentificationTests() {
         // A subsequent stopWatching is a no-op.
         detector.stopWatching()
         try expectEqual(endedTitles, ["Sync"])
+    }
+}
+
+@MainActor func runMeetingDetectorAsyncLifecycleTests() async {
+    print("\n⏱️ MeetingDetector Start Ordering Tests")
+
+    await testAsync("Recording starts before delayed metadata and receives the later title") {
+        var started: [String] = []
+        var observed: [String] = []
+        let detector = MeetingDetector(
+            onMeetingStarted: { started.append($0.title) },
+            onMeetingEnded: { _ in },
+            onMeetingTitleObserved: { observed.append($0) }
+        )
+        let (stream, continuation) = AsyncStream<(String?, [String])>.makeStream()
+        detector.simulateMeetingStartWithMetadata {
+            var iterator = stream.makeAsyncIterator()
+            return await iterator.next() ?? (nil, [])
+        }
+        try expectEqual(started, [""], "capture must start before the metadata read completes")
+        try expectEqual(observed, [])
+        continuation.yield(("Sprint Planning", ["Alice Smith"]))
+        continuation.finish()
+        for _ in 0..<100 {
+            if !observed.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try expectEqual(observed, ["Sprint Planning"])
+        detector.simulateMeetingEnd()
+    }
+
+    await testAsync("Late initial metadata cannot update a replacement meeting") {
+        var observed: [String] = []
+        let detector = MeetingDetector(
+            onMeetingStarted: { _ in },
+            onMeetingEnded: { _ in },
+            onMeetingTitleObserved: { observed.append($0) }
+        )
+        let (stream, continuation) = AsyncStream<(String?, [String])>.makeStream()
+        detector.simulateMeetingStartWithMetadata {
+            var iterator = stream.makeAsyncIterator()
+            return await iterator.next() ?? (nil, [])
+        }
+        detector.simulateMeetingEnd()
+        detector.simulateMeetingStart(title: "New meeting")
+        continuation.yield(("Old meeting", []))
+        continuation.finish()
+        try await Task.sleep(for: .milliseconds(100))
+        try expectEqual(observed, [])
+        detector.simulateMeetingEnd()
     }
 }
 
@@ -2976,6 +3066,7 @@ struct TestRunner {
         runMeetingAppIdentificationTests()
         runMeetingProcessSelectionTests()
         runMeetingDetectorLifecycleTests()
+        await runMeetingDetectorAsyncLifecycleTests()
         await runRetryExecutorTests()
         await runLifetimeRetryCapTests()
         runSelfProfileTests()
@@ -2985,10 +3076,11 @@ struct TestRunner {
         runRosterReaderAXTests()
         runChatReaderTests()
         runMeetingMetadataTests()
-        runAudioCaptureSupportTests()
+        await runAudioCaptureSupportTests()
         runSegmentDeduplicatorTests()
         runSystemMemoryTests()
         runPermissionCenterTests()
+        runTextInjectorTests()
         runAppAudioHealthTests()
         runTranscriptLibraryTests()
         runCustomVocabularyThresholdTests()

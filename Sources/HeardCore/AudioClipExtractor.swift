@@ -51,7 +51,9 @@ public enum AudioClipExtractor {
         vadSpeechSegments: [(startTime: TimeInterval, endTime: TimeInterval)] = []
     ) -> URL? {
         do {
-            let sourceFile = try AVAudioFile(forReading: sourceURL)
+            let reading = try WAVHeaderFinalizer.readingURL(for: sourceURL)
+            defer { reading.cleanup() }
+            let sourceFile = try AVAudioFile(forReading: reading.url)
             let sampleRate = sourceFile.processingFormat.sampleRate
             let totalFrames = sourceFile.length
 

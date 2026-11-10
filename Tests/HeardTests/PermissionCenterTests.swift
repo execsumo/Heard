@@ -1,3 +1,4 @@
+import ApplicationServices
 import Foundation
 import HeardCore
 
@@ -18,15 +19,8 @@ import HeardCore
 //  │ false    │ false    │ .recommended      │ not granted              │
 //  └──────────┴──────────┴───────────────────┴──────────────────────────┘
 //
-//  Accessibility
-//  ┌──────────┬──────────┬───────────────────┬──────────────────────────┐
-//  │ trusted  │ live     │ expected          │ scenario                 │
-//  ├──────────┼──────────┼───────────────────┼──────────────────────────│
-//  │ true     │ false    │ .granted          │ TCC returned live true   │
-//  │ false    │ true     │ .granted          │ AX fallback confirms ← fixed bug │
-//  │ true     │ true     │ .granted          │ both agree               │
-//  │ false    │ false    │ .recommended      │ not granted              │
-//  └──────────┴──────────┴───────────────────┴──────────────────────────┘
+//  Accessibility: the trust check confirms the grant; a system-wide AX read
+//  alone cannot prove access to other apps. API-disabled indicates denial.
 
 func runPermissionCenterTests() {
     print("\n🔐 PermissionCenter Logic Tests")
@@ -57,36 +51,31 @@ func runPermissionCenterTests() {
 
     // MARK: Accessibility
 
-    test("Accessibility: isTrusted=true, liveGranted=false → granted (AXIsProcessTrusted path)") {
-        let state = PermissionCenter.accessibilityPermissionState(isTrusted: true, liveGranted: false)
-        try expectEqual(state, .granted)
+    test("Accessibility: trusted process is granted") {
+        try expectEqual(PermissionCenter.accessibilityPermissionState(isTrusted: true, liveError: .cannotComplete), .granted)
     }
 
-    test("Accessibility: isTrusted=false, liveGranted=true → granted (regression: AX fallback confirms)") {
-        // This is the case that was broken: AXIsProcessTrusted() returned stale false
-        // while a live AX API call confirmed the process actually has permission.
-        let state = PermissionCenter.accessibilityPermissionState(isTrusted: false, liveGranted: true)
-        try expectEqual(state, .granted)
+    test("Accessibility: system-wide success does not prove target-app access") {
+        // Observed during a meeting: this query succeeded while every Teams
+        // window query returned apiDisabled and AXIsProcessTrusted was false.
+        try expectEqual(PermissionCenter.accessibilityPermissionState(isTrusted: false, liveError: .success), .unverified)
     }
 
-    test("Accessibility: isTrusted=true, liveGranted=true → granted") {
-        let state = PermissionCenter.accessibilityPermissionState(isTrusted: true, liveGranted: true)
-        try expectEqual(state, .granted)
+    test("Accessibility: no focused value does not confirm target-app access") {
+        try expectEqual(PermissionCenter.accessibilityPermissionState(isTrusted: false, liveError: .noValue), .unverified)
     }
 
-    test("Accessibility: isTrusted=false, liveGranted=false → not granted") {
-        // Both kAXErrorAPIDisabled and kAXErrorNotTrusted produce liveGranted=false.
-        let state = PermissionCenter.accessibilityPermissionState(isTrusted: false, liveGranted: false)
-        try expectEqual(state, .recommended)
+    test("Accessibility: API disabled is not granted") {
+        try expectEqual(PermissionCenter.accessibilityPermissionState(isTrusted: false, liveError: .apiDisabled), .recommended)
     }
 
-    test("Accessibility: kAXErrorNoValue (no focused app) still counts as live-granted") {
-        // kAXErrorNoValue means the process HAS permission but there is no focused element
-        // right now. It must not be mistaken for a permission denial.
-        // We simulate this by passing liveGranted=true (the caller computes this from the
-        // AXError: err != .apiDisabled && err != .notTrusted).
-        let state = PermissionCenter.accessibilityPermissionState(isTrusted: false, liveGranted: true)
-        try expectEqual(state, .granted)
+    test("Accessibility: timeout is unverified, not granted") {
+        // Observed in both trusted and untrusted processes in the same meeting.
+        try expectEqual(PermissionCenter.accessibilityPermissionState(isTrusted: false, liveError: .cannotComplete), .unverified)
+    }
+
+    test("Accessibility: unrelated AX errors are unverified") {
+        try expectEqual(PermissionCenter.accessibilityPermissionState(isTrusted: false, liveError: .failure), .unverified)
     }
 
     // MARK: Screen Recording grant cache (revocation while app not running)

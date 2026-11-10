@@ -285,11 +285,11 @@ public struct MenuBarView: View {
                 .foregroundStyle(HeardTheme.Terminal.warn)
                 .font(HeardFont.caption)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Accessibility access was revoked. Dictation text injection stopped.")
+                Text("Accessibility access could not be verified. Dictation text injection stopped.")
                     .font(HeardFont.caption)
                     .foregroundStyle(HeardTheme.Terminal.ink)
                     .lineLimit(3)
-                Button("Re-grant Access…") {
+                Button("Check Access…") {
                     TextInjector.ensureAccessibility()
                     model.acknowledgeAXLost()
                 }

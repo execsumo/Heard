@@ -46,18 +46,39 @@ public enum TextInjector {
         return FocusTarget(pid: pid, element: element)
     }
 
+    /// A successful cross-app AX read can confirm access when the trust bit is
+    /// stale. A system-wide read alone cannot prove access to another app.
+    public static func canAttemptInjection(isTrusted: Bool, targetReadSucceeded: Bool) -> Bool {
+        isTrusted || targetReadSucceeded
+    }
+
+    private static func canReadTargetApp(_ pid: pid_t?) -> Bool {
+        guard let pid, pid > 0, pid != ProcessInfo.processInfo.processIdentifier else { return false }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.5)
+        var windowsRef: AnyObject?
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement], let window = windows.first else { return false }
+        AXUIElementSetMessagingTimeout(window, 0.5)
+        var role: AnyObject?
+        return AXUIElementCopyAttributeValue(window, kAXRoleAttribute as CFString, &role) == .success && role != nil
+    }
+
+    /// Verify access without prompting. Check an actual target app if the
+    /// process trust bit is stale rather than relying on system-wide AX calls.
+    public static func accessibilityAccessVerified(restoringFocusTo target: FocusTarget? = nil) -> Bool {
+        let trusted = AXIsProcessTrusted()
+        let targetPID = target?.pid ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+        return canAttemptInjection(isTrusted: trusted, targetReadSucceeded: !trusted && canReadTargetApp(targetPID))
+    }
+
     /// Check and prompt for Accessibility permission (needed for text injection).
     /// Call this when enabling dictation so the user gets the prompt early.
     @discardableResult
     public static func ensureAccessibility() -> Bool {
-        if AXIsProcessTrusted() { return true }
-        // Live fallback: AXIsProcessTrusted() can return a stale false on macOS 15+.
-        // Confirm with a real AX API call before showing the permission prompt.
-        let sysWide = AXUIElementCreateSystemWide()
-        var value: AnyObject?
-        let err = AXUIElementCopyAttributeValue(sysWide, kAXFocusedApplicationAttribute as CFString, &value)
-        if err != .apiDisabled { return true }
-        // Genuinely not granted — show the system prompt.
+        if accessibilityAccessVerified() { return true }
+        // A failed or inconclusive read is not a grant. Prompt only in this
+        // explicit setup path, not from a background injection attempt.
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
     }
@@ -71,20 +92,15 @@ public enum TextInjector {
     /// CGEvent.postToPid returned success and the events never landed. Clipboard
     /// paste is one Cmd+V regardless of length and works reliably; the original
     /// pasteboard contents are restored after a short delay.
-    public static func inject(_ text: String, restoringFocusTo target: FocusTarget? = nil) {
-        var trusted = AXIsProcessTrusted()
-        if !trusted {
-            // Live fallback: AXIsProcessTrusted() returns a stale cached false on macOS 15+
-            // even when Accessibility IS granted. A real AX API call returns .apiDisabled only
-            // when genuinely denied — if it returns any other error (or success), access is live.
-            let sysWide = AXUIElementCreateSystemWide()
-            var value: AnyObject?
-            trusted = AXUIElementCopyAttributeValue(sysWide, kAXFocusedApplicationAttribute as CFString, &value) != .apiDisabled
-        }
-        DebugFileLog.log("TextInjector.inject len=\(text.count) axTrusted=\(trusted)")
-        guard trusted else {
-            NSLog("Heard: TextInjector cannot inject text — Accessibility not granted")
-            return
+    /// Returns false when Accessibility access could not be verified. A true
+    /// result means injection was attempted, not that the target app accepted it.
+    @discardableResult
+    public static func inject(_ text: String, restoringFocusTo target: FocusTarget? = nil) -> Bool {
+        let allowed = accessibilityAccessVerified(restoringFocusTo: target)
+        DebugFileLog.log("TextInjector.inject len=\(text.count) accessVerified=\(allowed)")
+        guard allowed else {
+            NSLog("Heard: TextInjector cannot inject text — Accessibility access is unverified")
+            return false
         }
 
         if let frontApp = NSWorkspace.shared.frontmostApplication {
@@ -100,6 +116,7 @@ public enum TextInjector {
         } else {
             insertViaClipboard(text)
         }
+        return true
     }
 
     // MARK: - Focus restoration
