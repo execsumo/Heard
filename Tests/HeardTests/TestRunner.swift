@@ -989,6 +989,23 @@ func runTranscriptWriterTests() {
         try expectEqual(store.activeJob?.meetingTitle, "Sprint")
     }
 
+    test("PipelineQueueStore rolls back failed queue writes") {
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeardTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let missingParentURL = tmpDir.appendingPathComponent("missing/queue.json")
+        let store = PipelineQueueStore(url: missingParentURL)
+        var reportedFailure = false
+        store.onPersistenceFailure = { _ in reportedFailure = true }
+
+        let job = makeJob(stage: .queued)
+        try expect(!store.enqueue(job))
+        try expect(store.jobs.isEmpty, "Failed enqueue must not look durable in memory")
+        try expect(reportedFailure, "Persistence failure must be reported")
+    }
+
     test("PipelineJob persists notes across reload") {
         let tmpDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("HeardTests-\(UUID().uuidString)")

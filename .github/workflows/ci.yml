@@ -55,9 +55,12 @@ jobs:
       # On tag push the version comes from the tag; on manual dispatch from the input.
       - name: Resolve release version
         id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            VERSION="${{ inputs.version }}"
+            VERSION="$INPUT_VERSION"
+            [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid release version" >&2; exit 1; }
             if git ls-remote --tags origin "refs/tags/v${VERSION}" | grep -q .; then
               echo "ERROR: tag v${VERSION} already exists — bump Info.plist and pass a new version"
               exit 1
