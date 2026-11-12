@@ -490,26 +490,34 @@ public final class PipelineQueueStore: ObservableObject {
 
     private let store = JSONStore()
     private let url: URL
+    public var onPersistenceFailure: ((Error) -> Void)?
 
     public init(url: URL = AppPaths.queueFile) {
         self.url = url
         jobs = store.load([PipelineJob].self, from: url, defaultValue: [])
     }
 
-    public func enqueue(_ job: PipelineJob) {
+    @discardableResult
+    public func enqueue(_ job: PipelineJob) -> Bool {
+        let previous = jobs
         jobs.append(job)
-        persist()
+        return persist(rollbackTo: previous)
     }
 
-    public func update(_ job: PipelineJob) {
-        guard let index = jobs.firstIndex(where: { $0.id == job.id }) else { return }
+    @discardableResult
+    public func update(_ job: PipelineJob) -> Bool {
+        guard let index = jobs.firstIndex(where: { $0.id == job.id }) else { return false }
+        let previous = jobs
         jobs[index] = job
-        persist()
+        return persist(rollbackTo: previous)
     }
 
-    public func remove(_ job: PipelineJob) {
+    @discardableResult
+    public func remove(_ job: PipelineJob) -> Bool {
+        let previous = jobs
         jobs.removeAll { $0.id == job.id }
-        persist()
+        guard jobs.count != previous.count else { return true }
+        return persist(rollbackTo: previous)
     }
 
     public var activeJob: PipelineJob? {
@@ -544,6 +552,7 @@ public final class PipelineQueueStore: ObservableObject {
     /// Returns the IDs of jobs that were modified.
     @discardableResult
     public func prepareForResume() -> [UUID] {
+        let previous = jobs
         var changed: [UUID] = []
         for index in jobs.indices {
             let stage = jobs[index].stage
@@ -561,11 +570,20 @@ public final class PipelineQueueStore: ObservableObject {
             jobs[index].stageStartTime = nil
             changed.append(jobs[index].id)
         }
-        if !changed.isEmpty { persist() }
+        if !changed.isEmpty, !persist(rollbackTo: previous) { return [] }
         return changed
     }
 
-    private func persist() {
-        try? store.save(jobs, to: url)
+    @discardableResult
+    private func persist(rollbackTo previous: [PipelineJob]) -> Bool {
+        do {
+            try store.save(jobs, to: url)
+            return true
+        } catch {
+            jobs = previous
+            onPersistenceFailure?(error)
+            NSLog("Heard: Failed to persist pipeline queue: %@", error.localizedDescription)
+            return false
+        }
     }
 }

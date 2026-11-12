@@ -2939,7 +2939,8 @@ public final class PipelineProcessor: ObservableObject {
         self.onPipelineIdle = onPipelineIdle
     }
 
-    public func enqueueFinishedRecording(_ session: RecordingSession, endedAt: Date) {
+    @discardableResult
+    public func enqueueFinishedRecording(_ session: RecordingSession, endedAt: Date) -> Bool {
         let job = PipelineJob(
             id: UUID(),
             meetingTitle: session.title,
@@ -2957,8 +2958,9 @@ public final class PipelineProcessor: ObservableObject {
             chatMessages: session.chatMessages,
             micDelaySeconds: session.micDelaySeconds
         )
-        queueStore.enqueue(job)
+        guard queueStore.enqueue(job) else { return false }
         runNextIfNeeded()
+        return true
     }
 
     /// Attach a late-arriving meeting note to whichever queued job spans the

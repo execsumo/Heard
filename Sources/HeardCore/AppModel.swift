@@ -211,6 +211,10 @@ public final class AppModel: ObservableObject {
         self.downloadManager = downloadManager
         self.dictationManager = dictationManager
         self.updateChecker = updateChecker
+        queueStore.onPersistenceFailure = { [weak self] error in
+            self?.errorMessage = "Could not save the processing queue: \(error.localizedDescription)"
+            self?.phase = .error
+        }
 
         self.pipelineProcessor = PipelineProcessor(
             queueStore: queueStore,
@@ -239,7 +243,9 @@ public final class AppModel: ObservableObject {
 
         self.recordingManager.onMaxDurationReached = { [weak self] session in
             guard let self else { return }
-            self.pipelineProcessor.enqueueFinishedRecording(session, endedAt: Date())
+            if self.pipelineProcessor.enqueueFinishedRecording(session, endedAt: Date()) {
+                self.phase = .processing
+            }
         }
         self.recordingManager.onCaptureGapDetected = { [weak self] in
             self?.errorMessage = "Some audio may be missing: the recording reached its file-size limit before it could split."
@@ -313,8 +319,9 @@ public final class AppModel: ObservableObject {
                 self.recordingManager.updateRosterNames(snapshot.rosterNames)
                 self.recordingManager.updateTitle(snapshot.title)
                 guard let session = self.recordingManager.stopRecording() else { return }
-                self.pipelineProcessor.enqueueFinishedRecording(snapshot.applyingMetadata(to: session), endedAt: Date())
-                self.phase = .processing
+                if self.pipelineProcessor.enqueueFinishedRecording(snapshot.applyingMetadata(to: session), endedAt: Date()) {
+                    self.phase = .processing
+                }
             },
             onChatMessagesObserved: { [weak self] messages in
                 self?.recordingManager.updateChatMessages(messages)
@@ -678,8 +685,9 @@ public var filteredSpeakers: [SpeakerProfile] {
 
     public func stopManualRecording() {
         guard let session = recordingManager.stopRecording() else { return }
-        pipelineProcessor.enqueueFinishedRecording(session, endedAt: Date())
-        phase = .processing
+        if pipelineProcessor.enqueueFinishedRecording(session, endedAt: Date()) {
+            phase = .processing
+        }
     }
 
     public func acknowledgeError() {
@@ -771,13 +779,13 @@ public var filteredSpeakers: [SpeakerProfile] {
     }
 
     public func dismissJob(_ job: PipelineJob) {
-        // Delete associated audio files if job is complete or failed
+        guard queueStore.remove(job) else { return }
+        // Keep source audio if the queue entry could not be durably removed.
         if job.stage == .complete || job.stage == .failed {
             let fm = FileManager.default
             try? fm.removeItem(at: job.appAudioPath)
             try? fm.removeItem(at: job.micAudioPath)
         }
-        queueStore.remove(job)
     }
 
     /// Cap on persisted voice clips per profile. Meetings keep contributing clips as
