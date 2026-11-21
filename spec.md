@@ -28,7 +28,7 @@ The app manages three CoreML models with different lifecycles:
 
 **During meetings: no models loaded.** Recording is audio-only. The Mac runs cool and quiet — no ANE contention with Teams, no memory pressure. Models load only after the meeting ends, when the user isn't actively working.
 
-**Parakeet TDT (transcription) — load on demand, unload after use.**
+**Batch transcription model — load on demand, unload after use.** The selected engine is English Unified (Beta) by default for new and never-saved settings, or Parakeet TDT v2 or v3 for saved choices.
 - Load when a pipeline job's transcription stage begins, unload when transcription completes
 - Loading takes 3–5 seconds on M1 — acceptable for post-meeting processing
 - Never loaded during meeting recording
@@ -42,7 +42,7 @@ The app manages three CoreML models with different lifecycles:
 - Load when a pipeline job's diarization stage begins, unload when diarization completes
 - These models are larger and only used in batch mode, so don't keep them resident
 
-**Model download:** All models download automatically on first use. Show download progress in the menu bar dropdown. Downloads are idempotent — if interrupted, resume on next attempt. Store downloaded models in `~/Library/Application Support/Heard/Models/`.
+**Model download:** Models download at runtime on first use, or in advance from Models on Disk. No model weights are bundled with the app. Show download progress in the menu bar dropdown. Downloads are idempotent — if interrupted, resume on next attempt. FluidAudio stores downloaded models in `~/Library/Application Support/FluidAudio/Models/`.
 
 **Memory timeline for a typical meeting:**
 ```
@@ -172,7 +172,7 @@ Use binary search for O(log n) lookups when remapping. Apply remapping to both t
 
 Transcribe each 16 kHz track separately in batch mode (passing the in-memory `[Float]` arrays for the app track, then the mic track). Transcribing per-track rather than a mix avoids crosstalk artifacts and produces cleaner text per source.
 
-**Model:** Parakeet TDT V2/V3 (English speech recognition; V2 is the default). The selected model is used for both meeting transcription and dictation.
+**Model:** the selected batch engine. English Unified (Beta), Parakeet Unified EN 0.6B, is the default for new and never-saved settings (working tree, native-unverified; see handoff.md). Parakeet TDT v2 (English (Optimized)) and TDT v3 (European Languages (Beta)) remain selectable, and saved choices are kept. While Unified is selected, dictation uses Parakeet TDT v2 and Settings says so; otherwise dictation follows the selected TDT model.
 
 **Custom vocabulary:** Pass user-defined terms to the CTC keyword spotter. Terms must be at least 2 characters, maximum 50 terms. Stored in UserDefaults. Applied during transcription to boost recognition of domain-specific jargon, project names, and acronyms.
 
@@ -472,14 +472,17 @@ One build target, one binary. Without App Store distribution requirements, the a
 │   └── wespeaker/
 ├── speakers.json                  # Speaker embedding database
 ├── pipeline_queue.json            # Persistent job queue (crash recovery)
+├── active_recordings/             # Journal of in-progress recordings (recovered on launch)
 └── recordings/                    # Temp directory for in-progress recordings
-    ├── 20260324_140000_app.wav      # 48 kHz stereo, deleted after 48h
-    └── 20260324_140000_mic.wav      # 48 kHz mono, deleted after 48h
+    ├── 20260324_140000_app.wav      # 48 kHz stereo, deleted after 48h when no job or journal entry references it
+    └── 20260324_140000_mic.wav      # 48 kHz mono, deleted after 48h when no job or journal entry references it
     # (All 16 kHz conversion and VAD trimming happens in-memory)
 
 ~/Documents/Heard/    # Default output (user-configurable)
 └── 260324_Sprint_Planning.md
 ```
+
+**Recording recovery (implemented, native-unverified):** each in-progress recording is journaled to `active_recordings/`. On launch, journaled recordings and WAV pairs that no job references are queued before the 48-hour cleanup runs. Quitting the app queues the active recording. A forced kill keeps only the last journal write. A persistent warning reports journal or queue failures.
 
 ### Settings (UserDefaults)
 
@@ -490,6 +493,7 @@ One build target, one binary. Without App Store distribution requirements, the a
 | `autoWatch` | Bool | true |
 | `outputDirectory` | String | "~/Documents/Heard/" |
 | `customVocabulary` | [String] | [] |
+| `transcriptionModel` | String | `unified` for new and never-saved settings; saved choices are kept |
 
 These are the core persisted settings. Additional controls for recording, dictation, permissions, model management, speaker management, and tuning are exposed in the settings tabs above.
 
@@ -505,8 +509,8 @@ These are the core persisted settings. Additional controls for recording, dictat
 | Audio capture (app) | CATapDescription (AudioToolbox, macOS 15.0+) |
 | Audio capture (mic) | AVAudioEngine |
 | Audio format | WAV (48 kHz native for recording, 16 kHz mono for processing) |
-| Transcription | FluidAudio Parakeet TDT V2/V3 (CoreML/ANE) |
-| VAD | FluidAudio Silero VAD v6 (CoreML) |
+| Transcription | FluidAudio Parakeet Unified EN 0.6B (batch, default for new settings) and Parakeet TDT V2/V3 (CoreML/ANE); while Unified is selected, dictation uses TDT V2 |
+| VAD | FluidAudio Silero VAD v6.2.1 (CoreML artifact, unchanged) |
 | Diarization | FluidAudio LS-EEND + WeSpeaker (CoreML) |
 | Concurrency | Swift structured concurrency (async/await, Task, AsyncStream) |
 | Persistence | UserDefaults (settings), JSON files (speakers, queue) |
@@ -535,3 +539,5 @@ These are the core persisted settings. Additional controls for recording, dictat
 - Grace period after meeting ends
 - System-wide audio capture
 - Pre-release update channels
+
+> **Planned scope change (not implemented):** AgentFeed, a local, read-only, delayed-live transcript feed for a personal agent, is planned in [`plans/agent-feed.md`](./plans/agent-feed.md). Implementing it would require amending the LLM and external-API exclusion, the live-captions exclusion, and the "models stay unloaded during recording" rule. Until that amendment is approved and implemented, all current rules stay in force.

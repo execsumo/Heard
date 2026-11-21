@@ -63,6 +63,20 @@ func runAudioCaptureSupportTests() async {
         try expect(try WAVHeaderFinalizer.finalize(at: intact) == nil)
         try expectEqual(try Data(contentsOf: intact), before)
     }
+    test("A partial trailing frame is dropped from the repaired payload, not treated as a bad header") {
+        let url = try wavFixture(frames: 4, declaredFrames: 0, sample: 0.25)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let handle = try FileHandle(forUpdating: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data([1, 2, 3]))
+        try handle.close()
+        let reading = try WAVHeaderFinalizer.readingURL(for: url)
+        defer { reading.cleanup() }
+        try expectEqual(try AVAudioFile(forReading: reading.url).length, AVAudioFramePosition(4))
+        let repair = try unwrap(try WAVHeaderFinalizer.finalize(at: url))
+        try expectEqual(repair.dataSize, 32)
+        try expectEqual(try AVAudioFile(forReading: url).length, AVAudioFramePosition(4))
+    }
     test("AVAudioFile-shaped preamble with a zero data chunk exposes the payload") {
         let url = try preambleFixture(frames: 2, sample: 0.75)
         defer { try? FileManager.default.removeItem(at: url) }

@@ -11,10 +11,17 @@ public final class ModelDownloadManager: ObservableObject {
     @Published public private(set) var errors: [ModelKind: String] = [:]
 
     private var activeTasks: [ModelKind: Task<Void, Never>] = [:]
+    private var dictationTask: Task<Void, Never>?
     private let catalog: ModelCatalog
 
-    /// The currently selected transcription model version; drives cache detection and download.
-    public var transcriptionModel: TranscriptionModel = .v2
+    /// The selected meeting transcription model; drives batch readiness and download.
+    public var transcriptionModel: TranscriptionModel = .unified
+
+    /// Whether dictation is enabled. With English Unified selected, dictation also needs English (Optimized).
+    public var dictationEnabled = false
+
+    /// Called on the main actor after English (Optimized) finishes downloading for dictation.
+    public var onDictationEngineReady: (@MainActor () -> Void)?
 
     public init(catalog: ModelCatalog) {
         self.catalog = catalog
@@ -32,14 +39,12 @@ public final class ModelDownloadManager: ObservableObject {
             catalog.markReady(.batchVad)
         }
 
-        // Parakeet: check whichever version is currently selected
-        let selectedFluidVersion: AsrModelVersion = transcriptionModel == .v2 ? .v2 : .v3
-        let asrDefaultDir = AsrModels.defaultCacheDirectory(for: selectedFluidVersion)
-        let parakeetRepo: Repo = transcriptionModel == .v2 ? .parakeetV2 : .parakeetV3
-        let asrCustomDir = FileManager.default.heardAppSupportDirectory
-            .appendingPathComponent(parakeetRepo.folderName, isDirectory: true)
-        if AsrModels.modelsExist(at: asrDefaultDir) || AsrModels.modelsExist(at: asrCustomDir) {
-            catalog.markReady(.batchParakeet)
+        // Parakeet: only the selected meeting engine counts toward readiness.
+        let batchDetailReady = ModelDownloadManager.batchDetail(readiness: "Ready", selected: transcriptionModel, dictationEnabled: dictationEnabled)
+        if ModelDownloadManager.batchEngineReady(transcriptionModel) {
+            catalog.markReady(.batchParakeet, detail: batchDetailReady)
+        } else if activeTasks[.batchParakeet] == nil {
+            catalog.markNotDownloaded(.batchParakeet, detail: ModelDownloadManager.batchDetail(readiness: "Download required", selected: transcriptionModel, dictationEnabled: dictationEnabled))
         }
 
         // Diarizer: FluidAudio stores in ~/Library/Application Support/FluidAudio/Models/speaker-diarization-coreml/
@@ -74,6 +79,28 @@ public final class ModelDownloadManager: ObservableObject {
         download(.batchParakeet)
         download(.diarization)
         download(.ctcVocabulary)
+        downloadDictationEngineIfNeeded()
+    }
+
+    /// With English Unified selected and dictation on, fetch English (Optimized) so dictation can run.
+    /// Not part of meeting readiness; a no-op in every other case.
+    public func downloadDictationEngineIfNeeded() {
+        guard dictationEnabled, transcriptionModel.usesUnifiedEngine,
+              dictationTask == nil,
+              !DictationManager.englishOptimizedCached() else { return }
+        dictationTask = Task { [weak self] in
+            var loaded = false
+            do {
+                _ = try await AsrModels.loadFromCache(version: .v2)
+                loaded = true
+            } catch {
+                self?.errors[.batchParakeet] = "Dictation model: \(error.localizedDescription)"
+                NSLog("Heard: Dictation model (English Optimized) download failed: \(error)")
+            }
+            self?.dictationTask = nil
+            self?.refreshStatuses()
+            if loaded { self?.onDictationEngineReady?() }
+        }
     }
 
     public func download(_ kind: ModelKind) {
@@ -83,6 +110,7 @@ public final class ModelDownloadManager: ObservableObject {
         downloadProgress[kind] = 0
 
         let selectedVersion = transcriptionModel
+        let dictationOn = dictationEnabled
 
         activeTasks[kind] = Task { [weak self] in
             guard let self else { return }
@@ -98,13 +126,24 @@ public final class ModelDownloadManager: ObservableObject {
                     catalog.markReady(.batchVad)
 
                 case .batchParakeet:
-                    let fluidVersion: AsrModelVersion = selectedVersion == .v2 ? .v2 : .v3
-                    let _ = try await AsrModels.loadFromCache(version: fluidVersion) { [weak self] progress in
-                        Task { @MainActor [weak self] in
-                            self?.downloadProgress[.batchParakeet] = progress.fractionCompleted
+                    // Only the selected meeting engine is fetched; dictation's model is handled separately.
+                    if selectedVersion.usesUnifiedEngine {
+                        let manager = UnifiedAsrManager()
+                        try await manager.loadModels(progressHandler: { [weak self] progress in
+                            Task { @MainActor [weak self] in
+                                self?.downloadProgress[.batchParakeet] = progress.fractionCompleted
+                            }
+                        })
+                        await manager.cleanup()
+                    } else {
+                        let fluidVersion: AsrModelVersion = selectedVersion == .v3 ? .v3 : .v2
+                        let _ = try await AsrModels.loadFromCache(version: fluidVersion) { [weak self] progress in
+                            Task { @MainActor [weak self] in
+                                self?.downloadProgress[.batchParakeet] = progress.fractionCompleted
+                            }
                         }
                     }
-                    catalog.markReady(.batchParakeet)
+                    catalog.markReady(.batchParakeet, detail: ModelDownloadManager.batchDetail(readiness: "Ready", selected: selectedVersion, dictationEnabled: dictationOn))
 
                 case .diarization:
                     let diarizer = OfflineDiarizerManager()
@@ -118,10 +157,11 @@ public final class ModelDownloadManager: ObservableObject {
                 downloadProgress[kind] = 1.0
             } catch {
                 errors[kind] = error.localizedDescription
-                downloadProgress[kind] = nil
                 NSLog("Heard: Model download failed for \(kind): \(error)")
             }
+            downloadProgress[kind] = nil
             activeTasks[kind] = nil
+            if kind == .batchParakeet { refreshStatuses() }
         }
     }
 
@@ -129,5 +169,32 @@ public final class ModelDownloadManager: ObservableObject {
         activeTasks[kind]?.cancel()
         activeTasks[kind] = nil
         downloadProgress[kind] = nil
+    }
+
+    // MARK: - Batch engine readiness
+
+    /// Detail line for the batch ASR row. With English Unified selected and dictation on, dictation
+    /// needs English (Optimized) as well, so its state is appended.
+    nonisolated public static func batchDetail(readiness: String, selected: TranscriptionModel, dictationEnabled: Bool) -> String {
+        guard selected.usesUnifiedEngine, dictationEnabled else { return readiness }
+        let v2Ready = DictationManager.englishOptimizedCached()
+        return "\(readiness) · dictation: \(TranscriptionModel.v2.displayName) \(v2Ready ? "ready" : "not downloaded")"
+    }
+
+    /// The selected meeting ASR engine's files are present. Unified checks its own bundle set.
+    nonisolated static func batchEngineReady(_ selected: TranscriptionModel) -> Bool {
+        switch selected {
+        case .unified: return UnifiedModelAssets.isCached
+        case .v2: return tdtModelsPresent(version: .v2, repo: .parakeetV2)
+        case .v3: return tdtModelsPresent(version: .v3, repo: .parakeetV3)
+        }
+    }
+
+    /// Parakeet TDT files for `version` exist in FluidAudio's default or Heard's legacy cache.
+    nonisolated private static func tdtModelsPresent(version: AsrModelVersion, repo: Repo) -> Bool {
+        let defaultDir = AsrModels.defaultCacheDirectory(for: version)
+        let customDir = FileManager.default.heardAppSupportDirectory
+            .appendingPathComponent(repo.folderName, isDirectory: true)
+        return AsrModels.modelsExist(at: defaultDir) || AsrModels.modelsExist(at: customDir)
     }
 }

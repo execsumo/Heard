@@ -3101,6 +3101,8 @@ struct TestRunner {
         runAppAudioHealthTests()
         runTranscriptLibraryTests()
         runCustomVocabularyThresholdTests()
+        runActiveRecordingTests()
+        runTranscriptionModelTests()
 
         print("\n" + String(repeating: "─", count: 50))
         print("Results: \(passedTests)/\(totalTests) passed")

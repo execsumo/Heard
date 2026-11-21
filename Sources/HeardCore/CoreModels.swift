@@ -450,7 +450,7 @@ public struct AppSettings: Codable, Equatable {
         dictationHotkey: .default,
         pushToTalk: false,
         modelKeepAlive: 2,
-        transcriptionModel: .v2,
+        transcriptionModel: .unified,
         showDictationHUD: false,
         meetingNoteHotkey: .meetingNoteDefault,
         showDockIcon: false,
@@ -479,7 +479,7 @@ public struct AppSettings: Codable, Equatable {
         dictationHotkey: HotkeyCombo = .default,
         pushToTalk: Bool = false,
         modelKeepAlive: Int = 2,
-        transcriptionModel: TranscriptionModel = .v2,
+        transcriptionModel: TranscriptionModel = .unified,
         showDictationHUD: Bool = false,
         meetingNoteHotkey: HotkeyCombo = .meetingNoteDefault,
         showDockIcon: Bool = false,
@@ -567,6 +567,9 @@ public enum SystemMemory {
 }
 
 public enum TranscriptionModel: String, Codable, CaseIterable, Identifiable, Sendable {
+    /// Parakeet Unified EN 0.6B, batch meeting transcription only (NVIDIA Open Model License).
+    /// Dictation uses `.v2` (see `dictationEngine`). Default for new and never-saved settings.
+    case unified
     case v2
     case v3
 
@@ -574,6 +577,7 @@ public enum TranscriptionModel: String, Codable, CaseIterable, Identifiable, Sen
 
     public var displayName: String {
         switch self {
+        case .unified: return "English Unified (Beta)"
         case .v2: return "English (Optimized)"
         case .v3: return "European Languages (Beta)"
         }
@@ -582,9 +586,20 @@ public enum TranscriptionModel: String, Codable, CaseIterable, Identifiable, Sen
     /// TDT decoder blank token ID for this model version.
     public var blankId: Int {
         switch self {
-        case .v2: return 1024
+        case .unified, .v2: return 1024
         case .v3: return 8192
         }
+    }
+
+    /// True when meeting batch transcription runs on `UnifiedAsrManager` instead of the TDT engine.
+    public var usesUnifiedEngine: Bool {
+        self == .unified
+    }
+
+    /// The TDT model dictation runs for this selection. Unified has no dictation path,
+    /// so dictation uses English (Optimized) while Unified is selected.
+    public var dictationEngine: TranscriptionModel {
+        usesUnifiedEngine ? .v2 : self
     }
 }
 

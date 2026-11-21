@@ -13,6 +13,7 @@ public enum DictationError: Error, LocalizedError {
     case notIdle(current: DictationState)
     case microphoneDenied
     case micStalled
+    case englishOptimizedNotDownloaded
 
     public var errorDescription: String? {
         switch self {
@@ -22,6 +23,8 @@ public enum DictationError: Error, LocalizedError {
             return "Microphone access is required for dictation. Grant it in System Settings → Privacy & Security → Microphone."
         case .micStalled:
             return "The microphone didn't start delivering audio. Try dictating again; if it keeps happening, unplug/replug your input device or restart Heard."
+        case .englishOptimizedNotDownloaded:
+            return "Dictation uses English (Optimized) while English Unified is selected. It is still downloading; try again once the Models tab shows it ready."
         }
     }
 }
@@ -90,9 +93,21 @@ public final class DictationManager: ObservableObject {
     /// Custom formatting commands for ITN.
     public var formattingCommands: [FormattingCommand] = []
 
-    /// Which Parakeet model version to use for transcription. Changing
-    /// mid-session reloads models on the next start.
-    public var modelVersion: TranscriptionModel = .v2
+    /// Selected transcription model. Dictation runs `engine`, which is English (Optimized)
+    /// while English Unified is selected. Changing it mid-session reloads models on the next start.
+    public var modelVersion: TranscriptionModel = .unified
+
+    /// The TDT model dictation loads for the current selection.
+    private var engine: TranscriptionModel { modelVersion.dictationEngine }
+
+    /// FluidAudio's default location for English (Optimized), the model dictation runs under English Unified.
+    public static var englishOptimizedCacheDirectory: URL { AsrModels.defaultCacheDirectory(for: .v2) }
+
+    /// True when English (Optimized) loads from `directory`. The single check for dictation's v2 model:
+    /// loading, the download decision, and the Models-tab detail all use it, so they cannot disagree.
+    public static func englishOptimizedCached(at directory: URL = englishOptimizedCacheDirectory) -> Bool {
+        AsrModels.modelsExist(at: directory)
+    }
 
     /// How long to keep the model loaded after dictation stops (seconds).
     public var modelKeepAliveSeconds: TimeInterval = 120
@@ -271,7 +286,7 @@ public final class DictationManager: ObservableObject {
     /// doesn't pay a multi-second cold-start delay before the mic starts.
     /// Idempotent — repeated calls while already loaded or loading are no-ops.
     public func preloadModelsInBackground() {
-        guard asrManager == nil || loadedModelVersion != modelVersion else { return }
+        guard asrManager == nil || loadedModelVersion != engine else { return }
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -284,17 +299,23 @@ public final class DictationManager: ObservableObject {
     }
 
     private func ensureAsrManagerLoaded() async throws {
-        if asrManager != nil, loadedModelVersion == modelVersion { return }
+        if asrManager != nil, loadedModelVersion == engine { return }
 
-        // Version changed (or first load) — drop the old manager and reload.
+        // Engine changed (or first load) — drop the old manager and reload.
         asrManager = nil
         asrModels = nil
         loadedModelVersion = nil
 
-        let fluidVersion: AsrModelVersion = modelVersion == .v2 ? .v2 : .v3
+        // Unified selected: dictation's English (Optimized) files are fetched by ModelDownloadManager
+        // when dictation is enabled. Don't start a parallel download from here.
+        if modelVersion.usesUnifiedEngine, !DictationManager.englishOptimizedCached() {
+            throw DictationError.englishOptimizedNotDownloaded
+        }
+
+        let fluidVersion: AsrModelVersion = engine == .v3 ? .v3 : .v2
         let models = try await AsrModels.loadFromCache(version: fluidVersion)
         let asrConfig = ASRConfig(
-            tdtConfig: TdtConfig(blankId: modelVersion.blankId),
+            tdtConfig: TdtConfig(blankId: engine.blankId),
             encoderHiddenSize: fluidVersion.encoderHiddenSize
         )
         let manager = AsrManager(config: asrConfig)
@@ -302,7 +323,7 @@ public final class DictationManager: ObservableObject {
 
         asrModels = models
         asrManager = manager
-        loadedModelVersion = modelVersion
+        loadedModelVersion = engine
     }
 
     // MARK: - Vocabulary rescoring

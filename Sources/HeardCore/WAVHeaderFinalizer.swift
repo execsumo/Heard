@@ -9,6 +9,7 @@ public enum WAVHeaderFinalizer {
         public var dataHeaderOffset: Int
         public var dataSize: UInt32
         public var formatTag: UInt16
+        public var sampleRate: UInt32
         public var dataOffset: Int { dataHeaderOffset + 8 }
     }
 
@@ -76,12 +77,14 @@ public enum WAVHeaderFinalizer {
         var pos = 12
         var blockAlign = 0
         var formatTag: UInt16 = 0
+        var sampleRate: UInt32 = 0
         while pos + 8 <= header.count {
             let chunkSize = Int(u32(header, pos + 4))
             let id = header.subdata(in: pos..<(pos + 4))
             if id == Data("fmt ".utf8), chunkSize >= 16, pos + 24 <= header.count {
                 formatTag = u16(header, pos + 8)
                 blockAlign = Int(u16(header, pos + 20))
+                sampleRate = u32(header, pos + 12)
                 // WAVE_FORMAT_EXTENSIBLE: only accept PCM or IEEE float subformats.
                 if formatTag == 0xfffe, chunkSize >= 40, pos + 48 <= header.count {
                     let subformat = header.subdata(in: (pos + 32)..<(pos + 48))
@@ -92,7 +95,8 @@ public enum WAVHeaderFinalizer {
             if id == Data("data".utf8) {
                 guard blockAlign > 0 else { return nil }
                 return Layout(riffSize: u32(header, 4), blockAlign: blockAlign,
-                              dataHeaderOffset: pos, dataSize: u32(header, pos + 4), formatTag: formatTag)
+                              dataHeaderOffset: pos, dataSize: u32(header, pos + 4), formatTag: formatTag,
+                              sampleRate: sampleRate)
             }
             let step = 8 + chunkSize + (chunkSize & 1)
             guard step <= header.count - pos else { return nil }
@@ -101,14 +105,30 @@ public enum WAVHeaderFinalizer {
         return nil
     }
 
+    /// Whole frames the file holds, capped by the header's declared size, so a size field past
+    /// EOF adds no audio. Nil when the header is unreadable.
+    public static func durationSeconds(header: Data, fileSize: Int) -> TimeInterval? {
+        guard let layout = layout(in: header), layout.sampleRate > 0 else { return nil }
+        let onDisk = wholeFrameBytes(UInt64(max(0, fileSize - layout.dataOffset)), blockAlign: layout.blockAlign) ?? 0
+        let declared = repairedDataSize(fileSize: fileSize, layout: layout).map { UInt64($0) } ?? UInt64(layout.dataSize)
+        let frames = min(declared, onDisk) / UInt64(layout.blockAlign)
+        return TimeInterval(frames) / TimeInterval(layout.sampleRate)
+    }
+
     /// Retained as a convenience for callers inspecting ordinary short RIFFs.
     public static func repairedDataSize(fileSize: Int, layout: Layout) -> UInt32? {
         guard fileSize > layout.dataOffset, fileSize > Int(layout.riffSize) + 8,
-              layout.blockAlign > 0 else { return nil }
-        let payload = fileSize - layout.dataOffset
-        guard payload > Int(layout.dataSize), payload % layout.blockAlign == 0,
-              UInt64(fileSize - 8) <= UInt64(UInt32.max), payload <= Int(UInt32.max) else { return nil }
-        return UInt32(payload)
+              let frames = wholeFrameBytes(UInt64(fileSize - layout.dataOffset), blockAlign: layout.blockAlign)
+        else { return nil }
+        guard frames > UInt64(layout.dataSize),
+              UInt64(fileSize - 8) <= UInt64(UInt32.max), frames <= UInt64(UInt32.max) else { return nil }
+        return UInt32(frames)
+    }
+
+    /// Payload rounded down to whole frames: a trailing partial frame is an interrupted write.
+    static func wholeFrameBytes(_ payload: UInt64, blockAlign: Int) -> UInt64? {
+        guard blockAlign > 0 else { return nil }
+        return payload - payload % UInt64(blockAlign)
     }
 
     /// Atomically replace the original only after both size fields were written to
@@ -163,9 +183,9 @@ public enum WAVHeaderFinalizer {
         guard let parsed = layout(in: header), size >= UInt64(parsed.dataOffset) else {
             throw RecoveryError.invalidHeader(url.path)
         }
+        // Declared sizes past EOF are a truncated write: repair from the bytes that exist.
         let riffEnd = UInt64(parsed.riffSize) + 8
         let dataEnd = UInt64(parsed.dataOffset) + UInt64(parsed.dataSize)
-        guard dataEnd <= size, riffEnd <= size else { throw RecoveryError.invalidHeader(url.path) }
 
         // A complete RIFF may legitimately contain chunks after data. Walk them
         // before treating a short data field as an interrupted header update.
@@ -175,12 +195,14 @@ public enum WAVHeaderFinalizer {
         }
         guard parsed.formatTag == 1 || parsed.formatTag == 3 else { throw RecoveryError.invalidHeader(url.path) }
         let payload = size - UInt64(parsed.dataOffset)
-        guard payload % UInt64(parsed.blockAlign) == 0 else { throw RecoveryError.invalidHeader(url.path) }
-        guard size >= 8, size - 8 <= UInt64(UInt32.max), payload <= UInt64(UInt32.max) else {
+        guard let frames = wholeFrameBytes(payload, blockAlign: parsed.blockAlign) else {
+            throw RecoveryError.invalidHeader(url.path)
+        }
+        guard size >= 8, size - 8 <= UInt64(UInt32.max), frames <= UInt64(UInt32.max) else {
             throw RecoveryError.unsupportedSize(url.path)
         }
         return Plan(layout: parsed, riffSize: UInt32(size - 8),
-                    repair: Repair(previousDataSize: parsed.dataSize, dataSize: UInt32(payload)))
+                    repair: Repair(previousDataSize: parsed.dataSize, dataSize: UInt32(frames)))
     }
 
     private static func trailingChunksValid(_ handle: FileHandle, from dataEnd: UInt64, dataSize: UInt32, end: UInt64) throws -> Bool {

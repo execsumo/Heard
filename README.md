@@ -128,26 +128,27 @@ After launching, grant Microphone (always required) and Accessibility (required 
 - **Dual-track recording** — The mic track is captured via `AVAudioEngine`; the app track is captured via `CATapDescription` + a private aggregate device + a raw AUHAL output unit. The tap collects **all supported meeting-app process-family** CoreAudio object IDs (main + renderer children) so audio from Electron/Chromium sub-processes isn't lost. Both tracks land on disk as 48 kHz WAVs and are never mixed during recording.
 - **Recording reliability** — Heard monitors app-audio callbacks and sustained silence throughout the recording, retries the tap while preserving the existing audio, and warns if audio is not flowing. Turning watching off during an active meeting finalizes and queues that segment. File-write failures, delayed size-limit splits, and failed continuations are surfaced.
 - **Roster scraping** — Reads Microsoft Teams participant names via Accessibility APIs every 15 s while a Teams meeting is active. Three strategies: known roster-panel identifiers → AXList/AXTable containers → window-title parsing. Filters out UI control strings (mute, raise hand, etc.).
-- **On-device pipeline** — Sequential stages per job: preprocessing (48 kHz → 16 kHz mono via `AVAudioConverter`, in-memory Silero VAD trimming + `VadSegmentMap`) → Parakeet TDT V2/V3 transcription (each track separately, with CTC vocabulary boosting) → Inverse Text Normalization (punctuation formatting) → mic-bleed deduplication → LS-EEND + WeSpeaker diarization → speaker assignment and Markdown output.
+- **On-device pipeline** — Sequential stages per job: preprocessing (48 kHz → 16 kHz mono via `AVAudioConverter`, in-memory Silero VAD trimming + `VadSegmentMap`) → batch transcription per track (English Unified (Beta) by default for new and never-saved settings; Parakeet TDT V2/V3 selectable; CTC vocabulary rescoring applied after transcription) → Inverse Text Normalization (punctuation formatting) → mic-bleed deduplication → LS-EEND + WeSpeaker diarization → speaker assignment and Markdown output.
 - **Speaker identification** — Cosine-distance matching (default threshold 0.30, confidence margin 0.10) against a persistent speaker database, with embedding diversity management and auto-update on confident matches. The threshold is configurable in Advanced. Uses UUID-based placeholders (e.g. `Speaker_1AB23C`) to guarantee universally unique speaker profiles.
 - **Cumulative transcription stats** — Every transcribed segment seamlessly increments the matched speaker's total transcribed hours and word count, which are visible in the Settings tab.
 - **Roster-aware auto-naming** — When one speaker is unmatched and exactly one roster name is unclaimed, the roster name is assigned automatically without prompting.
 - **Speaker naming window** — When unmatched speakers remain, a dedicated "Name Speakers" window is available from the menu bar or Speakers tab. It has a **playable audio clip** (~10 s of each speaker's clearest speech, extracted from the 48 kHz recording), a text field pre-populated with any roster suggestion, and user-paced save/skip/split/discard actions. Pending candidates persist across app restarts; there is no auto-open or countdown.
 - **Custom vocabulary boosting** — CTC-based keyword boosting via `Parakeet CTC 110M` is applied to both meeting transcription and dictation. Terms are added from Settings → Recording (minimum 2 characters, max 50 terms). Falls back gracefully if the CTC model can't be loaded.
 - **Persistent job queue** — `pipeline_queue.json` survives app restarts; failed jobs are re-queued on relaunch up to a lifetime cap of 6 retries. Non-retryable errors (no audio, too short) fail immediately; transient errors retry 3× per session with exponential backoff (5 s, 30 s, 5 min). User-initiated retry resets the count.
+- **Recording recovery (implemented, native-unverified)** — Each in-progress recording is journaled to `active_recordings/`. On launch, recovery runs before the 48-hour cleanup: journaled recordings, and WAV pairs no job references at any age, are queued for transcription. Quitting the app queues the active recording. A forced kill keeps only the last journal write. A persistent warning reports journal or queue failures.
 - **Long-meeting handling** — Segments split before the four-hour cap or the WAV size limit, whichever comes first. At 48 kHz stereo float32, that is roughly 3 h 5 m. A delayed split that drops audio or a failed restart is surfaced to the user.
 - **Markdown output** — Timestamped, speaker-labeled transcripts written to a configurable output folder. Filename dates are configurable (`YYMMDD` or `YYYY-MM-DD`). Consecutive segments from the same speaker are merged into continuous blocks. When laptop mic + speakers cause remote audio to bleed into the mic track, overlapping mic segments are dropped when the app track already contains the same words.
-- **Notes (in-meeting and standalone)** — Press the global hotkey (default ⌃⇧N, configurable in Settings → General) to open a floating composer. ⌘↩ saves, Esc cancels. During an active recording the note's timestamp is captured at panel-open time so a slow typer's note still anchors to the moment they reacted; notes are interleaved chronologically with spoken segments and rendered as `[mm:ss] _**Note from <Your Name>:** …_`. Survives crashes via `pipeline_queue.json`; if the meeting ends while the composer is still open, the note attaches to the just-finished job. **Outside a meeting** the same hotkey writes a standalone Markdown file (`yyyy-MM-dd_HH-mm-ss_note.md`) directly to the configured output folder — useful for capturing quick thoughts between meetings without opening a separate app.
+- **Notes (in-meeting and standalone)** — Press the global hotkey (default ⌃⇧N, configurable in Settings → General) to open a floating composer. ⌘↩ saves, Esc cancels. During an active recording the note's timestamp is captured at panel-open time so a slow typer's note still anchors to the moment they reacted; notes are interleaved chronologically with spoken segments and rendered as `[mm:ss] _**Note from <Your Name>:** …_`. Survives crashes via the active-recording journal and `pipeline_queue.json`; if the meeting ends while the composer is still open, the note attaches to the just-finished job. **Outside a meeting** the same hotkey writes a standalone Markdown file (`yyyy-MM-dd_HH-mm-ss_note.md`) directly to the configured output folder — useful for capturing quick thoughts between meetings without opening a separate app.
 
 ### Dictation
-- **Batch speech-to-text** — Dictation captures mic audio while active and transcribes the captured buffer on stop with FluidAudio's Parakeet TDT manager.
+- **Batch speech-to-text** — Dictation captures mic audio while active and transcribes the captured buffer on stop with FluidAudio's Parakeet TDT manager. While English Unified is selected for meetings, dictation uses English (Optimized), Parakeet TDT v2, and Settings says so. The TDT v2 files download only when dictation is enabled and used.
 - **Text injection** — The normalized utterance is injected after transcription via the clipboard and a CGEvent Cmd+V paste. The field focused when dictation started is restored before paste when possible. Requires Accessibility permission.
 - **Punctuation and formatting normalization** — FluidAudio's Inverse Text Normalization (ITN) and Heard's configurable formatting rules convert supported spoken forms such as "new line" and "new paragraph" before text injection.
 - **Filler word stripping** — Standalone instances of "uh", "um", "er", "ah", "hmm", "hm", "uhh", "umm", "mhm" are automatically removed before injection; word boundaries and case-insensitivity apply. Keeps transcripts clean without user intervention.
 - **Vocabulary boosting** — When the CTC model is downloaded, post-transcription CTC rescoring applies custom terms.
 - **Global hotkey** — Default ⌃⇧D, registered via Carbon `RegisterEventHotKey`. No Accessibility permission needed for the hotkey itself, so it keeps working across ad-hoc rebuilds. Rebindable via a Record sheet in the Dictation tab. Hotkey input is validated to block forbidden system shortcuts and warn on weak combos.
 - **Reliability safeguards** — Dictation checks for a first mic buffer, rebuilds a stalled input tap once, surfaces prolonged empty captures, and debounces duplicate hotkey events.
-- **Accessibility revocation detection** — If the user revokes Accessibility permission mid-dictation, `AppModel.startAXPolling()` detects it every 2 seconds and gracefully stops, showing an orange banner with a "Re-grant Access…" button.
+- **Accessibility revocation detection** — If the user revokes Accessibility permission mid-dictation, `AppModel.startAXPolling()` detects it every 2 seconds and gracefully stops, showing a banner with a "Check Access…" button.
 - **Floating dictation indicator (HUD)** — An optional on-screen pill at the bottom-center shows "Dictating" with a waveform icon while active (opt-in via Settings → Dictation). Appears at full opacity, dims to 35% after 2.5 seconds, and fades out on stop.
 - **Toggle and push-to-talk modes** — Tap to toggle, or hold the hotkey to dictate and release to stop.
 - **Model keep-alive** — ASR models stay resident for a configurable period (0 – 10 min, default 120 s) after dictation stops to avoid reload latency between utterances.
@@ -236,7 +237,7 @@ Heard/
 │       └── signed-validation.yml     # Owner branch / manual signed test artifact, no release
 ├── Info.plist                        # LSUIElement, NSMicrophoneUsageDescription
 ├── Heard.entitlements                # Audio input only (no sandbox)
-├── Package.swift                     # SPM config, FluidAudio 0.15.5+
+├── Package.swift                     # SPM config, FluidAudio 0.18.4 (exact pin; Package.resolved hand-edited, not yet resolved or built)
 ├── spec.md                           # Product source of truth
 ├── handoff.md                        # Current implementation status
 ├── ROADMAP.md                        # Technical-debt status and non-goals
@@ -263,14 +264,16 @@ Heard/
 
 ## Models
 
-All models are CoreML, loaded via [FluidAudio](https://github.com/FluidInference/FluidAudio) into `~/Library/Application Support/FluidAudio/Models/`. They auto-download on first use or can be pre-downloaded from Advanced → Models on Disk.
+All models are CoreML, loaded via [FluidAudio](https://github.com/FluidInference/FluidAudio) into `~/Library/Application Support/FluidAudio/Models/`. Weights are downloaded at runtime from FluidInference conversions, on first use or in advance from Advanced → Models on Disk. No model weights are bundled with the app.
 
 | Kind | Model | Purpose |
 |---|---|---|
-| `batchVad` | Silero VAD v6 | In-memory silence trimming during preprocessing |
-| `batchParakeet` | Parakeet TDT V2 0.6B (default) or V3 | English speech-to-text for meetings and dictation. V2 is recommended for English; V3 adds a Cyrillic-script guard. Selectable in Recording. |
+| `batchVad` | Silero VAD v6.2.1 (Core ML artifact `silero-vad-unified-256ms-v6.2.1`, unchanged) | In-memory silence trimming during preprocessing |
+| `batchParakeet` | English Unified (Beta): Parakeet Unified EN 0.6B (default for new and never-saved settings). English (Optimized): Parakeet TDT V2 0.6B. European Languages (Beta): Parakeet TDT V3. | Batch speech-to-text for meetings. Saved choices are kept. While Unified is selected, dictation uses TDT V2; otherwise dictation follows the selected TDT model. Selectable in Recording. |
 | `diarization` | LS-EEND + WeSpeaker | Speaker segmentation + 256-d embedding extraction |
 | `ctcVocabulary` | Parakeet CTC 110M | Optional CTC vocabulary boosting for custom terms |
+
+Silero VAD's Core ML artifact was audited against upstream: the upstream model blobs are identical by git blob hash across v6.2.1, v6.2.2, and v6.2.3, and v6.2.3 changes Python packaging only. FluidInference publishes no v6.2.3 Core ML artifact, so the artifact name stays v6.2.1. The audit does not prove the Core ML conversion's origin.
 
 Pipeline models stay unloaded during recording. Advanced → Models on Disk exposes **pipeline keep-alive** (how long meeting models stay resident after a job completes, 0 – 10 min) and a **force-unload** button. The Dictation tab has its own keep-alive slider for the dictation ASR.
 
@@ -289,12 +292,14 @@ Only Microphone is strictly required; everything else degrades gracefully. Permi
 ```
 ~/Library/Application Support/Heard/
 ├── pipeline_queue.json   # Persistent job queue
+├── active_recordings/    # Journal of in-progress recordings (recovered on launch)
 ├── speakers.json         # Speaker embeddings + metadata
-└── recordings/           # 48 kHz WAVs, auto-cleaned after 48 h
+└── recordings/           # 48 kHz WAVs; cleaned after 48 h when no job or journal entry references them
 
 ~/Library/Application Support/FluidAudio/Models/
 ├── silero-vad-coreml/
 ├── parakeet-tdt-0.6b-v2-coreml/      # or parakeet-tdt-0.6b-v3-coreml/ if V3 selected
+├── parakeet-unified-en-0.6b-coreml/  # English Unified (Beta), when selected
 ├── speaker-diarization-coreml/
 └── parakeet-tdt-0.6b-v2-ctc-110m-coreml/
 
@@ -302,7 +307,7 @@ Only Microphone is strictly required; everything else degrades gracefully. Permi
 └── 260324_Sprint_Planning.md # Or 2026-03-24_Sprint_Planning.md based on settings
 ```
 
-Orphan WAVs from previous crashes are cleaned on launch, and any private aggregate devices left behind by a crashed recording (`com.execsumo.heard.tap.*`) are destroyed at the same time. Files referenced by an in-flight pipeline job are always preserved.
+On launch, recovery runs before cleanup. Journaled recordings, and WAV pairs that no job references at any age, are queued for transcription. Only files still unreferenced after that are removed after 48 h. Private aggregate devices left behind by a crashed recording (`com.execsumo.heard.tap.*`) are destroyed at launch. Files referenced by a queued or in-flight pipeline job are always preserved. This path is native-unverified.
 
 ## Testing
 
@@ -310,7 +315,7 @@ Orphan WAVs from previous crashes are cleaned on launch, and any private aggrega
 swift run HeardTests
 ```
 
-114 tests covering `VadSegmentMap`, cosine distance, `SpeakerMatcher`, `SegmentMerger`, `AudioPreprocessor`, `TranscriptWriter` (incl. note interleaving and rename safety), `SpeakerStore`, `PipelineQueueStore` (incl. `MeetingNote` round-trip and legacy queue decode), and `RosterReader` via a lightweight in-house harness — no XCTest or Xcode required.
+114 tests (before the 2026-11-21 working-tree changes) covering `VadSegmentMap`, cosine distance, `SpeakerMatcher`, `SegmentMerger`, `AudioPreprocessor`, `TranscriptWriter` (incl. note interleaving and rename safety), `SpeakerStore`, `PipelineQueueStore` (incl. `MeetingNote` round-trip and legacy queue decode), and `RosterReader` via a lightweight in-house harness — no XCTest or Xcode required. The working tree adds recording-recovery and model-regression tests (not run here). None has been run: the authoring host has no Swift toolchain.
 
 **Manual smoke test:** `./scripts/bundle.sh && open build/Heard.app`, enable Show Advanced Settings in General and Developer Mode in Advanced, then use **Simulate Meeting** from the menu bar to exercise the full flow without a real Teams call.
 
@@ -347,7 +352,17 @@ The packaging script stages the app without replacing the installed copy, then s
 
 ## Acknowledgements
 
-Heard is built on [FluidAudio](https://github.com/FluidInference/FluidAudio) by [Fluid Inference](https://github.com/FluidInference) — the on-device library that powers ASR, speaker diarization, and inverse text normalization via CoreML on Apple Silicon. FluidAudio is bundled with Heard via Swift Package Manager; no separate installation is needed.
+Heard is built on [FluidAudio](https://github.com/FluidInference/FluidAudio) by [Fluid Inference](https://github.com/FluidInference) — the on-device library that powers ASR, speaker diarization, and inverse text normalization via CoreML on Apple Silicon. FluidAudio is linked into Heard via Swift Package Manager; no separate installation is needed.
+
+## Third-party notices
+
+Parakeet Unified EN 0.6B is NVIDIA's model (nvidia/parakeet-unified-en-0.6b). Licensed by NVIDIA Corporation under the NVIDIA Open Model License: https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/. Heard downloads a CoreML conversion of this model from FluidInference (https://huggingface.co/FluidInference/parakeet-unified-en-0.6b-coreml). The conversion's card lists CC-BY-4.0; the NVIDIA terms govern the underlying model. Upstream model: https://huggingface.co/nvidia/parakeet-unified-en-0.6b.
+
+Parakeet TDT v2 and v3 are NVIDIA models, CC-BY-4.0 (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2, https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
+
+Silero VAD v6.2.1 (https://github.com/snakers4/silero-vad) is listed as MIT in the upstream repository. A discussion on that repository (https://github.com/snakers4/silero-vad/discussions/817) reports conflicting license metadata; confirm before any distribution beyond runtime download.
+
+Heard does not bundle model weights. Models are downloaded at runtime from the sources above. No in-app license text was added with this change.
 
 ## References
 

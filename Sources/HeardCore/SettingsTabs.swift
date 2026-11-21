@@ -117,7 +117,10 @@ extension SettingsView {
                                 .font(HeardFont.bodyMedium)
                                 .foregroundStyle(HeardTheme.Terminal.ink)
                             Spacer()
-                            Picker("", selection: settingsBinding(\.transcriptionModel)) {
+                            Picker("", selection: Binding(
+                                get: { model.settingsStore.settings.transcriptionModel },
+                                set: { model.setTranscriptionModel($0) }
+                            )) {
                                 ForEach(TranscriptionModel.allCases) { version in
                                     Text(version.displayName).tag(version)
                                 }
@@ -128,6 +131,11 @@ extension SettingsView {
                             .frame(width: 160)
                         }
                     }
+                }
+                if model.settingsStore.settings.transcriptionModel.usesUnifiedEngine {
+                    Text("Dictation uses English (Optimized) while English Unified is selected.")
+                        .font(HeardFont.caption)
+                        .foregroundStyle(HeardTheme.Terminal.mute)
                 }
             }
 

@@ -125,7 +125,7 @@ public struct MeetingSnapshot {
 
     /// Apply late metadata without changing audio paths, timing, or in-flight notes.
     public func applyingMetadata(to session: RecordingSession) -> RecordingSession {
-        RecordingSession(title: title.isEmpty ? session.title : title,
+        RecordingSession(id: session.id, title: title.isEmpty ? session.title : title,
                          startTime: session.startTime, appAudioPath: session.appAudioPath,
                          micAudioPath: session.micAudioPath, micDelaySeconds: session.micDelaySeconds,
                          rosterNames: RosterReader.filterNames(session.rosterNames + rosterNames),
@@ -134,6 +134,8 @@ public struct MeetingSnapshot {
 }
 
 public struct RecordingSession {
+    /// Keys the journal entry and the queued job, so a repeated handoff cannot duplicate work.
+    public let id: UUID
     public var title: String
     public let startTime: Date
     public let appAudioPath: URL
@@ -147,7 +149,8 @@ public struct RecordingSession {
     /// into the `PipelineJob` when the session ends.
     public var chatMessages: [ChatMessage]
 
-    public init(title: String, startTime: Date, appAudioPath: URL, micAudioPath: URL, micDelaySeconds: TimeInterval, rosterNames: [String] = [], notes: [MeetingNote] = [], chatMessages: [ChatMessage] = []) {
+    public init(id: UUID = UUID(), title: String, startTime: Date, appAudioPath: URL, micAudioPath: URL, micDelaySeconds: TimeInterval, rosterNames: [String] = [], notes: [MeetingNote] = [], chatMessages: [ChatMessage] = []) {
+        self.id = id
         self.title = title
         self.startTime = startTime
         self.appAudioPath = appAudioPath
@@ -979,7 +982,11 @@ public final class RecordingManager: ObservableObject {
     /// follow the system default input device. Set by AppModel from settings.
     public var inputDeviceUID: String?
 
-    public init() {}
+    public let journal: ActiveRecordingStore
+
+    public init(journal: ActiveRecordingStore) {
+        self.journal = journal
+    }
 
     // Context object shared between the main actor and the IOProc dispatch queue.
     // Stats fields are word-sized scalars updated from the IOProc and read from the
@@ -1036,10 +1043,6 @@ public final class RecordingManager: ObservableObject {
     private var micStartTime: Date?
     private var appStartTime: Date?
 
-    /// AsyncStream publisher for mic buffers — v2 dictation will subscribe to this.
-    private var micBufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
-    private(set) var micBufferStream: AsyncStream<AVAudioPCMBuffer>?
-
     /// Callback for max-duration split: enqueue current session, optionally restart.
     public var onMaxDurationReached: (@MainActor (RecordingSession) -> Void)?
     /// Called if a delayed split causes frames to be dropped at the RIFF limit.
@@ -1053,6 +1056,8 @@ public final class RecordingManager: ObservableObject {
     /// Called when the tap has delivered only silence for the whole recording while
     /// the meeting app was playing audio — the signature of a denied System Audio grant.
     public var onAppAudioLooksDenied: (() -> Void)?
+    /// Reports each journal write for the active recording; false means it is unprotected.
+    public var onJournalWrite: (@MainActor (Bool) -> Void)?
 
     /// Display name of the meeting app being recorded, for status text.
     public var meetingAppName: String { currentSource.displayName }
@@ -1068,8 +1073,7 @@ public final class RecordingManager: ObservableObject {
         captureGeneration = UUID()
 
         let stamp = Formatting.recordingFileFormatter.string(from: Date())
-        let base = FileManager.default.heardAppSupportDirectory
-            .appendingPathComponent("recordings", isDirectory: true)
+        let base = AppPaths.recordingsDirectory
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
 
         let appPath = base.appendingPathComponent("\(stamp)_app.wav")
@@ -1137,6 +1141,7 @@ public final class RecordingManager: ObservableObject {
             micDelaySeconds: micDelay,
             rosterNames: rosterNames
         )
+        persistJournal()
 
         // Split before either track approaches RIFF's 32-bit container limit.
         // The per-write limit also covers late-starting tracks and delayed timers.
@@ -1159,6 +1164,7 @@ public final class RecordingManager: ObservableObject {
         guard activeSession != nil, !names.isEmpty else { return }
         activeSession?.rosterNames = names
         currentRosterNames = names
+        persistJournal()
     }
 
     /// Append newly observed chat messages to the active session, deduplicating
@@ -1181,6 +1187,7 @@ public final class RecordingManager: ObservableObject {
         }
         guard !newMessages.isEmpty else { return }
         activeSession?.chatMessages.append(contentsOf: newMessages)
+        persistJournal()
     }
 
     /// Update the meeting title on the active session. The title is often captured
@@ -1194,6 +1201,7 @@ public final class RecordingManager: ObservableObject {
         DebugFileLog.log("recording title updated: oldLength=\(currentTitle.count) newLength=\(trimmed.count)")
         activeSession?.title = trimmed
         currentTitle = trimmed
+        persistJournal()
     }
 
     /// Append a user-authored note to the active recording session. The offset
@@ -1208,7 +1216,20 @@ public final class RecordingManager: ObservableObject {
         guard let session = activeSession else { return false }
         let offset = max(0, openedAt.timeIntervalSince(session.startTime))
         activeSession?.notes.append(MeetingNote(offsetSeconds: offset, text: trimmed))
+        persistJournal()
         return true
+    }
+
+    /// Best-effort: a failed write keeps capture running; the result feeds the recovery warning.
+    private func persistJournal() {
+        guard let session = activeSession else { return }
+        do {
+            try journal.save(ActiveRecordingEntry(session: session, updatedAt: Date()))
+            onJournalWrite?(true)
+        } catch {
+            NSLog("Heard: could not journal active recording: %@", error.localizedDescription)
+            onJournalWrite?(false)
+        }
     }
 
     public func stopRecording() -> RecordingSession? {
@@ -1218,9 +1239,6 @@ public final class RecordingManager: ObservableObject {
         teardownMicRecording()
         teardownAppAudioRecording()
 
-        micBufferContinuation?.finish()
-        micBufferContinuation = nil
-        micBufferStream = nil
         micStartTime = nil
         appStartTime = nil
 
@@ -1255,11 +1273,6 @@ public final class RecordingManager: ObservableObject {
             bytesPerFrame: file.fileFormat.streamDescription.pointee.mBytesPerFrame
         ) > 0 else { throw RecordingError.deviceSetupFailed(kAudioDeviceUnsupportedFormatError) }
         micAudioFile = file
-
-        // Set up AsyncStream for v2 dictation
-        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
-        micBufferStream = stream
-        micBufferContinuation = continuation
 
         // Mono conversion format matching the file
         let monoFormat = AVAudioFormat(
@@ -1305,7 +1318,6 @@ public final class RecordingManager: ObservableObject {
                 state.lossReported = true
                 Task { @MainActor [weak self] in self?.onCaptureGapDetected?() }
             }
-            self?.micBufferContinuation?.yield(buffer)
         }
 
         engine.prepare()
@@ -1875,6 +1887,7 @@ public final class RecordingManager: ObservableObject {
                 // interleaving run with a stale delay.
                 let delay = mic.timeIntervalSince(app)
                 activeSession?.micDelaySeconds = delay
+                persistJournal()
                 DebugFileLog.event("App-track start moved — mic delay recalibrated to %.2fs", delay)
             }
             DebugFileLog.event("App-audio chain rebuilt")
@@ -2043,8 +2056,12 @@ public final class ModelCatalog: ObservableObject {
         update(kind, availability: .downloading, detail: "Downloading")
     }
 
-    public func markReady(_ kind: ModelKind) {
-        update(kind, availability: .ready, detail: "Ready")
+    public func markReady(_ kind: ModelKind, detail: String = "Ready") {
+        update(kind, availability: .ready, detail: detail)
+    }
+
+    public func markNotDownloaded(_ kind: ModelKind, detail: String = "Download required") {
+        update(kind, availability: .notDownloaded, detail: detail)
     }
 
     private func update(_ kind: ModelKind, availability: ModelAvailability, detail: String) {
@@ -2544,9 +2561,10 @@ public final class PermissionCenter: ObservableObject {
 
 public enum TempFileCleanup {
     /// Delete recording WAVs older than 48 hours. Called on app launch.
-    public static func cleanStaleRecordings(activeJobPaths: Set<URL> = []) {
-        let recordingsDir = FileManager.default.heardAppSupportDirectory
-            .appendingPathComponent("recordings", isDirectory: true)
+    public static func cleanStaleRecordings(
+        activeJobPaths: Set<URL> = [],
+        recordingsDir: URL = AppPaths.recordingsDirectory
+    ) {
         let fm = FileManager.default
 
         guard let contents = try? fm.contentsOfDirectory(
@@ -2894,6 +2912,8 @@ public final class PipelineProcessor: ObservableObject {
     private var cachedAsrModels: AsrModels?
     private var cachedAsrManager: AsrManager?
     private var cachedAsrVersion: TranscriptionModel?
+    /// English Unified batch engine. Resident only while Unified is the selected meeting model.
+    private var cachedUnifiedManager: UnifiedAsrManager?
     private var modelUnloadTask: Task<Void, Never>?
     /// The currently-running pipeline task. Stored so the watchdog can cancel it.
     private var pipelineTask: Task<Void, Never>?
@@ -2937,30 +2957,6 @@ public final class PipelineProcessor: ObservableObject {
         self.modelCatalog = modelCatalog
         self.onNamingRequired = onNamingRequired
         self.onPipelineIdle = onPipelineIdle
-    }
-
-    @discardableResult
-    public func enqueueFinishedRecording(_ session: RecordingSession, endedAt: Date) -> Bool {
-        let job = PipelineJob(
-            id: UUID(),
-            meetingTitle: session.title,
-            startTime: session.startTime,
-            endTime: endedAt,
-            appAudioPath: session.appAudioPath,
-            micAudioPath: session.micAudioPath,
-            transcriptPath: nil,
-            stage: .queued,
-            stageStartTime: nil,
-            error: nil,
-            retryCount: 0,
-            rosterNames: session.rosterNames,
-            notes: session.notes,
-            chatMessages: session.chatMessages,
-            micDelaySeconds: session.micDelaySeconds
-        )
-        guard queueStore.enqueue(job) else { return false }
-        runNextIfNeeded()
-        return true
     }
 
     /// Attach a late-arriving meeting note to whichever queued job spans the
@@ -3116,6 +3112,10 @@ public final class PipelineProcessor: ObservableObject {
         cachedAsrModels = nil
         cachedAsrManager = nil
         cachedAsrVersion = nil
+        if let manager = cachedUnifiedManager {
+            cachedUnifiedManager = nil
+            Task { await manager.cleanup() }
+        }
         NSLog("Heard: Pipeline models unloaded")
     }
 
@@ -3225,7 +3225,11 @@ public final class PipelineProcessor: ObservableObject {
             modelCatalog.markDownloading(.batchParakeet)
             try await runTranscription(job, generation: generation)
             try ensureCurrent(generation)
-            modelCatalog.markReady(.batchParakeet)
+            modelCatalog.markReady(.batchParakeet, detail: ModelDownloadManager.batchDetail(
+                readiness: "Ready",
+                selected: settingsStore.settings.transcriptionModel,
+                dictationEnabled: settingsStore.settings.dictationEnabled
+            ))
         }
 
         // Stage 3: Diarization — LS-EEND + WeSpeaker on both tracks
@@ -3390,39 +3394,68 @@ public final class PipelineProcessor: ObservableObject {
 
         let selectedVersion = settingsStore.settings.transcriptionModel
 
-        // Reuse cached models if available and the same version; otherwise load fresh.
-        // Each transcribe() call uses its own fresh TdtDecoderState, so no stale context
-        // from prior jobs/tracks bleeds in.
-        let asrManager: AsrManager
-        if let cached = cachedAsrManager, cachedAsrVersion == selectedVersion {
-            asrManager = cached
-        } else {
-            // Version changed or no cache — discard old models and load the selected version
+        // Resolve the meeting batch engine. Unified and TDT are separate managers and only
+        // the selected one stays resident: selecting one releases the other.
+        let transcribe: ([Float]) async throws -> ASRResult
+        if selectedVersion.usesUnifiedEngine {
             cachedAsrModels = nil
             cachedAsrManager = nil
             cachedAsrVersion = nil
 
-            let fluidVersion: AsrModelVersion = selectedVersion == .v2 ? .v2 : .v3
-            let models = try await AsrModels.loadFromCache(version: fluidVersion)
-            let asrConfig = ASRConfig(
-                tdtConfig: TdtConfig(blankId: selectedVersion.blankId),
-                encoderHiddenSize: fluidVersion.encoderHiddenSize
-            )
-            let manager = AsrManager(config: asrConfig)
-            try await manager.loadModels(models)
-            try ensureCurrent(generation)
-            asrManager = manager
-            cachedAsrModels = models
-            cachedAsrManager = manager
-            cachedAsrVersion = selectedVersion
+            let unified: UnifiedAsrManager
+            if let cached = cachedUnifiedManager {
+                unified = cached
+            } else {
+                let manager = UnifiedAsrManager()
+                try await manager.loadModels()
+                try ensureCurrent(generation)
+                cachedUnifiedManager = manager
+                unified = manager
+            }
+            transcribe = { samples in try await unified.transcribeDetailed(samples) }
+        } else {
+            await releaseUnifiedEngine()
+
+            // Reuse cached models if available and the same version; otherwise load fresh.
+            // Each transcribe() call uses its own fresh TdtDecoderState, so no stale context
+            // from prior jobs/tracks bleeds in.
+            let asrManager: AsrManager
+            if let cached = cachedAsrManager, cachedAsrVersion == selectedVersion {
+                asrManager = cached
+            } else {
+                // Version changed or no cache — discard old models and load the selected version
+                cachedAsrModels = nil
+                cachedAsrManager = nil
+                cachedAsrVersion = nil
+
+                let fluidVersion: AsrModelVersion = selectedVersion == .v3 ? .v3 : .v2
+                let models = try await AsrModels.loadFromCache(version: fluidVersion)
+                let asrConfig = ASRConfig(
+                    tdtConfig: TdtConfig(blankId: selectedVersion.blankId),
+                    encoderHiddenSize: fluidVersion.encoderHiddenSize
+                )
+                let manager = AsrManager(config: asrConfig)
+                try await manager.loadModels(models)
+                try ensureCurrent(generation)
+                asrManager = manager
+                cachedAsrModels = models
+                cachedAsrManager = manager
+                cachedAsrVersion = selectedVersion
+            }
+
+            // v3 emits Cyrillic for short Latin utterances unless given a language hint;
+            // v2 ignores this parameter. Heard is English-only per spec.
+            let language: Language = .english
+            transcribe = { samples in
+                var decoderState = TdtDecoderState.make()
+                return try await asrManager.transcribe(
+                    samples, decoderState: &decoderState, language: language
+                )
+            }
         }
 
         // Minimum 16,000 samples (1 second at 16kHz) required by Parakeet
         let minSamples = 16_000
-
-        // v3 emits Cyrillic for short Latin utterances unless given a language hint;
-        // v2 ignores this parameter. Heard is English-only per spec.
-        let language: Language = .english
 
         // Weight progress by sample count so the bar advances proportionally to work done.
         let appCount = appTrack.flatMap { $0.samples.count >= minSamples ? $0.samples.count : nil } ?? 0
@@ -3432,10 +3465,7 @@ public final class PipelineProcessor: ObservableObject {
 
         // Transcribe app track (remote participants) with a fresh decoder state.
         if let track = appTrack, track.samples.count >= minSamples {
-            var decoderState = TdtDecoderState.make()
-            let result = try await asrManager.transcribe(
-                track.samples, decoderState: &decoderState, language: language
-            )
+            let result = try await transcribe(track.samples)
             try ensureCurrent(generation)
             appTranscription = result
             if totalTranscribeSamples > 0 {
@@ -3445,10 +3475,7 @@ public final class PipelineProcessor: ObservableObject {
 
         // Transcribe mic track (local user) with its own fresh decoder state.
         if let track = micTrack, track.samples.count >= minSamples {
-            var decoderState = TdtDecoderState.make()
-            let result = try await asrManager.transcribe(
-                track.samples, decoderState: &decoderState, language: language
-            )
+            let result = try await transcribe(track.samples)
             try ensureCurrent(generation)
             micTranscription = result
         }
@@ -3478,6 +3505,13 @@ public final class PipelineProcessor: ObservableObject {
         // It will be released there.
 
         // Models stay cached for keep-alive; unloaded by clearJobState() or forceUnload()
+    }
+
+    /// Drop the resident Unified engine (a TDT model was selected).
+    private func releaseUnifiedEngine() async {
+        guard let manager = cachedUnifiedManager else { return }
+        cachedUnifiedManager = nil
+        await manager.cleanup()
     }
 
     /// Post-process ASRResults with CTC vocabulary rescoring.
