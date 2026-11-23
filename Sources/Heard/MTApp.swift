@@ -68,6 +68,10 @@ private struct MenuBarIcon: View {
         } else if model.isDictating {
             Circle().fill(.red).frame(width: 5, height: 5)
                 .offset(x: 1, y: -1)
+        } else if model.dictationManager.state == .loading {
+            DictationIconBadge(kind: .preparing)
+        } else if model.dictationError != nil {
+            DictationIconBadge(kind: .error)
         } else {
             EmptyView()
         }

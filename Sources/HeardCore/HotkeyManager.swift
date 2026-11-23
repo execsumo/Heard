@@ -75,6 +75,32 @@ public struct HotkeyCombo: Codable, Equatable {
     }
 }
 
+/// Outcome of one registration attempt, or of deactivation. Drives `HotkeyRegistrationStatus`.
+public enum HotkeyRegistrationEvent: Equatable {
+    case registered
+    case failed(OSStatus)
+    case deactivated
+}
+
+/// Whether a manager's shortcut is registered with Carbon. Kept apart from the enabled setting,
+/// so nothing can read "enabled" as "registered".
+public enum HotkeyRegistrationStatus: Equatable {
+    /// Not requested, or deactivated.
+    case inactive
+    case registered
+    /// The last attempt failed (handler install or RegisterEventHotKey, for example
+    /// `eventHotKeyExistsErr`). Only a later successful activation or `deactivate()` replaces it.
+    case failed(OSStatus)
+
+    public static func after(_ event: HotkeyRegistrationEvent) -> HotkeyRegistrationStatus {
+        switch event {
+        case .registered: return .registered
+        case .failed(let code): return .failed(code)
+        case .deactivated: return .inactive
+        }
+    }
+}
+
 // MARK: - Carbon Hot Key Manager
 
 /// Registry of active HotkeyManager instances keyed by their Carbon hotkey id.
@@ -123,8 +149,8 @@ private func carbonHotkeyHandler(
 }
 
 /// Install the shared Carbon event handler on first use. Idempotent.
-private func ensureSharedHotkeyEventHandler() -> Bool {
-    if sharedHotkeyEventHandlerRef != nil { return true }
+private func ensureSharedHotkeyEventHandler() -> OSStatus {
+    if sharedHotkeyEventHandlerRef != nil { return noErr }
 
     var eventTypes = [
         EventTypeSpec(
@@ -149,9 +175,8 @@ private func ensureSharedHotkeyEventHandler() -> Bool {
     if status != noErr {
         NSLog("Heard: Failed to install Carbon event handler: \(status)")
         sharedHotkeyEventHandlerRef = nil
-        return false
     }
-    return true
+    return status
 }
 
 /// Registers a global keyboard shortcut using Carbon's RegisterEventHotKey.
@@ -166,6 +191,13 @@ public final class HotkeyManager {
     private var onPressed: (() -> Void)?
     private var onReleased: (() -> Void)?
     private var lastPressedAt: Date?
+    /// True from `activate()` until `deactivate()`, whether or not the combo registered.
+    /// Kept apart from `hotkeyRef` so `updateHotkey` can retry after a failed registration.
+    private var isRequested = false
+    /// Registration state of this manager's shortcut. `.failed` stays until a later successful
+    /// activation or `deactivate()`.
+    public private(set) var registrationStatus: HotkeyRegistrationStatus = .inactive
+    private let onStatusChange: (@MainActor (HotkeyRegistrationStatus) -> Void)?
 
     private static let signature = OSType(0x48524430)  // "HRD0"
 
@@ -176,12 +208,14 @@ public final class HotkeyManager {
         id: UInt32 = 1,
         hotkey: HotkeyCombo = .default,
         onPressed: (() -> Void)? = nil,
-        onReleased: (() -> Void)? = nil
+        onReleased: (() -> Void)? = nil,
+        onRegistrationStatusChange: (@MainActor (HotkeyRegistrationStatus) -> Void)? = nil
     ) {
         self.id = id
         self.hotkey = hotkey
         self.onPressed = onPressed
         self.onReleased = onReleased
+        self.onStatusChange = onRegistrationStatusChange
     }
 
     public func setCallbacks(onPressed: @escaping () -> Void, onReleased: (() -> Void)? = nil) {
@@ -190,15 +224,24 @@ public final class HotkeyManager {
     }
 
     public func updateHotkey(_ newHotkey: HotkeyCombo) {
-        let wasActive = hotkeyRef != nil
-        if wasActive { deactivate() }
         hotkey = newHotkey
-        if wasActive { activate() }
+        // Re-attempt whenever requested, including after a failed registration, so a new
+        // combo can recover a dead hotkey.
+        guard isRequested else { return }
+        releaseRegistration()
+        activate()
     }
 
     public func activate() {
+        isRequested = true
         guard hotkeyRef == nil else { return }
-        guard ensureSharedHotkeyEventHandler() else { return }
+
+        // The handler install logs its own failure.
+        let handlerStatus = ensureSharedHotkeyEventHandler()
+        guard handlerStatus == noErr else {
+            record(.failed(handlerStatus))
+            return
+        }
 
         hotkeyManagerRegistry[id] = self
 
@@ -214,11 +257,20 @@ public final class HotkeyManager {
 
         if regStatus != noErr {
             NSLog("Heard: Failed to register hotkey id=\(id): \(regStatus)")
-            deactivate()
+            releaseRegistration()
+            record(.failed(regStatus))
+        } else {
+            record(.registered)
         }
     }
 
     public func deactivate() {
+        isRequested = false
+        releaseRegistration()
+        record(.deactivated)
+    }
+
+    private func releaseRegistration() {
         if let ref = hotkeyRef {
             UnregisterEventHotKey(ref)
             hotkeyRef = nil
@@ -226,6 +278,13 @@ public final class HotkeyManager {
         if hotkeyManagerRegistry[id] === self {
             hotkeyManagerRegistry.removeValue(forKey: id)
         }
+    }
+
+    private func record(_ event: HotkeyRegistrationEvent) {
+        let next = HotkeyRegistrationStatus.after(event)
+        guard next != registrationStatus else { return }
+        registrationStatus = next
+        onStatusChange?(next)
     }
 
     func handleHotkeyPressed() {

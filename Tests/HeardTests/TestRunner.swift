@@ -3103,6 +3103,10 @@ struct TestRunner {
         runCustomVocabularyThresholdTests()
         runActiveRecordingTests()
         runTranscriptionModelTests()
+        runDictationDecisionTests()
+        await runDictationLifecycleTests()
+        runDictationDeliveryTests()
+        await runDictationReadinessTests()
 
         print("\n" + String(repeating: "─", count: 50))
         print("Results: \(passedTests)/\(totalTests) passed")

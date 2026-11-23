@@ -241,6 +241,15 @@ extension SettingsView {
 
     // MARK: Dictation
 
+    private var dictationStatusLabel: String {
+        switch model.dictationManager.state {
+        case .idle: return ""
+        case .loading: return "Preparing…"
+        case .listening: return "Dictating…"
+        case .transcribing: return "Transcribing…"
+        }
+    }
+
     var dictationSection: some View {
         paneScroll("Dictation") {
             sectionGroup("Behavior") {
@@ -262,6 +271,8 @@ extension SettingsView {
                     .disabled(!model.settingsStore.settings.dictationEnabled)
                 }
             }
+
+            DictationReadinessSection(downloads: model.downloadManager)
 
             sectionGroup("Hotkey") {
                 SettingsCard {
@@ -295,6 +306,10 @@ extension SettingsView {
                         }
                     }
                 }
+            }
+
+            if case .failed = model.dictationHotkeyStatus {
+                DictationHotkeyWarning(hotkey: model.settingsStore.settings.dictationHotkey.displayString)
             }
 
             sectionGroup("Custom Formatting Commands") {
@@ -353,13 +368,16 @@ extension SettingsView {
                 }
             }
 
-            if model.isDictating {
+            if model.dictationManager.state != .idle {
                 sectionGroup("Status") {
                     SettingsCard {
                         CardRow(isLast: true) {
                             HStack(spacing: 8) {
-                                StatusDot(color: HeardTheme.Terminal.bad, pulsing: true)
-                                Text("Dictating…")
+                                StatusDot(
+                                    color: model.dictationManager.state == .listening ? HeardTheme.Terminal.bad : HeardTheme.Terminal.warn,
+                                    pulsing: true
+                                )
+                                Text(dictationStatusLabel)
                                     .font(HeardFont.bodyMedium)
                                     .foregroundStyle(HeardTheme.Terminal.ink)
                             }

@@ -22,8 +22,17 @@ public final class AppModel: ObservableObject {
     @Published public var dictationError: String?
     /// Set when AX permission is revoked while dictation is active. Cleared on dismiss or next start.
     @Published public var dictationAXLost = false
-    // Prevents concurrent toggles: rapid hotkey presses during start/stop are dropped.
-    private var dictationToggleInFlight = false
+    /// A stop request is running. Presses during it are ignored.
+    private var dictationStopInFlight = false
+    /// A start was requested and has not settled. Cleared by its completion, cancel, or stop.
+    private var dictationStartPending = false
+    /// Identifies the latest start attempt. A finished or cancelled attempt only changes UI state while its ID is current.
+    private var dictationStartID: UInt64 = 0
+    private var dictationStartTask: Task<Void, Never>?
+    /// Registration status of the dictation hotkey. Changes only on a real (re)registration or deactivation.
+    @Published public private(set) var dictationHotkeyStatus: HotkeyRegistrationStatus = .inactive
+    /// Identifies the current hotkey manager. Status callbacks from older managers are ignored.
+    private var hotkeyGeneration: UInt64 = 0
     // Tracks whether the push-to-talk key is currently held. Set on press, cleared on release.
     // Used to detect key-up events that arrive before model loading completes.
     private var pushToTalkKeyHeld = false
@@ -74,7 +83,9 @@ public final class AppModel: ObservableObject {
         let recordingManager = RecordingManager(journal: ActiveRecordingStore())
 
         let downloadManager = ModelDownloadManager(catalog: modelCatalog)
-        let dictationManager = DictationManager()
+        let dictationManager = DictationManager(prepareEngine: { [downloadManager] _ in
+            try await downloadManager.prepareDictationEngine()
+        })
         let updateChecker = UpdateChecker()
 
         // Propagate persisted model version to managers before first use
@@ -105,6 +116,7 @@ public final class AppModel: ObservableObject {
         )
 
         model.observeTermination()
+        model.observeDictationState()
 
         // Archive speaker profiles inactive beyond the configured retention window
         speakerStore.archiveInactiveSpeakers(retentionDays: settingsStore.settings.speakerRetentionDays)
@@ -201,6 +213,11 @@ public final class AppModel: ObservableObject {
         // isn't an invisible failure. Cleared on the next dictation start.
         dictationManager.onNoAudioCaptured = { [weak model] in
             model?.dictationError = "No speech captured — please try again."
+        }
+        // Transcription failures are shown, not just logged. Ignored once the feature is off.
+        dictationManager.onFailure = { [weak model] message in
+            guard let model, model.settingsStore.settings.dictationEnabled else { return }
+            model.dictationError = message
         }
 
         // Activate hotkey if dictation is enabled
@@ -481,71 +498,166 @@ public var filteredSpeakers: [SpeakerProfile] {
     // MARK: - Dictation
 
     public func toggleDictation() {
-        DebugFileLog.log("toggleDictation entered — isDictating=\(isDictating) inFlight=\(dictationToggleInFlight) activeSession=\(recordingManager.activeSession != nil)")
-        // Drop rapid presses while a start/stop is already in progress.
-        guard !dictationToggleInFlight else {
-            DebugFileLog.log("toggleDictation dropped — inFlight=true")
+        let action = dictationToggleAction(
+            isDictating: isDictating,
+            startPending: dictationStartPending,
+            stopInFlight: dictationStopInFlight,
+            managerTranscribing: dictationManager.state == .transcribing,
+            meetingActive: recordingManager.activeSession != nil
+        )
+        DebugFileLog.log("toggleDictation — action=\(action) isDictating=\(isDictating) state=\(dictationManager.state.rawValue)")
+        switch action {
+        case .ignore:
             return
-        }
-        // Don't start dictation while a meeting is being recorded.
-        if !isDictating && recordingManager.activeSession != nil {
-            DebugFileLog.log("toggleDictation dropped — meeting active and not currently dictating")
-            return
-        }
-        // Snapshot the focused field synchronously at trigger time — model
-        // loading inside the task can take seconds, during which the user may
-        // click elsewhere, and the transcript must land where they started.
-        if !isDictating {
-            dictationFocusTarget = TextInjector.captureFocusTarget()
-        }
-        dictationToggleInFlight = true
-        Task {
-            defer {
-                dictationToggleInFlight = false
-                DebugFileLog.log("toggleDictation task finished — inFlight cleared")
+        case .cancelPendingStart:
+            cancelPendingDictationStart()
+        case .stop:
+            dictationStopInFlight = true
+            // Capture the listening session now, so a stop that runs later can only end this session.
+            let owned = dictationManager.currentSession
+            Task {
+                await self.stopDictation(session: owned)
+                self.dictationStopInFlight = false
             }
-            if isDictating {
-                DebugFileLog.log("taking STOP branch")
-                // Update UI immediately so the user gets instant feedback — don't
-                // wait for mgr.finish() to return (it flushes remaining audio and
-                // can take several seconds, keeping the HUD up and blocking further
-                // hotkey presses via dictationToggleInFlight the whole time).
-                isDictating = false
-                dictationError = nil
-                if settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
-                dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
-                await dictationManager.stop()
-                DebugFileLog.log("STOP branch completed (dictationManager.stop returned)")
-            } else {
-                DebugFileLog.log("taking START branch")
-                do {
-                    dictationAXLost = false
-                    dictationManager.customVocabulary = settingsStore.settings.customVocabulary
-                    dictationManager.formattingCommands = settingsStore.settings.formattingCommands
-                    dictationManager.modelVersion = settingsStore.settings.transcriptionModel
-                    dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
-                    dictationManager.inputDeviceUID = settingsStore.settings.selectedInputDeviceUID
-                    try await dictationManager.start()
-                    // Push-to-talk race: if the key was released before loading finished,
-                    // stop immediately rather than leaving dictation stuck on.
-                    if settingsStore.settings.pushToTalk && !pushToTalkKeyHeld {
-                        dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
-                        await dictationManager.stop()
-                        dictationError = nil
-                        return
-                    }
-                    isDictating = true
-                    dictationError = nil
-                    if settingsStore.settings.showDictationHUD { DictationHUD.shared.show() }
-                    // Watch for AX revocation while dictation is active
-                    startAXPolling()
-                    DebugFileLog.log("START branch completed — isDictating=true")
-                } catch {
-                    isDictating = false
-                    dictationError = error.localizedDescription
-                    NSLog("Heard: Dictation start failed: \(error)")
-                    DebugFileLog.log("START branch threw: \(error)")
-                }
+        case .start:
+            startDictation()
+        }
+    }
+
+    /// Menu Cancel. Offered only while the manager is loading. A listening session is ended with Stop, which transcribes it.
+    public func cancelDictation() {
+        guard dictationManager.state == .loading else { return }
+        cancelPendingDictationStart()
+    }
+
+    /// Re-requests the dictation engine after a readiness failure. Pressing the hotkey again retries the start itself.
+    public func retryDictationSetup() {
+        dictationError = nil
+        downloadManager.downloadDictationEngineIfNeeded()
+        dictationManager.preloadModelsInBackground()
+    }
+
+    /// Re-publishes dictation state changes so views bound to AppModel refresh when the manager's state changes.
+    private func observeDictationState() {
+        dictationManager.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+    }
+
+    private func startDictation() {
+        // Snapshot the focused field synchronously at trigger time. Model loading can take seconds, and the
+        // transcript must land where the user started.
+        dictationFocusTarget = TextInjector.captureFocusTarget()
+        dictationStartID &+= 1
+        let id = dictationStartID
+        dictationStartPending = true
+        dictationError = nil
+        dictationAXLost = false
+        dictationStartTask = Task {
+            await self.runDictationStart(id: id)
+        }
+    }
+
+    /// One start attempt. Only the attempt whose ID is still current may change UI state. A superseded attempt
+    /// never starts the manager, and never stops anything except the exact session it started.
+    private func runDictationStart(id: UInt64) async {
+        defer {
+            if dictationStartID == id {
+                dictationStartPending = false
+                dictationStartTask = nil
+            }
+        }
+        // Checked before any side effect: a cancel or stop can run before this task first executes.
+        guard !Task.isCancelled, dictationStartID == id else {
+            DebugFileLog.log("runDictationStart — cancelled before it ran, no side effects")
+            return
+        }
+        let settings = settingsStore.settings
+        dictationManager.customVocabulary = settings.customVocabulary
+        dictationManager.formattingCommands = settings.formattingCommands
+        dictationManager.modelVersion = settings.transcriptionModel
+        dictationManager.modelKeepAliveSeconds = TimeInterval(settings.modelKeepAlive * 60)
+        dictationManager.inputDeviceUID = settings.selectedInputDeviceUID
+        let session: UInt64
+        do {
+            session = try await dictationManager.start()
+        } catch DictationError.cancelled {
+            DebugFileLog.log("runDictationStart — superseded, no UI change")
+            return
+        } catch {
+            guard dictationStartID == id else { return }
+            isDictating = false
+            dictationError = error.localizedDescription
+            NSLog("Heard: Dictation start failed: \(error)")
+            DebugFileLog.log("runDictationStart threw: \(error)")
+            return
+        }
+        // The manager is listening on `session`. Stop it only by that exact session ID.
+        guard dictationStartID == id else {
+            DebugFileLog.log("runDictationStart — superseded after listening, stopping only session \(session)")
+            await dictationManager.requestStop(session: session)
+            return
+        }
+        // The next main-actor turn may have run a meeting start or a push-to-talk release. Re-check before publishing.
+        let releasedDuringLoad = settings.pushToTalk && !pushToTalkKeyHeld
+        let mayPublish = dictationMayPublishListening(
+            managerState: dictationManager.state,
+            meetingActive: recordingManager.activeSession != nil,
+            pushToTalkReleased: releasedDuringLoad,
+            superseded: Task.isCancelled
+        )
+        guard mayPublish else {
+            DebugFileLog.log("runDictationStart — not publishing listening; stopping session \(session)")
+            await dictationManager.requestStop(session: session)
+            return
+        }
+        isDictating = true
+        dictationError = nil
+        if settings.showDictationHUD { DictationHUD.shared.show() }
+        // Watch for AX revocation while dictation is active.
+        startAXPolling(session: session)
+        DebugFileLog.log("START branch completed — isDictating=true")
+    }
+    /// Stop from the hotkey or menu. The old error is cleared before awaiting, so an error reported during
+    /// transcription (through onFailure or onNoAudioCaptured) stays visible after the stop returns.
+    private func stopDictation(session: UInt64) async {
+        isDictating = false
+        dictationError = nil
+        if settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
+        dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
+        await dictationManager.requestStop(session: session)
+        DebugFileLog.log("STOP branch completed (dictationManager.stop returned)")
+    }
+
+    /// Cancels the current start attempt. The ID bump makes its completion inert, so it cannot publish or show an error.
+    private func cancelPendingDictationStart() {
+        dictationStartID &+= 1
+        dictationStartPending = false
+        dictationStartTask?.cancel()
+        dictationStartTask = nil
+        isDictating = false
+        dictationError = nil
+        if dictationManager.state == .listening {
+            // The attempt finished before this press arrived. Stop exactly that session, never a newer one.
+            let owned = dictationManager.currentSession
+            Task {
+                await self.dictationManager.requestStop(session: owned)
+            }
+        } else {
+            dictationManager.cancelPendingStart()
+        }
+        DebugFileLog.log("cancelPendingDictationStart — state=\(dictationManager.state.rawValue)")
+    }
+
+    /// Feature turned off: cancel a pending start, or stop a listening session.
+    private func disableDictationSession() {
+        if dictationStartPending || dictationManager.state == .loading {
+            cancelPendingDictationStart()
+        }
+        if isDictating {
+            let owned = dictationManager.currentSession
+            Task {
+                await self.stopDictation(session: owned)
             }
         }
     }
@@ -563,9 +675,7 @@ public var filteredSpeakers: [SpeakerProfile] {
             dictationManager.preloadModelsInBackground()
         } else {
             hotkeyManager?.deactivate()
-            if isDictating {
-                toggleDictation()
-            }
+            disableDictationSession()
         }
     }
 
@@ -573,7 +683,7 @@ public var filteredSpeakers: [SpeakerProfile] {
         settingsStore.settings.pushToTalk = enabled
         objectWillChange.send()
         // Stop dictation if currently active, so the mode switch is clean
-        if isDictating {
+        if isDictating || dictationStartPending {
             toggleDictation()
         }
         // Re-wire hotkey callbacks for the new mode
@@ -693,6 +803,10 @@ public var filteredSpeakers: [SpeakerProfile] {
 
     private func setupHotkeyManager() {
         let pushToTalk = settingsStore.settings.pushToTalk
+        // Deactivate the old manager first, so its .inactive status is accepted before the generation changes.
+        hotkeyManager?.deactivate()
+        hotkeyGeneration &+= 1
+        let generation = hotkeyGeneration
         hotkeyManager = HotkeyManager(
             id: 1,
             hotkey: settingsStore.settings.dictationHotkey,
@@ -700,7 +814,8 @@ public var filteredSpeakers: [SpeakerProfile] {
                 guard let self else { return }
                 if pushToTalk {
                     self.pushToTalkKeyHeld = true
-                    if !self.isDictating { self.toggleDictation() }
+                    // A press while a start is pending is not a new session. The release guard in runDictationStart decides.
+                    if !self.isDictating && !self.dictationStartPending { self.toggleDictation() }
                 } else {
                     self.toggleDictation()
                 }
@@ -710,51 +825,64 @@ public var filteredSpeakers: [SpeakerProfile] {
                 if pushToTalk {
                     self.pushToTalkKeyHeld = false
                     // Normal case: key released after dictation started.
-                    // The race case (released during load) is handled inside toggleDictation().
+                    // The race case (released during load) is handled in runDictationStart().
                     if self.isDictating { self.toggleDictation() }
                 }
+            },
+            onRegistrationStatusChange: { [weak self] status in
+                guard let self, generation == self.hotkeyGeneration else { return }
+                self.dictationHotkeyStatus = status
             }
         )
         hotkeyManager.activate()
     }
-
     /// Polls verified Accessibility access while dictation is active. If access
     /// cannot be verified, stop and surface the state instead of silently losing text.
-    private func startAXPolling() {
+    private func startAXPolling(session: UInt64) {
         Task { [weak self] in
-            while self?.isDictating == true {
+            // Ends when the session it watches is no longer the manager's current session, so a stale poller
+            // can never stop a newer session.
+            while self?.isDictating == true, self?.dictationManager.currentSession == session {
                 try? await Task.sleep(for: .seconds(2))
-                guard let self, self.isDictating else { break }
+                guard let self, self.isDictating, self.dictationManager.currentSession == session else { break }
                 if !TextInjector.accessibilityAccessVerified(restoringFocusTo: self.dictationFocusTarget) {
                     self.dictationAXLost = true
                     self.isDictating = false
                     if self.settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
-                    await self.dictationManager.stop()
+                    await self.dictationManager.requestStop(session: session)
                     NSLog("Heard: Dictation stopped — Accessibility access could not be verified")
                     break
                 }
             }
         }
     }
-
     public func acknowledgeAXLost() {
         dictationAXLost = false
     }
 
-    /// Unconditionally stops dictation if it is active. Used for externally-triggered stops
-    /// (e.g. meeting start) that must succeed regardless of dictationToggleInFlight.
+    /// Ends dictation for a meeting or manual recording. A pending start is cancelled synchronously, before the
+    /// recording begins. A listening session is stopped and transcribed as usual.
     private func stopDictationIfActive() {
-        guard isDictating else { return }
+        guard isDictating || dictationStartPending || dictationManager.state != .idle else { return }
+        // Only a listening session can be stopped; capture its ID before anything else changes.
+        let owned: UInt64? = dictationManager.state == .listening ? dictationManager.currentSession : nil
+        DebugFileLog.log("stopDictationIfActive — isDictating=\(isDictating) state=\(dictationManager.state.rawValue)")
+        dictationStartID &+= 1
+        dictationStartPending = false
+        dictationStartTask?.cancel()
+        dictationStartTask = nil
+        dictationManager.cancelPendingStart()
         isDictating = false
         dictationError = nil
         if settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
+        dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
         Task {
-            dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
-            await dictationManager.stop()
+            if let owned {
+                await self.dictationManager.requestStop(session: owned)
+            }
             NSLog("Heard: Dictation stopped — meeting recording started")
         }
     }
-
     public func simulateMeeting() {
         meetingDetector.simulateMeetingStart(title: "Sprint Planning")
     }

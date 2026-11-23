@@ -14,6 +14,8 @@ public enum DictationError: Error, LocalizedError {
     case microphoneDenied
     case micStalled
     case englishOptimizedNotDownloaded
+    /// A start was superseded by a stop, a meeting, a model change, or an unload. Not shown to the user.
+    case cancelled
 
     public var errorDescription: String? {
         switch self {
@@ -24,115 +26,169 @@ public enum DictationError: Error, LocalizedError {
         case .micStalled:
             return "The microphone didn't start delivering audio. Try dictating again; if it keeps happening, unplug/replug your input device or restart Heard."
         case .englishOptimizedNotDownloaded:
-            return "Dictation uses English (Optimized) while English Unified is selected. It is still downloading; try again once the Models tab shows it ready."
+            return "Dictation needs English (Optimized), which isn't downloaded yet. Download it from the Models tab, then try again."
+        case .cancelled:
+            return "Dictation was cancelled."
         }
     }
 }
 
+/// Transcript type returned by a dictation engine. Lets callers name it without importing FluidAudio.
+public typealias DictationTranscription = ASRResult
+
+/// Batch speech engine for dictation sessions.
+@MainActor
+public protocol DictationEngine: AnyObject {
+    func transcribe(_ samples: [Float]) async throws -> DictationTranscription
+}
+
+/// Supplies the engine dictation runs for a selected transcription model.
+/// Production waits for model readiness, then loads from cache. Tests inject fakes.
+@MainActor
+public protocol DictationEngineProvider: AnyObject {
+    func loadEngine(for selection: TranscriptionModel) async throws -> DictationEngine
+}
+
+/// Microphone capture for dictation. Samples arrive as 16 kHz mono on the main actor.
+@MainActor
+public protocol DictationMicSource: AnyObject {
+    /// True when microphone access was denied or restricted.
+    var isMicrophoneDenied: Bool { get }
+    /// Starts capture. Throws only after releasing anything it acquired. `deliver` runs until `stop()` or `cancel()`.
+    func start(deviceUID: String?, deliver: @escaping @MainActor ([Float]) -> Void) throws
+    /// Stops capture after delivering audio already buffered.
+    func stop() async
+    /// Stops capture now and discards buffered audio. Safe to call repeatedly.
+    func cancel()
+}
+
 /// Manages burst-mode dictation using FluidAudio's batch `AsrManager` (Parakeet
-/// TDT 0.6B). The user presses a hotkey, speaks, presses again; on stop the
-/// full session audio is transcribed in one pass with optional vocabulary
-/// rescoring, and the result is injected. The TDT model is loaded eagerly on
-/// `start()` so the post-stop transcription begins immediately.
+/// TDT). The user presses a hotkey, speaks, presses again; on stop the full
+/// session audio is transcribed in one pass with optional vocabulary rescoring,
+/// and the result is delivered through `onUtterance`.
 ///
-/// No live/streaming text injection — earlier attempts with a true-streaming
-/// engine produced worse accuracy than batch (decoder loops, hallucinated
-/// repetitions). Batch on stop is faster than the user can read for typical
-/// dictation lengths.
+/// Session model: every start gets a session ID. Anything that can finish late
+/// (model load, first-buffer wait, mic callbacks) checks the ID before it
+/// changes state or captures audio, so a cancelled or superseded start cannot
+/// clobber a newer session or leave the microphone running.
 @MainActor
 public final class DictationManager: ObservableObject {
 
+    /// Authority for dictation phase. `.loading` means preparing: no microphone yet.
     @Published public private(set) var state: DictationState = .idle
 
-    private var asrManager: AsrManager?
-    private var asrModels: AsrModels?
-    private var loadedModelVersion: TranscriptionModel?
-    private let audioConverter = AudioConverter()
-    private var audioBuffer: [Float] = []
+    /// Selected transcription model. Dictation runs `engine`, which is English (Optimized)
+    /// while English Unified is selected. Changing the engine cancels a pending start.
+    public var modelVersion: TranscriptionModel = .unified {
+        didSet {
+            if oldValue.dictationEngine != modelVersion.dictationEngine, state == .loading {
+                cancelPendingStart()
+            }
+        }
+    }
 
-    private var micEngine: AVAudioEngine?
-    private var unloadTask: Task<Void, Never>?
-    private var micBufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
-    private var micForwardTask: Task<Void, Never>?
-    private var bufferCount = 0
-    private var bufferCapWarned = false
+    /// The TDT engine dictation uses for the current selection.
+    private var engine: TranscriptionModel { modelVersion.dictationEngine }
 
-    /// Set true once the first mic buffer for the current capture lands. Used by
-    /// `start()` to confirm the AVAudioEngine tap is actually delivering audio —
-    /// the engine can report `running=true` while the input node silently
-    /// delivers nothing for seconds (a CoreAudio HAL race), which previously
-    /// produced empty transcripts the user couldn't diagnose.
-    private var firstBufferArrived = false
-    /// Wall-clock time the current mic engine started, for first-buffer latency logging.
-    private var micStartedAt: Date?
-    /// Wall-clock time the session entered `.listening`, used to distinguish a
-    /// genuine "no audio captured" failure from an intentional quick tap.
-    private var listeningStartedAt: Date?
-
-    /// Hard cap on buffered audio: 4 hours at 16 kHz (matches the recording
-    /// manager's max duration). A dictation session left running accumulates
-    /// ~230 MB/hour; past the cap further audio is dropped rather than letting
-    /// memory grow without bound.
-    private static let maxBufferSamples = 4 * 3600 * 16_000
-
-    /// Called when transcription completes for a session with the final text.
-    /// Runs on the main actor.
+    /// Called when transcription completes for a session with the final text. Runs on the main actor.
     public var onUtterance: (@MainActor (String) -> Void)?
 
-    /// Called when a stop produced no usable text despite the user having
-    /// listened for a non-trivial duration — i.e. the mic captured silence or
-    /// dropped audio. Lets the UI surface a "no speech captured" hint instead
-    /// of failing silently. Runs on the main actor.
+    /// Called when a stop produced no usable text despite the user having listened for a non-trivial
+    /// duration. Runs on the main actor.
     public var onNoAudioCaptured: (@MainActor () -> Void)?
 
+    /// Called with a user-facing message when a finished session cannot be transcribed. Runs on the main actor.
+    public var onFailure: (@MainActor (String) -> Void)?
+
     /// Custom vocabulary terms for boosting. Applied as CTC rescoring after
-    /// the TDT transcription completes. Requires the CTC 110M model to be
-    /// downloaded (Models tab) — silently skipped otherwise.
+    /// the TDT transcription completes. Silently skipped when the CTC model is missing.
     public var customVocabulary: [String] = []
 
     /// Custom formatting commands for ITN.
     public var formattingCommands: [FormattingCommand] = []
 
-    /// Selected transcription model. Dictation runs `engine`, which is English (Optimized)
-    /// while English Unified is selected. Changing it mid-session reloads models on the next start.
-    public var modelVersion: TranscriptionModel = .unified
+    /// How long to keep the model loaded after dictation stops (seconds).
+    public var modelKeepAliveSeconds: TimeInterval = 120
 
-    /// The TDT model dictation loads for the current selection.
-    private var engine: TranscriptionModel { modelVersion.dictationEngine }
+    /// CoreAudio UID of the input device to capture from. nil = follow the system default input.
+    public var inputDeviceUID: String?
+
+    /// Samples buffered for the current session. Read-only diagnostic.
+    public var bufferedSampleCount: Int { audioBuffer.count }
 
     /// FluidAudio's default location for English (Optimized), the model dictation runs under English Unified.
     nonisolated public static var englishOptimizedCacheDirectory: URL { AsrModels.defaultCacheDirectory(for: .v2) }
 
-    /// True when English (Optimized) loads from `directory`. The single check for dictation's v2 model:
-    /// loading, the download decision, and the Models-tab detail all use it, so they cannot disagree.
+    /// True when English (Optimized) loads from `directory`. The single check for dictation's v2 model.
     nonisolated public static func englishOptimizedCached(at directory: URL = englishOptimizedCacheDirectory) -> Bool {
         AsrModels.modelsExist(at: directory)
     }
 
-    /// How long to keep the model loaded after dictation stops (seconds).
-    public var modelKeepAliveSeconds: TimeInterval = 120
+    private let provider: DictationEngineProvider
+    private let mic: DictationMicSource
 
-    /// CoreAudio UID of the input device to capture from. nil = follow the
-    /// system default input device.
-    public var inputDeviceUID: String?
+    /// Identifies the current start or listen session. Bumped on every transition out of a session.
+    private var sessionID: UInt64 = 0
+    /// Identifies the current engine load. Bumped when a new load starts and when the engine is dropped.
+    private var loadGeneration: UInt64 = 0
+    /// Engine kept for later sessions. Nil until loaded, and after an unload or an engine change.
+    private var asrEngine: DictationEngine?
+    private var loadedEngine: TranscriptionModel?
+    /// The single in-flight engine load. Preload and start share it instead of loading twice.
+    private var inFlightLoad: InFlightLoad?
+    /// Engine captured when the current session started. Stop uses this, so a concurrent engine change cannot affect it.
+    private var sessionEngine: DictationEngine?
 
-    public init() {}
+    private var audioBuffer: [Float] = []
+    private var unloadTask: Task<Void, Never>?
+    private var bufferCount = 0
+    private var bufferCapWarned = false
+    /// Set once the first mic buffer of the current session lands. Used to confirm the tap delivers audio.
+    private var firstBufferArrived = false
+    private var micStartedAt: Date?
+    /// Wall-clock time the session entered `.listening`, used to distinguish a genuine capture failure from a quick tap.
+    private var listeningStartedAt: Date?
+
+    /// Hard cap on buffered audio: 4 hours at 16 kHz (matches the recording manager's max duration).
+    private static let maxBufferSamples = 4 * 3600 * 16_000
+
+    private struct InFlightLoad {
+        let id: UInt64
+        let engine: TranscriptionModel
+        let task: Task<Void, Error>
+    }
+
+    public init(provider: DictationEngineProvider, mic: DictationMicSource) {
+        self.provider = provider
+        self.mic = mic
+    }
+
+    /// Production wiring. `prepareEngine` runs before each engine load: it waits for or starts the
+    /// model download and throws if the model is still unavailable.
+    public convenience init(
+        prepareEngine: @escaping @MainActor (TranscriptionModel) async throws -> Void = { _ in }
+    ) {
+        self.init(
+            provider: FluidDictationEngineProvider(prepare: prepareEngine),
+            mic: AVDictationMicSource()
+        )
+    }
 
     // MARK: - Public API
 
-    public func start() async throws {
-        DebugFileLog.log("DictationManager.start entry — state=\(state.rawValue) asrLoaded=\(asrManager != nil) inputUID=\(inputDeviceUID ?? "default")")
+    /// Starts a session. Throws `DictationError.cancelled` if a stop, meeting, unload, or model change supersedes it.
+    /// Every failure leaves `state == .idle` and the microphone released, so a later start can retry.
+    @discardableResult
+    public func start() async throws -> UInt64 {
+        // An attempt cancelled before it first ran must not touch the model, the mic, or the state.
+        if Task.isCancelled { throw DictationError.cancelled }
+        DebugFileLog.log("DictationManager.start entry — state=\(state.rawValue) asrLoaded=\(asrEngine != nil) inputUID=\(inputDeviceUID ?? "default")")
         guard state == .idle else {
             DebugFileLog.log("DictationManager.start refused — not idle (state=\(state.rawValue))")
             throw DictationError.notIdle(current: state)
         }
-
-        // Surface mic-permission denial up front rather than letting the user
-        // stare at a silently-failing HUD — without mic access, AVAudioEngine
-        // starts but no tap callbacks fire.
-        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-        DebugFileLog.log("DictationManager.start mic auth status=\(micStatus.rawValue)")
-        if micStatus == .denied || micStatus == .restricted {
+        // Checked before any state change: a denied microphone must not reach the loading path.
+        if mic.isMicrophoneDenied {
             DebugFileLog.log("DictationManager.start throwing microphoneDenied")
             throw DictationError.microphoneDenied
         }
@@ -140,15 +196,16 @@ public final class DictationManager: ObservableObject {
         unloadTask?.cancel()
         unloadTask = nil
 
-        state = .loading
+        let session = beginSession()
+        var listening = false
+        defer {
+            if !listening { rollback(session) }
+        }
 
-        // Load (or reuse) the TDT model eagerly so the post-stop transcription
-        // can start immediately instead of paying a cold-start cost while the
-        // user waits for text to appear.
-        try await ensureAsrManagerLoaded()
-        DebugFileLog.log("DictationManager.start ASR loaded ok")
+        let loaded = try await ensureEngineLoaded()
+        try checkCurrent(session)
 
-        // Apply custom formatting commands
+        // Custom formatting rules are applied only for sessions that get this far.
         TextNormalizer.shared.clearRules()
         for cmd in formattingCommands {
             TextNormalizer.shared.addRule(spoken: cmd.spoken, written: cmd.written)
@@ -156,46 +213,59 @@ public final class DictationManager: ObservableObject {
 
         audioBuffer.removeAll(keepingCapacity: true)
         bufferCapWarned = false
+        try startMicCapture(session: session)
+        try checkCurrent(session)
 
-        try startMicCapture()
-
-        // Confirm the tap is actually delivering audio. On the happy path the
-        // first buffer lands ~100 ms after start; an engine that reports running
-        // but stalls can take many seconds, during which the user dictates into a
-        // dead mic. If nothing arrives in time, tear down and rebuild once — that
-        // clears most transient HAL races — and fail loudly if it still stalls.
-        if await !waitForFirstBuffer(timeout: 0.75) {
+        // Confirm the tap delivers audio. A stalled tap is rebuilt once, then reported.
+        let delivering = await waitForFirstBuffer(session: session, timeout: 0.75)
+        try checkCurrent(session)
+        if !delivering {
             DebugFileLog.log("DictationManager.start mic tap stalled (<750ms no audio) — rebuilding engine once")
-            await drainAndStopMicCapture()
+            mic.cancel()
             audioBuffer.removeAll(keepingCapacity: true)
             bufferCapWarned = false
-            try startMicCapture()
-            if await !waitForFirstBuffer(timeout: 1.0) {
+            try startMicCapture(session: session)
+            try checkCurrent(session)
+            let recovered = await waitForFirstBuffer(session: session, timeout: 1.0)
+            try checkCurrent(session)
+            guard recovered else {
                 DebugFileLog.log("DictationManager.start mic tap still stalled after rebuild — throwing micStalled")
-                await drainAndStopMicCapture()
-                state = .idle
-                scheduleModelUnload()
                 throw DictationError.micStalled
             }
             DebugFileLog.log("DictationManager.start mic tap recovered after rebuild")
         }
 
-        state = .listening
+        sessionEngine = loaded
         listeningStartedAt = Date()
+        state = .listening
+        listening = true
         DebugFileLog.log("DictationManager.start success — state=listening")
+        return session
     }
 
-    /// Polls for the first mic buffer up to `timeout` seconds. Returns true once
-    /// audio is flowing, false if the tap never delivered. `appendSamples`
-    /// (main-actor) sets `firstBufferArrived`; the `Task.sleep` yields so it can.
-    private func waitForFirstBuffer(timeout: TimeInterval) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !firstBufferArrived && Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(25))
+    /// Cancels a start that is still loading or waiting for audio. Synchronous: the microphone is
+    /// released before this returns, and nothing from the cancelled start is delivered afterwards.
+    /// Does nothing in other states.
+    public func cancelPendingStart() {
+        guard state == .loading else { return }
+        DebugFileLog.log("DictationManager.cancelPendingStart — state=loading")
+        endSessionResources()
+        state = .idle
+        scheduleModelUnload()
+    }
+
+    /// Stops the listening session `session` only if it is still the current one. A superseded start uses this
+    /// so it can never stop a newer session.
+    public func requestStop(session: UInt64) async {
+        guard state == .listening, session == sessionID else {
+            DebugFileLog.log("DictationManager.requestStop(session:) ignored — stale session \(session)")
+            return
         }
-        return firstBufferArrived
+        await stop()
     }
 
+    /// The session ID of the current listening session. Read before a stop is scheduled, so the stop targets that session only.
+    public var currentSession: UInt64 { sessionID }
     public func stop() async {
         DebugFileLog.log("DictationManager.stop entry — state=\(state.rawValue) bufferCount=\(bufferCount) sampleCount=\(audioBuffer.count)")
         guard state == .listening else {
@@ -203,16 +273,10 @@ public final class DictationManager: ObservableObject {
             return
         }
 
-        // How long the user actually held the session open. Used to tell a
-        // genuine capture failure (held a while, got nothing) apart from an
-        // intentional quick tap (no feedback warranted).
         let listenedFor = listeningStartedAt.map { Date().timeIntervalSince($0) } ?? 0
         listeningStartedAt = nil
 
-        // Drain mic — see drainAndStopMicCapture for why awaiting matters.
-        await drainAndStopMicCapture()
-        DebugFileLog.log("DictationManager.stop drain complete — sampleCount=\(audioBuffer.count)")
-
+        // Set before the drain await so a second stop cannot run concurrently.
         state = .transcribing
         defer {
             state = .idle
@@ -220,8 +284,13 @@ public final class DictationManager: ObservableObject {
             DebugFileLog.log("DictationManager.stop exit — back to idle")
         }
 
-        // Snapshot and clear the buffer so a fast next-start doesn't see
-        // stale audio if the user re-triggers before we finish processing.
+        // Flush buffered audio into the sample buffer, then end this session so late callbacks are dropped.
+        await mic.stop()
+        DebugFileLog.log("DictationManager.stop drain complete — sampleCount=\(audioBuffer.count)")
+        sessionID &+= 1
+
+        let transcriber = sessionEngine
+        sessionEngine = nil
         let samples = audioBuffer
         audioBuffer.removeAll(keepingCapacity: true)
 
@@ -234,17 +303,15 @@ public final class DictationManager: ObservableObject {
             return
         }
 
-        guard let mgr = asrManager else {
-            DebugFileLog.log("DictationManager.stop no asrManager — skipping transcription")
+        guard let transcriber else {
+            DebugFileLog.log("DictationManager.stop no engine for session — reporting failure")
+            onFailure?("Dictation stopped before its speech model was ready. Try again.")
             return
         }
 
         do {
-            var decoderState = TdtDecoderState.make()
             DebugFileLog.log("DictationManager.stop calling transcribe — samples=\(samples.count)")
-            let result = try await mgr.transcribe(
-                samples, decoderState: &decoderState, language: .english
-            )
+            let result = try await transcriber.transcribe(samples)
             DebugFileLog.log("DictationManager.stop transcribe returned — rawLen=\(result.text.count)")
             let boosted = await rescoreWithVocabulary(result: result, samples: samples)
             let normalized = TextNormalizer.shared.normalize(result: boosted).text
@@ -260,12 +327,12 @@ public final class DictationManager: ObservableObject {
         } catch {
             NSLog("Heard: Dictation transcription failed: %@", error.localizedDescription)
             DebugFileLog.log("DictationManager.stop transcribe threw: \(error)")
+            onFailure?("Dictation couldn't transcribe that. \(error.localizedDescription)")
         }
     }
 
     /// Notifies the UI of a no-speech result, but only when the user held the
-    /// session long enough that they clearly expected audio. A short tap that
-    /// yields nothing is normal (mis-press) and shouldn't raise an error.
+    /// session long enough that they clearly expected audio.
     private func notifyIfAudioWasExpected(listenedFor: TimeInterval) {
         guard listenedFor >= 1.5 else { return }
         DebugFileLog.log("DictationManager firing onNoAudioCaptured — listenedFor=\(String(format: "%.1f", listenedFor))s")
@@ -282,15 +349,14 @@ public final class DictationManager: ObservableObject {
 
     // MARK: - Model loading
 
-    /// Kick off a background load of the TDT model so the first hotkey press
-    /// doesn't pay a multi-second cold-start delay before the mic starts.
-    /// Idempotent — repeated calls while already loaded or loading are no-ops.
+    /// Starts loading the engine in the background so the first press doesn't pay the cold-start cost.
+    /// Shares the in-flight load with a concurrent start. No-op when the engine is already loaded.
     public func preloadModelsInBackground() {
-        guard asrManager == nil || loadedModelVersion != engine else { return }
+        guard asrEngine == nil || loadedEngine != engine else { return }
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.ensureAsrManagerLoaded()
+                _ = try await self.ensureEngineLoaded()
                 NSLog("Heard: Dictation TDT model preloaded")
             } catch {
                 NSLog("Heard: Dictation TDT preload failed: %@", error.localizedDescription)
@@ -298,40 +364,59 @@ public final class DictationManager: ObservableObject {
         }
     }
 
-    private func ensureAsrManagerLoaded() async throws {
-        if asrManager != nil, loadedModelVersion == engine { return }
-
-        // Engine changed (or first load) — drop the old manager and reload.
-        asrManager = nil
-        asrModels = nil
-        loadedModelVersion = nil
-
-        // Unified selected: dictation's English (Optimized) files are fetched by ModelDownloadManager
-        // when dictation is enabled. Don't start a parallel download from here.
-        if modelVersion.usesUnifiedEngine, !DictationManager.englishOptimizedCached() {
-            throw DictationError.englishOptimizedNotDownloaded
+    /// Returns the engine for the current selection, loading it if needed.
+    /// Throws `DictationError.cancelled` if the engine was dropped or changed while loading.
+    private func ensureEngineLoaded() async throws -> DictationEngine {
+        let target = engine
+        if let loaded = asrEngine, loadedEngine == target {
+            return loaded
         }
+        if let load = inFlightLoad, load.engine == target {
+            try await load.task.value
+        } else {
+            try await startEngineLoad(for: target)
+        }
+        guard let loaded = asrEngine, loadedEngine == target else {
+            throw DictationError.cancelled
+        }
+        return loaded
+    }
 
-        let fluidVersion: AsrModelVersion = engine == .v3 ? .v3 : .v2
-        let models = try await AsrModels.loadFromCache(version: fluidVersion)
-        let asrConfig = ASRConfig(
-            tdtConfig: TdtConfig(blankId: engine.blankId),
-            encoderHiddenSize: fluidVersion.encoderHiddenSize
-        )
-        let manager = AsrManager(config: asrConfig)
-        try await manager.loadModels(models)
+    private func startEngineLoad(for target: TranscriptionModel) async throws {
+        dropLoadedEngine()
+        let id = loadGeneration
+        let selection = modelVersion
+        let task = Task<Void, Error> { [weak self] in
+            guard let self else { return }
+            let loaded: DictationEngine
+            do {
+                loaded = try await self.provider.loadEngine(for: selection)
+            } catch is CancellationError {
+                throw DictationError.cancelled
+            }
+            // Install only if no unload or new load happened meanwhile, and the selection still wants this engine.
+            guard self.loadGeneration == id, self.engine == target else { return }
+            self.asrEngine = loaded
+            self.loadedEngine = target
+        }
+        inFlightLoad = InFlightLoad(id: id, engine: target, task: task)
+        defer {
+            if inFlightLoad?.id == id { inFlightLoad = nil }
+        }
+        try await task.value
+    }
 
-        asrModels = models
-        asrManager = manager
-        loadedModelVersion = engine
+    /// Drops the loaded engine. Bumps the load generation so an in-flight load cannot install itself afterwards.
+    private func dropLoadedEngine() {
+        loadGeneration &+= 1
+        asrEngine = nil
+        loadedEngine = nil
     }
 
     // MARK: - Vocabulary rescoring
 
-    /// Mirrors the pipeline path in `Services.swift`: run CTC keyword spotting
-    /// over the same audio, then ask `VocabularyRescorer` to rewrite
-    /// low-confidence words against the user's vocabulary. Skipped silently
-    /// when no terms are set or the CTC 110M model isn't downloaded.
+    /// Runs CTC keyword spotting over the same audio, then rewrites low-confidence words against the
+    /// user's vocabulary. Skipped silently when no terms are set or the CTC model is not downloaded.
     private func rescoreWithVocabulary(result: ASRResult, samples: [Float]) async -> ASRResult {
         guard !customVocabulary.isEmpty else { return result }
 
@@ -382,66 +467,60 @@ public final class DictationManager: ObservableObject {
         }
     }
 
-    // MARK: - Mic Capture
+    // MARK: - Session lifecycle
 
-    private func startMicCapture() throws {
-        DebugFileLog.log("startMicCapture entry — requestedUID=\(inputDeviceUID ?? "default")")
-        let engine = AVAudioEngine()
-        let applied = AudioInputDevices.apply(uid: inputDeviceUID, to: engine)
-        let inputNode = engine.inputNode
-        let hwFormat = inputNode.outputFormat(forBus: 0)
+    /// Starts a new session. Synchronous, so the state change happens before the first suspension.
+    private func beginSession() -> UInt64 {
+        sessionID &+= 1
+        state = .loading
+        return sessionID
+    }
 
-        NSLog(
-            "Heard: Dictation mic format — sampleRate=%.0f channels=%u device=%@",
-            hwFormat.sampleRate,
-            hwFormat.channelCount,
-            applied ? (inputDeviceUID ?? "default") : "default"
-        )
-        DebugFileLog.log("startMicCapture mic format — sr=\(hwFormat.sampleRate) ch=\(hwFormat.channelCount) deviceApplied=\(applied)")
+    private func checkCurrent(_ session: UInt64) throws {
+        guard session == sessionID else { throw DictationError.cancelled }
+    }
 
-        // Buffers from the tap callback are only valid for the duration of the
-        // callback (AVAudioEngine reuses the underlying memory), so we
-        // deep-copy synchronously before yielding to a consumer task.
-        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream(
-            bufferingPolicy: .bufferingNewest(64)
-        )
-        micBufferContinuation = continuation
+    /// Unwinds a start that failed or was superseded. Does nothing if a newer session owns the state.
+    /// The loaded engine is kept, so a retry does not reload it.
+    private func rollback(_ session: UInt64) {
+        guard session == sessionID, state == .loading else { return }
+        endSessionResources()
+        state = .idle
+        scheduleModelUnload()
+    }
+
+    /// Releases the microphone and discards session audio. Bumps the session so late callbacks are dropped.
+    private func endSessionResources() {
+        sessionID &+= 1
+        mic.cancel()
+        audioBuffer.removeAll(keepingCapacity: true)
+        listeningStartedAt = nil
+        sessionEngine = nil
+    }
+
+    // MARK: - Mic capture
+
+    private func startMicCapture(session: UInt64) throws {
         bufferCount = 0
         firstBufferArrived = false
         micStartedAt = Date()
-
-        let converter = audioConverter
-        micForwardTask = Task { [weak self] in
-            for await buffer in stream {
-                guard !Task.isCancelled else { break }
-                do {
-                    let samples = try converter.resampleBuffer(buffer)
-                    if let self {
-                        self.appendSamples(samples)
-                    }
-                } catch {
-                    NSLog("Heard: Dictation resample failed: %@", error.localizedDescription)
-                }
-            }
+        try mic.start(deviceUID: inputDeviceUID) { [weak self] samples in
+            self?.appendSamples(samples, session: session)
         }
-
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { buffer, _ in
-            guard let copy = buffer.heardDeepCopy() else { return }
-            continuation.yield(copy)
-        }
-
-        engine.prepare()
-        do {
-            try engine.start()
-            DebugFileLog.log("startMicCapture engine.start ok — running=\(engine.isRunning)")
-        } catch {
-            DebugFileLog.log("startMicCapture engine.start threw: \(error)")
-            throw error
-        }
-        micEngine = engine
     }
 
-    private func appendSamples(_ samples: [Float]) {
+    /// Polls for the first mic buffer of `session`. Returns early when the session is no longer current.
+    private func waitForFirstBuffer(session: UInt64, timeout: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while session == sessionID && !firstBufferArrived && Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        return session == sessionID && firstBufferArrived
+    }
+
+    private func appendSamples(_ samples: [Float], session: UInt64) {
+        // A late buffer from a cancelled or finished session must not reach the current one.
+        guard session == sessionID else { return }
         guard audioBuffer.count < Self.maxBufferSamples else {
             if !bufferCapWarned {
                 bufferCapWarned = true
@@ -462,23 +541,10 @@ public final class DictationManager: ObservableObject {
         }
     }
 
-    /// Graceful shutdown that lets buffered mic audio finish reaching the
-    /// in-memory sample buffer before returning. Without this drain, anything
-    /// still in the AsyncStream when stop is pressed gets dropped and the
-    /// tail of the dictation is never transcribed.
-    private func drainAndStopMicCapture() async {
-        micEngine?.inputNode.removeTap(onBus: 0)
-        micEngine?.stop()
-        micEngine = nil
-        micBufferContinuation?.finish()
-        micBufferContinuation = nil
-        await micForwardTask?.value
-        micForwardTask = nil
-    }
-
     // MARK: - Model lifecycle
 
     private func scheduleModelUnload() {
+        unloadTask?.cancel()
         unloadTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(self?.modelKeepAliveSeconds ?? 120))
             guard let self, !Task.isCancelled else { return }
@@ -486,48 +552,13 @@ public final class DictationManager: ObservableObject {
         }
     }
 
+    /// Drops the cached engine. Ignored while a session or load is active, so it cannot pull the engine out from under a start.
     public func unloadModels() {
+        guard state == .idle else { return }
         unloadTask?.cancel()
         unloadTask = nil
-        asrManager = nil
-        asrModels = nil
-        loadedModelVersion = nil
+        dropLoadedEngine()
+        inFlightLoad = nil
         NSLog("Heard: Dictation models unloaded")
-    }
-}
-
-// MARK: - Buffer copy
-
-private extension AVAudioPCMBuffer {
-    /// Allocates a standalone copy of the buffer. The buffer handed to an
-    /// AVAudioEngine tap callback only owns its sample memory for the duration
-    /// of the callback; copying lets us hand it off to a consumer task safely.
-    func heardDeepCopy() -> AVAudioPCMBuffer? {
-        guard let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCapacity) else {
-            return nil
-        }
-        copy.frameLength = frameLength
-        let frames = Int(frameLength)
-        let channels = Int(format.channelCount)
-
-        if let src = floatChannelData, let dst = copy.floatChannelData {
-            for ch in 0..<channels {
-                memcpy(dst[ch], src[ch], frames * MemoryLayout<Float>.size)
-            }
-            return copy
-        }
-        if let src = int16ChannelData, let dst = copy.int16ChannelData {
-            for ch in 0..<channels {
-                memcpy(dst[ch], src[ch], frames * MemoryLayout<Int16>.size)
-            }
-            return copy
-        }
-        if let src = int32ChannelData, let dst = copy.int32ChannelData {
-            for ch in 0..<channels {
-                memcpy(dst[ch], src[ch], frames * MemoryLayout<Int32>.size)
-            }
-            return copy
-        }
-        return nil
     }
 }
