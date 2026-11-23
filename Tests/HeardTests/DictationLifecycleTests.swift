@@ -248,7 +248,7 @@ private func lifecycleThrows(_ body: () async throws -> Void) async -> Bool {
         let dm = DictationManager(provider: provider, mic: mic)
         let starting = Task { try await dm.start() }
         try await lifecycleWait("load requested") { provider.requests.count == 1 }
-        await dm.requestStop()
+        dm.cancelPendingStart()
         try expectEqual(dm.state, .idle)
         provider.completeOldest(.success(LifecycleEngine(name: "late")))
         try await lifecycleExpectCancelled { try await starting.value }
@@ -301,7 +301,11 @@ private func lifecycleThrows(_ body: () async throws -> Void) async -> Bool {
         for _ in 0..<20 {
             let attempt = Task { try await dm.start() }
             try await lifecycleWait("start settled") { dm.state != .idle }
-            await dm.requestStop()
+            if dm.state == .listening {
+                await dm.stop()
+            } else {
+                dm.cancelPendingStart()
+            }
             _ = try? await attempt.value
         }
         try expectEqual(dm.state, .idle)

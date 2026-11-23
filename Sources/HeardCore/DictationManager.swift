@@ -254,18 +254,6 @@ public final class DictationManager: ObservableObject {
         scheduleModelUnload()
     }
 
-    /// Ends dictation in whatever phase it is: cancels a pending start, or stops and transcribes a listening session.
-    public func requestStop() async {
-        switch state {
-        case .loading:
-            cancelPendingStart()
-        case .listening:
-            await stop()
-        case .idle, .transcribing:
-            return
-        }
-    }
-
     /// Stops the listening session `session` only if it is still the current one. A superseded start uses this
     /// so it can never stop a newer session.
     public func requestStop(session: UInt64) async {
