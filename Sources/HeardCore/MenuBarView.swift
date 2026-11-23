@@ -33,6 +33,9 @@ public struct MenuBarView: View {
             if let errorMessage = model.errorMessage {
                 errorBanner(errorMessage)
             }
+            if !model.recoveryWarning.messages.isEmpty {
+                recoveryBanner(model.recoveryWarning.messages)
+            }
             if model.dictationAXLost {
                 axLostBanner
             }
@@ -271,6 +274,28 @@ public struct MenuBarView: View {
                 .buttonStyle(.plain)
                 .font(HeardFont.mono(11, .medium))
                 .foregroundStyle(HeardTheme.Terminal.accent)
+        }
+        .padding(10)
+        .background(Rectangle().fill(HeardTheme.Terminal.badSoft))
+        .overlay(Rectangle().stroke(HeardTheme.Terminal.bad.opacity(0.35), lineWidth: HeardTheme.Stroke.hairline))
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
+    }
+
+    /// Not dismissible: it stays until the journal or queue problem is resolved.
+    private func recoveryBanner(_ lines: [String]) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(HeardTheme.Terminal.bad)
+                .font(HeardFont.caption)
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(lines, id: \.self) { line in
+                    Text(line)
+                        .font(HeardFont.caption)
+                        .foregroundStyle(HeardTheme.Terminal.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
         .padding(10)
         .background(Rectangle().fill(HeardTheme.Terminal.badSoft))

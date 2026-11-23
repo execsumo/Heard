@@ -39,6 +39,14 @@ public enum AppPaths {
         FileManager.default.heardAppSupportDirectory.appendingPathComponent("naming_candidates.json")
     }
 
+    public static var recordingsDirectory: URL {
+        FileManager.default.heardAppSupportDirectory.appendingPathComponent("recordings", isDirectory: true)
+    }
+
+    public static var activeRecordingsDirectory: URL {
+        FileManager.default.heardAppSupportDirectory.appendingPathComponent("active_recordings", isDirectory: true)
+    }
+
     public static var transcriptsFile: URL {
         FileManager.default.heardAppSupportDirectory.appendingPathComponent("transcripts.json")
     }
@@ -491,10 +499,14 @@ public final class PipelineQueueStore: ObservableObject {
     private let store = JSONStore()
     private let url: URL
     public var onPersistenceFailure: ((Error) -> Void)?
+    /// The file was unreadable and moved aside, so its jobs are missing from `jobs`.
+    public let movedAsideOnLoad: Bool
 
     public init(url: URL = AppPaths.queueFile) {
         self.url = url
+        let existed = FileManager.default.fileExists(atPath: url.path)
         jobs = store.load([PipelineJob].self, from: url, defaultValue: [])
+        movedAsideOnLoad = existed && !FileManager.default.fileExists(atPath: url.path)
     }
 
     @discardableResult

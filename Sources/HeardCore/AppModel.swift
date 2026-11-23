@@ -48,6 +48,11 @@ public final class AppModel: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
     private var stageWatchdogTimer: Timer?
+    private var terminationObserver: NSObjectProtocol?
+    /// Journal and queue problems that stay visible until resolved; starts never clear them.
+    @Published public private(set) var recoveryWarning = RecoveryWarning()
+    /// Handoffs whose journal entry could not be written this launch; only a relaunch queues them.
+    private var unjournaledRecordingCount = 0
     // 90 minutes is generous for any realistic workload (4-hour meeting transcription
     // on slow hardware). A genuine FluidAudio hang shows up well within this window.
     private static let maxStageSeconds: TimeInterval = 90 * 60
@@ -66,7 +71,7 @@ public final class AppModel: ObservableObject {
         let queueStore = PipelineQueueStore()
         let modelCatalog = ModelCatalog()
         let permissionCenter = PermissionCenter()
-        let recordingManager = RecordingManager()
+        let recordingManager = RecordingManager(journal: ActiveRecordingStore())
 
         let downloadManager = ModelDownloadManager(catalog: modelCatalog)
         let dictationManager = DictationManager()
@@ -76,6 +81,11 @@ public final class AppModel: ObservableObject {
         let savedVersion = settingsStore.settings.transcriptionModel
         downloadManager.transcriptionModel = savedVersion
         dictationManager.modelVersion = savedVersion
+        downloadManager.dictationEnabled = settingsStore.settings.dictationEnabled
+        downloadManager.onDictationEngineReady = { [weak dictationManager] in
+            dictationManager?.preloadModelsInBackground()
+        }
+        downloadManager.refreshStatuses()
 
         // Propagate the user's selected mic to both managers
         let selectedMicUID = settingsStore.settings.selectedInputDeviceUID
@@ -94,6 +104,8 @@ public final class AppModel: ObservableObject {
             updateChecker: updateChecker
         )
 
+        model.observeTermination()
+
         // Archive speaker profiles inactive beyond the configured retention window
         speakerStore.archiveInactiveSpeakers(retentionDays: settingsStore.settings.speakerRetentionDays)
 
@@ -106,13 +118,35 @@ public final class AppModel: ObservableObject {
         // the stale-recordings sweep so their clip files are preserved by it.
         let pendingCandidates = model.namingCandidateStore.load()
 
-        // Clean stale recordings (>48h), preserving files referenced by active jobs
-        // and by pending naming candidates.
+        // Queue recordings that were never stopped (quit, crash, failed handoff), then WAV pairs
+        // that nothing references. Both run before the cleanup below, which keeps what is left.
+        let journal = recordingManager.journal
+        for outcome in journal.recover(into: queueStore) {
+            NSLog("Heard: active recording recovery: \(outcome)")
+        }
+        let orphanScan = journal.adoptOrphans(
+            in: AppPaths.recordingsDirectory,
+            referenced: audioPathsInUse(queueStore: queueStore, journal: journal),
+            into: queueStore
+        )
+        if !orphanScan.adopted.isEmpty {
+            NSLog("Heard: queued \(orphanScan.adopted.count) orphaned recording(s) found on disk")
+        }
+        model.unjournaledRecordingCount = orphanScan.unjournaled.count
+        model.refreshUnqueuedRecordings()
+        if queueStore.movedAsideOnLoad {
+            model.recoveryWarning.recordQueueMovedAside()
+        }
+
+        // Clean stale recordings (>48h), preserving files referenced by queued jobs, journal
+        // entries, unjournaled orphans, and pending naming candidates.
         let activeJobPaths = Set(
             queueStore.jobs
                 .filter { $0.stage != .complete }
                 .flatMap { [$0.appAudioPath, $0.micAudioPath] }
         ).union(pendingCandidates.flatMap(\.audioClipURLs))
+            .union(journal.retainedAudioPaths)
+            .union(orphanScan.unjournaled.flatMap { $0.audioPaths })
         TempFileCleanup.cleanStaleRecordings(activeJobPaths: activeJobPaths)
 
         // Destroy orphaned private aggregate devices left behind by previous crashes
@@ -176,6 +210,7 @@ public final class AppModel: ObservableObject {
             // multi-second cold-start cost before the mic starts capturing —
             // otherwise the user speaks during the load window and loses the
             // first few words.
+            downloadManager.downloadDictationEngineIfNeeded()
             dictationManager.preloadModelsInBackground()
         }
 
@@ -214,6 +249,7 @@ public final class AppModel: ObservableObject {
         queueStore.onPersistenceFailure = { [weak self] error in
             self?.errorMessage = "Could not save the processing queue: \(error.localizedDescription)"
             self?.phase = .error
+            self?.recoveryWarning.recordQueueSave(succeeded: false)
         }
 
         self.pipelineProcessor = PipelineProcessor(
@@ -243,7 +279,7 @@ public final class AppModel: ObservableObject {
 
         self.recordingManager.onMaxDurationReached = { [weak self] session in
             guard let self else { return }
-            if self.pipelineProcessor.enqueueFinishedRecording(session, endedAt: Date()) {
+            if self.enqueueFinished(session, endedAt: Date()) {
                 self.phase = .processing
             }
         }
@@ -256,6 +292,10 @@ public final class AppModel: ObservableObject {
         self.recordingManager.onCaptureRestartFailed = { [weak self] in
             self?.phase = .error
             self?.errorMessage = "Recording stopped after a segment split and could not restart."
+        }
+
+        recordingManager.onJournalWrite = { [weak self] succeeded in
+            self?.recoveryWarning.recordActiveJournalWrite(succeeded: succeeded)
         }
 
         // Forward child store changes so SwiftUI views observing `AppModel`
@@ -319,7 +359,7 @@ public final class AppModel: ObservableObject {
                 self.recordingManager.updateRosterNames(snapshot.rosterNames)
                 self.recordingManager.updateTitle(snapshot.title)
                 guard let session = self.recordingManager.stopRecording() else { return }
-                if self.pipelineProcessor.enqueueFinishedRecording(snapshot.applyingMetadata(to: session), endedAt: Date()) {
+                if self.enqueueFinished(snapshot.applyingMetadata(to: session), endedAt: Date()) {
                     self.phase = .processing
                 }
             },
@@ -340,6 +380,56 @@ public final class AppModel: ObservableObject {
                 self?.checkForStuckPipelineStage()
             }
         }
+    }
+
+    /// Queues a finished session and drops its journal entry. The entry goes only after the
+    /// queue accepted the job, so a failed write leaves the audio recoverable on relaunch.
+    private func enqueueFinished(_ session: RecordingSession, endedAt: Date, startPipeline: Bool = true) -> Bool {
+        recoveryWarning.activeRecordingEnded()
+        let journal = recordingManager.journal
+        guard journal.enqueue(PipelineJob(finishing: session, endedAt: endedAt), into: queueStore) else {
+            // Journal writes may have failed for this session; re-journal it so relaunch finds the audio.
+            if (try? journal.save(ActiveRecordingEntry(session: session, updatedAt: endedAt))) == nil {
+                unjournaledRecordingCount += 1
+            }
+            refreshUnqueuedRecordings()
+            return false
+        }
+        recoveryWarning.recordQueueSave(succeeded: true)
+        // The queue works again, so earlier journaled recordings get another attempt.
+        for outcome in journal.recover(into: queueStore, excluding: recordingManager.activeSession?.id) {
+            NSLog("Heard: active recording recovery: \(outcome)")
+        }
+        refreshUnqueuedRecordings()
+        if startPipeline { pipelineProcessor.runNextIfNeeded() }
+        return true
+    }
+
+    /// Journaled recordings the queue has not taken, plus handoffs this launch could not journal.
+    private func refreshUnqueuedRecordings() {
+        let activeID = recordingManager.activeSession?.id
+        let journaled = recordingManager.journal.pendingEntries().filter { $0.id != activeID }.count
+        recoveryWarning.setUnqueuedRecordings(journaled + unjournaledRecordingCount)
+    }
+
+    /// Audio that any queued job (at any stage) or journal entry still refers to.
+    private static func audioPathsInUse(queueStore: PipelineQueueStore, journal: ActiveRecordingStore) -> Set<URL> {
+        Set(queueStore.jobs.flatMap { [$0.appAudioPath, $0.micAudioPath] }).union(journal.retainedAudioPaths)
+    }
+
+    /// Orderly quit: queue the active recording without starting the pipeline, so the job is
+    /// persisted before the process exits.
+    func observeTermination() {
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.finalizeActiveRecordingForTermination() }
+        }
+    }
+
+    private func finalizeActiveRecordingForTermination() {
+        guard let session = recordingManager.stopRecording() else { return }
+        _ = enqueueFinished(session, endedAt: Date(), startPipeline: false)
     }
 
     private func checkForStuckPipelineStage() {
@@ -462,6 +552,9 @@ public var filteredSpeakers: [SpeakerProfile] {
 
     public func setDictationEnabled(_ enabled: Bool) {
         settingsStore.settings.dictationEnabled = enabled
+        downloadManager.dictationEnabled = enabled
+        downloadManager.downloadDictationEngineIfNeeded()
+        downloadManager.refreshStatuses()
         objectWillChange.send()
         if enabled {
             // Prompt for Accessibility permission (needed for text injection)
@@ -582,6 +675,7 @@ public var filteredSpeakers: [SpeakerProfile] {
         // Propagate to managers so the next start/download uses the right version
         dictationManager.modelVersion = version
         downloadManager.transcriptionModel = version
+        downloadManager.downloadDictationEngineIfNeeded()
         downloadManager.refreshStatuses()
         objectWillChange.send()
     }
@@ -685,7 +779,7 @@ public var filteredSpeakers: [SpeakerProfile] {
 
     public func stopManualRecording() {
         guard let session = recordingManager.stopRecording() else { return }
-        if pipelineProcessor.enqueueFinishedRecording(session, endedAt: Date()) {
+        if enqueueFinished(session, endedAt: Date()) {
             phase = .processing
         }
     }
