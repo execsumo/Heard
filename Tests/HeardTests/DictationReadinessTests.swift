@@ -30,6 +30,12 @@ private final class FakeDictationEngines {
         }
     }
 
+    /// Completes the oldest pending load without marking the engine cached: the load returns, but the files are incomplete.
+    func completeWithoutCache() {
+        guard !pending.isEmpty else { return }
+        pending.removeFirst().continuation.resume()
+    }
+
     /// Completes the oldest pending load. Success marks the engine cached, as a real download would.
     func complete(success: Bool) {
         guard !pending.isEmpty else { return }
@@ -217,5 +223,23 @@ func runDictationReadinessTests() async {
         fake.complete(success: true)
         try expect(await waitUntil { manager.dictationReadiness == .ready }, "v3 should become ready")
         try expectEqual(fake.calls, [.v3])
+    }
+
+    await testAsync("load returns but cache stays incomplete: failed(notReady), prepare throws, no ready callback") {
+        let fake = FakeDictationEngines()
+        let ready = Counter()
+        let manager = makeManager(fake) { ready.value += 1 }
+        manager.transcriptionModel = .unified
+        manager.dictationEnabled = true
+        let prepare = Task { try await manager.prepareDictationEngine() }
+        try expect(await waitUntil { fake.pendingCount == 1 }, "the v2 load should start")
+        fake.completeWithoutCache()
+        var thrown: Error?
+        do { try await prepare.value } catch { thrown = error }
+        guard let readiness = thrown as? DictationReadinessError, readiness == .notReady else {
+            throw TestFailure("prepare must throw DictationReadinessError.notReady, got \(String(describing: thrown))")
+        }
+        try expectEqual(manager.dictationReadiness, .failed(DictationReadinessError.notReady.localizedDescription))
+        try expectEqual(ready.value, 0)
     }
 }

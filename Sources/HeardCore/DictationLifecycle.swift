@@ -14,10 +14,12 @@ public func dictationToggleAction(
     isDictating: Bool,
     startPending: Bool,
     stopInFlight: Bool,
+    managerTranscribing: Bool,
     meetingActive: Bool
 ) -> DictationToggleAction {
     if startPending { return .cancelPendingStart }
-    if stopInFlight { return .ignore }
+    // A stop still transcribing is never interrupted by a press, whichever path started it.
+    if stopInFlight || managerTranscribing { return .ignore }
     if isDictating { return .stop }
     if meetingActive { return .ignore }
     return .start

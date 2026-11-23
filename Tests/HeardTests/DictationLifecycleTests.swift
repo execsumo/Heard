@@ -119,40 +119,51 @@ private func lifecycleThrows(_ body: () async throws -> Void) async -> Bool {
 
     test("a press while a start is pending cancels it, with or without a meeting") {
         try expectEqual(
-            dictationToggleAction(isDictating: false, startPending: true, stopInFlight: false, meetingActive: false),
+            dictationToggleAction(isDictating: false, startPending: true, stopInFlight: false, managerTranscribing: false, meetingActive: false),
             .cancelPendingStart
         )
         try expectEqual(
-            dictationToggleAction(isDictating: false, startPending: true, stopInFlight: false, meetingActive: true),
+            dictationToggleAction(isDictating: false, startPending: true, stopInFlight: false, managerTranscribing: false, meetingActive: true),
             .cancelPendingStart
         )
     }
 
     test("a press while listening stops the session") {
         try expectEqual(
-            dictationToggleAction(isDictating: true, startPending: false, stopInFlight: false, meetingActive: false),
+            dictationToggleAction(isDictating: true, startPending: false, stopInFlight: false, managerTranscribing: false, meetingActive: false),
             .stop
         )
     }
 
     test("a press while a stop is running is ignored") {
         try expectEqual(
-            dictationToggleAction(isDictating: false, startPending: false, stopInFlight: true, meetingActive: false),
+            dictationToggleAction(isDictating: false, startPending: false, stopInFlight: true, managerTranscribing: false, meetingActive: false),
             .ignore
         )
     }
 
     test("a press during a meeting does not start dictation") {
         try expectEqual(
-            dictationToggleAction(isDictating: false, startPending: false, stopInFlight: false, meetingActive: true),
+            dictationToggleAction(isDictating: false, startPending: false, stopInFlight: false, managerTranscribing: false, meetingActive: true),
             .ignore
         )
     }
 
     test("an idle press with nothing running starts dictation") {
         try expectEqual(
-            dictationToggleAction(isDictating: false, startPending: false, stopInFlight: false, meetingActive: false),
+            dictationToggleAction(isDictating: false, startPending: false, stopInFlight: false, managerTranscribing: false, meetingActive: false),
             .start
+        )
+    }
+
+    test("a press while the manager is transcribing is ignored, whatever stopped it") {
+        try expectEqual(
+            dictationToggleAction(isDictating: false, startPending: false, stopInFlight: false, managerTranscribing: true, meetingActive: false),
+            .ignore
+        )
+        try expectEqual(
+            dictationToggleAction(isDictating: false, startPending: false, stopInFlight: false, managerTranscribing: true, meetingActive: true),
+            .ignore
         )
     }
 
@@ -308,6 +319,33 @@ private func lifecycleThrows(_ body: () async throws -> Void) async -> Bool {
         try expectEqual(dm.state, .listening)
         try expect(mic.isRunning, "the running session must not be torn down")
         try expectEqual(mic.cancelCount, 0)
+    }
+
+    await testAsync("a start cancelled before it first runs touches neither the model nor the mic") {
+        let provider = LifecycleProvider()
+        let mic = LifecycleMic()
+        let dm = DictationManager(provider: provider, mic: mic)
+        let task = Task { try await dm.start() }
+        task.cancel()
+        let refused = await lifecycleThrows { try await task.value }
+        try expect(refused, "a pre-cancelled start must throw")
+        try expectEqual(provider.requests.count, 0)
+        try expectEqual(mic.startCount, 0)
+        try expectEqual(dm.state, .idle)
+        try await dm.start()
+        try expectEqual(dm.state, .listening)
+    }
+
+    await testAsync("a stop aimed at a stale session leaves the current session running") {
+        let provider = LifecycleProvider()
+        let mic = LifecycleMic()
+        let dm = DictationManager(provider: provider, mic: mic)
+        let session = try await dm.start()
+        await dm.requestStop(session: session &+ 1)
+        try expectEqual(dm.state, .listening)
+        try expect(mic.isRunning, "a stale stop must not touch the current session")
+        await dm.requestStop(session: session)
+        try expectEqual(dm.state, .idle)
     }
 
     await testAsync("a denied microphone is refused before any model load") {

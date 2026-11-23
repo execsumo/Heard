@@ -178,7 +178,10 @@ public final class DictationManager: ObservableObject {
 
     /// Starts a session. Throws `DictationError.cancelled` if a stop, meeting, unload, or model change supersedes it.
     /// Every failure leaves `state == .idle` and the microphone released, so a later start can retry.
-    public func start() async throws {
+    @discardableResult
+    public func start() async throws -> UInt64 {
+        // An attempt cancelled before it first ran must not touch the model, the mic, or the state.
+        if Task.isCancelled { throw DictationError.cancelled }
         DebugFileLog.log("DictationManager.start entry — state=\(state.rawValue) asrLoaded=\(asrEngine != nil) inputUID=\(inputDeviceUID ?? "default")")
         guard state == .idle else {
             DebugFileLog.log("DictationManager.start refused — not idle (state=\(state.rawValue))")
@@ -237,6 +240,7 @@ public final class DictationManager: ObservableObject {
         state = .listening
         listening = true
         DebugFileLog.log("DictationManager.start success — state=listening")
+        return session
     }
 
     /// Cancels a start that is still loading or waiting for audio. Synchronous: the microphone is
@@ -262,6 +266,18 @@ public final class DictationManager: ObservableObject {
         }
     }
 
+    /// Stops the listening session `session` only if it is still the current one. A superseded start uses this
+    /// so it can never stop a newer session.
+    public func requestStop(session: UInt64) async {
+        guard state == .listening, session == sessionID else {
+            DebugFileLog.log("DictationManager.requestStop(session:) ignored — stale session \(session)")
+            return
+        }
+        await stop()
+    }
+
+    /// The session ID of the current listening session. Read before a stop is scheduled, so the stop targets that session only.
+    public var currentSession: UInt64 { sessionID }
     public func stop() async {
         DebugFileLog.log("DictationManager.stop entry — state=\(state.rawValue) bufferCount=\(bufferCount) sampleCount=\(audioBuffer.count)")
         guard state == .listening else {

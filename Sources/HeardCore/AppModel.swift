@@ -502,6 +502,7 @@ public var filteredSpeakers: [SpeakerProfile] {
             isDictating: isDictating,
             startPending: dictationStartPending,
             stopInFlight: dictationStopInFlight,
+            managerTranscribing: dictationManager.state == .transcribing,
             meetingActive: recordingManager.activeSession != nil
         )
         DebugFileLog.log("toggleDictation — action=\(action) isDictating=\(isDictating) state=\(dictationManager.state.rawValue)")
@@ -512,8 +513,10 @@ public var filteredSpeakers: [SpeakerProfile] {
             cancelPendingDictationStart()
         case .stop:
             dictationStopInFlight = true
+            // Capture the listening session now, so a stop that runs later can only end this session.
+            let owned = dictationManager.currentSession
             Task {
-                await self.stopDictation()
+                await self.stopDictation(session: owned)
                 self.dictationStopInFlight = false
             }
         case .start:
@@ -555,7 +558,8 @@ public var filteredSpeakers: [SpeakerProfile] {
         }
     }
 
-    /// One start attempt. Only the attempt whose ID is still current may change UI state.
+    /// One start attempt. Only the attempt whose ID is still current may change UI state. A superseded attempt
+    /// never starts the manager, and never stops anything except the exact session it started.
     private func runDictationStart(id: UInt64) async {
         defer {
             if dictationStartID == id {
@@ -563,14 +567,20 @@ public var filteredSpeakers: [SpeakerProfile] {
                 dictationStartTask = nil
             }
         }
+        // Checked before any side effect: a cancel or stop can run before this task first executes.
+        guard !Task.isCancelled, dictationStartID == id else {
+            DebugFileLog.log("runDictationStart — cancelled before it ran, no side effects")
+            return
+        }
         let settings = settingsStore.settings
         dictationManager.customVocabulary = settings.customVocabulary
         dictationManager.formattingCommands = settings.formattingCommands
         dictationManager.modelVersion = settings.transcriptionModel
         dictationManager.modelKeepAliveSeconds = TimeInterval(settings.modelKeepAlive * 60)
         dictationManager.inputDeviceUID = settings.selectedInputDeviceUID
+        let session: UInt64
         do {
-            try await dictationManager.start()
+            session = try await dictationManager.start()
         } catch DictationError.cancelled {
             DebugFileLog.log("runDictationStart — superseded, no UI change")
             return
@@ -582,10 +592,10 @@ public var filteredSpeakers: [SpeakerProfile] {
             DebugFileLog.log("runDictationStart threw: \(error)")
             return
         }
-        // A newer start, cancel, or stop may have run since the manager went listening. A superseded attempt
-        // must not touch the manager, because a newer session may own it now.
+        // The manager is listening on `session`. Stop it only by that exact session ID.
         guard dictationStartID == id else {
-            DebugFileLog.log("runDictationStart — listening but superseded, leaving manager to its new owner")
+            DebugFileLog.log("runDictationStart — superseded after listening, stopping only session \(session)")
+            await dictationManager.requestStop(session: session)
             return
         }
         // The next main-actor turn may have run a meeting start or a push-to-talk release. Re-check before publishing.
@@ -597,26 +607,25 @@ public var filteredSpeakers: [SpeakerProfile] {
             superseded: Task.isCancelled
         )
         guard mayPublish else {
-            DebugFileLog.log("runDictationStart — not publishing listening; stopping the session it started")
-            await dictationManager.requestStop()
+            DebugFileLog.log("runDictationStart — not publishing listening; stopping session \(session)")
+            await dictationManager.requestStop(session: session)
             return
         }
         isDictating = true
         dictationError = nil
         if settings.showDictationHUD { DictationHUD.shared.show() }
         // Watch for AX revocation while dictation is active.
-        startAXPolling()
+        startAXPolling(session: session)
         DebugFileLog.log("START branch completed — isDictating=true")
     }
-
     /// Stop from the hotkey or menu. The old error is cleared before awaiting, so an error reported during
     /// transcription (through onFailure or onNoAudioCaptured) stays visible after the stop returns.
-    private func stopDictation() async {
+    private func stopDictation(session: UInt64) async {
         isDictating = false
         dictationError = nil
         if settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
         dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
-        await dictationManager.requestStop()
+        await dictationManager.requestStop(session: session)
         DebugFileLog.log("STOP branch completed (dictationManager.stop returned)")
     }
 
@@ -629,9 +638,10 @@ public var filteredSpeakers: [SpeakerProfile] {
         isDictating = false
         dictationError = nil
         if dictationManager.state == .listening {
-            // The attempt finished before this press arrived. Stop the session it started, so it is not orphaned.
+            // The attempt finished before this press arrived. Stop exactly that session, never a newer one.
+            let owned = dictationManager.currentSession
             Task {
-                await self.stopDictation()
+                await self.dictationManager.requestStop(session: owned)
             }
         } else {
             dictationManager.cancelPendingStart()
@@ -645,8 +655,9 @@ public var filteredSpeakers: [SpeakerProfile] {
             cancelPendingDictationStart()
         }
         if isDictating {
+            let owned = dictationManager.currentSession
             Task {
-                await self.stopDictation()
+                await self.stopDictation(session: owned)
             }
         }
     }
@@ -827,23 +838,24 @@ public var filteredSpeakers: [SpeakerProfile] {
     }
     /// Polls verified Accessibility access while dictation is active. If access
     /// cannot be verified, stop and surface the state instead of silently losing text.
-    private func startAXPolling() {
+    private func startAXPolling(session: UInt64) {
         Task { [weak self] in
-            while self?.isDictating == true {
+            // Ends when the session it watches is no longer the manager's current session, so a stale poller
+            // can never stop a newer session.
+            while self?.isDictating == true, self?.dictationManager.currentSession == session {
                 try? await Task.sleep(for: .seconds(2))
-                guard let self, self.isDictating else { break }
+                guard let self, self.isDictating, self.dictationManager.currentSession == session else { break }
                 if !TextInjector.accessibilityAccessVerified(restoringFocusTo: self.dictationFocusTarget) {
                     self.dictationAXLost = true
                     self.isDictating = false
                     if self.settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
-                    await self.dictationManager.requestStop()
+                    await self.dictationManager.requestStop(session: session)
                     NSLog("Heard: Dictation stopped — Accessibility access could not be verified")
                     break
                 }
             }
         }
     }
-
     public func acknowledgeAXLost() {
         dictationAXLost = false
     }
@@ -852,6 +864,8 @@ public var filteredSpeakers: [SpeakerProfile] {
     /// recording begins. A listening session is stopped and transcribed as usual.
     private func stopDictationIfActive() {
         guard isDictating || dictationStartPending || dictationManager.state != .idle else { return }
+        // Only a listening session can be stopped; capture its ID before anything else changes.
+        let owned: UInt64? = dictationManager.state == .listening ? dictationManager.currentSession : nil
         DebugFileLog.log("stopDictationIfActive — isDictating=\(isDictating) state=\(dictationManager.state.rawValue)")
         dictationStartID &+= 1
         dictationStartPending = false
@@ -863,7 +877,9 @@ public var filteredSpeakers: [SpeakerProfile] {
         if settingsStore.settings.showDictationHUD { DictationHUD.shared.hide() }
         dictationManager.modelKeepAliveSeconds = TimeInterval(settingsStore.settings.modelKeepAlive * 60)
         Task {
-            await self.dictationManager.requestStop()
+            if let owned {
+                await self.dictationManager.requestStop(session: owned)
+            }
             NSLog("Heard: Dictation stopped — meeting recording started")
         }
     }
