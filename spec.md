@@ -409,6 +409,8 @@ The implementation exposes these tabs: **General**, **Recording**, **Dictation**
 
 ### Dictation Tab
 - Working dictation controls: enable, HUD, push-to-talk, configurable global hotkey, custom formatting commands, and live status.
+- Engine readiness row (shown while dictation is on): Not downloaded, Downloading, or Ready; a failure shows its message with Retry.
+- A hotkey that could not be registered shows a warning in the menu bar and in Settings.
 
 ### Speakers Tab
 - Inline speaker management, including search, sorting, voice-clip playback, rename, merge, and delete.

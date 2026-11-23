@@ -156,35 +156,68 @@ public enum TextInjector {
 
     // MARK: - Clipboard Paste
 
+    /// Owns the general pasteboard while a transcript paste is pending. See `PasteboardLeaseController`.
+    private static let pasteboardLease = PasteboardLeaseController(
+        backend: SystemPasteboard(NSPasteboard.general),
+        schedule: { delay, work in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) }
+    )
+
     private static func insertViaClipboard(_ text: String) {
-        let pasteboard = NSPasteboard.general
-        let previousContents = pasteboard.pasteboardItems?.compactMap { item -> (String, Data)? in
-            guard let type = item.types.first, let data = item.data(forType: type) else { return nil }
-            return (type.rawValue, data)
+        let lease = pasteboardLease.place(text)
+
+        // Cmd+V via CGEvent. The restore is scheduled even if the events cannot be created,
+        // so the transcript never stays on the clipboard.
+        if let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true),
+           let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false) {
+            keyDown.flags = .maskCommand
+            keyUp.flags = .maskCommand
+            keyDown.post(tap: .cghidEventTap)
+            usleep(10000)
+            keyUp.post(tap: .cghidEventTap)
+        } else {
+            DebugFileLog.log("TextInjector could not create Cmd+V events")
         }
 
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        pasteboardLease.scheduleRestore(lease, after: 0.5)
+    }
+}
 
-        // Cmd+V via CGEvent
-        guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false)
-        else { return }
+/// `PasteboardBackend` over a real NSPasteboard. Reads every item and every readable type, and
+/// writes items back as separate NSPasteboardItems so item boundaries survive a restore.
+public final class SystemPasteboard: PasteboardBackend {
+    private let pasteboard: NSPasteboard
 
-        keyDown.flags = .maskCommand
-        keyUp.flags = .maskCommand
-        keyDown.post(tap: .cghidEventTap)
-        usleep(10000)
-        keyUp.post(tap: .cghidEventTap)
+    public init(_ pasteboard: NSPasteboard) {
+        self.pasteboard = pasteboard
+    }
 
-        // Restore clipboard
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            if let previous = previousContents, !previous.isEmpty {
-                pasteboard.clearContents()
-                for (typeRaw, data) in previous {
-                    pasteboard.setData(data, forType: NSPasteboard.PasteboardType(rawValue: typeRaw))
-                }
+    public var changeCount: Int {
+        pasteboard.changeCount
+    }
+
+    public func readItems() -> [PasteboardItemSnapshot] {
+        (pasteboard.pasteboardItems ?? []).compactMap { item -> PasteboardItemSnapshot? in
+            let representations = item.types.compactMap { type -> PasteboardItemSnapshot.Representation? in
+                guard let data = item.data(forType: type) else { return nil }
+                return PasteboardItemSnapshot.Representation(type: type.rawValue, data: data)
             }
+            return representations.isEmpty ? nil : PasteboardItemSnapshot(representations: representations)
         }
+    }
+
+    @discardableResult
+    public func writeItems(_ items: [PasteboardItemSnapshot]) -> Int {
+        pasteboard.clearContents()
+        let objects = items.map { snapshot -> NSPasteboardItem in
+            let item = NSPasteboardItem()
+            for representation in snapshot.representations {
+                item.setData(representation.data, forType: NSPasteboard.PasteboardType(representation.type))
+            }
+            return item
+        }
+        if !objects.isEmpty {
+            _ = pasteboard.writeObjects(objects)
+        }
+        return pasteboard.changeCount
     }
 }

@@ -39,6 +39,12 @@ public struct MenuBarView: View {
             if model.dictationAXLost {
                 axLostBanner
             }
+            if settingsStore.settings.dictationEnabled {
+                DictationStatusBanner(model: model, downloads: model.downloadManager)
+            }
+            if settingsStore.settings.dictationEnabled, case .failed = model.dictationHotkeyStatus {
+                DictationHotkeyWarning(hotkey: settingsStore.settings.dictationHotkey.displayString)
+            }
             if recordingManager.appAudioTapFailed && recordingManager.activeSession != nil {
                 tapFailedBanner
             }
@@ -103,23 +109,8 @@ public struct MenuBarView: View {
                     }
                 }
 
-                if settingsStore.settings.dictationEnabled && !model.isDictating
-                    && recordingManager.activeSession == nil {
-                    MenuBarRow(
-                        title: "Start Dictation",
-                        icon: "mic.badge.plus",
-                        hotkey: settingsStore.settings.dictationHotkey.displayString
-                    ) {
-                        model.toggleDictation()
-                    }
-                } else if settingsStore.settings.dictationEnabled && model.isDictating {
-                    MenuBarRow(
-                        title: "Stop Dictation",
-                        icon: "mic.slash",
-                        hotkey: settingsStore.settings.dictationHotkey.displayString
-                    ) {
-                        model.toggleDictation()
-                    }
+                if settingsStore.settings.dictationEnabled {
+                    dictationRows
                 }
 
                 MenuBarRow(title: "Transcripts…", icon: "doc.text.magnifyingglass") {
@@ -221,12 +212,12 @@ public struct MenuBarView: View {
                 dark: false,
                 trailing: nil
             )
-        } else if model.isDictating {
+        } else if model.dictationManager.state != .idle {
             StatusHeaderCard(
-                dotColor: HeardTheme.Terminal.bad,
+                dotColor: model.dictationManager.state == .listening ? HeardTheme.Terminal.bad : HeardTheme.Terminal.warn,
                 pulsing: true,
-                title: "Dictating",
-                subtitle: "Listening…",
+                title: dictationHeaderTitle,
+                subtitle: dictationHeaderSubtitle,
                 dark: true,
                 trailing: nil
             )
@@ -302,6 +293,50 @@ public struct MenuBarView: View {
         .overlay(Rectangle().stroke(HeardTheme.Terminal.bad.opacity(0.35), lineWidth: HeardTheme.Stroke.hairline))
         .padding(.horizontal, 10)
         .padding(.top, 10)
+    }
+
+    /// Dictation actions follow `DictationManager.state`: idle starts, loading cancels, listening
+    /// stops, and transcribing is shown but disabled.
+    @ViewBuilder
+    private var dictationRows: some View {
+        let hotkey = settingsStore.settings.dictationHotkey.displayString
+        switch model.dictationManager.state {
+        case .idle:
+            if recordingManager.activeSession == nil {
+                MenuBarRow(title: "Start Dictation", icon: "mic.badge.plus", hotkey: hotkey) {
+                    model.toggleDictation()
+                }
+            }
+        case .loading:
+            MenuBarRow(title: "Cancel Dictation", icon: "xmark.circle", hotkey: nil) {
+                model.cancelDictation()
+            }
+        case .listening:
+            MenuBarRow(title: "Stop Dictation", icon: "mic.slash", hotkey: hotkey) {
+                model.toggleDictation()
+            }
+        case .transcribing:
+            MenuBarRow(title: "Transcribing dictation…", icon: "waveform", hotkey: nil) {}
+                .disabled(true)
+        }
+    }
+
+    private var dictationHeaderTitle: String {
+        switch model.dictationManager.state {
+        case .idle: return ""
+        case .loading: return "Preparing dictation"
+        case .listening: return "Dictating"
+        case .transcribing: return "Transcribing dictation"
+        }
+    }
+
+    private var dictationHeaderSubtitle: String {
+        switch model.dictationManager.state {
+        case .idle: return ""
+        case .loading: return "Loading the speech model…"
+        case .listening: return "Listening…"
+        case .transcribing: return "Finishing…"
+        }
     }
 
     private var axLostBanner: some View {
