@@ -101,11 +101,11 @@ public final class DictationManager: ObservableObject {
     private var engine: TranscriptionModel { modelVersion.dictationEngine }
 
     /// FluidAudio's default location for English (Optimized), the model dictation runs under English Unified.
-    public static var englishOptimizedCacheDirectory: URL { AsrModels.defaultCacheDirectory(for: .v2) }
+    nonisolated public static var englishOptimizedCacheDirectory: URL { AsrModels.defaultCacheDirectory(for: .v2) }
 
     /// True when English (Optimized) loads from `directory`. The single check for dictation's v2 model:
     /// loading, the download decision, and the Models-tab detail all use it, so they cannot disagree.
-    public static func englishOptimizedCached(at directory: URL = englishOptimizedCacheDirectory) -> Bool {
+    nonisolated public static func englishOptimizedCached(at directory: URL = englishOptimizedCacheDirectory) -> Bool {
         AsrModels.modelsExist(at: directory)
     }
 
