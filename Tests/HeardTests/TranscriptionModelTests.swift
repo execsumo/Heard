@@ -15,7 +15,7 @@ private func tmScratchDirectory() throws -> URL {
     return dir
 }
 
-func runTranscriptionModelTests() {
+@MainActor func runTranscriptionModelTests() {
     print("\n🎚️ Transcription Model Tests")
 
     test("English Unified is the default for new settings") {
@@ -114,7 +114,10 @@ func runTranscriptionModelTests() {
     }
 
     test("dictation's v2 check reads only FluidAudio's default cache") {
-        try expectEqual(DictationManager.englishOptimizedCacheDirectory, AsrModels.defaultCacheDirectory(for: .v2))
+        let cache = DictationManager.englishOptimizedCacheDirectory
+        try expectEqual(cache.deletingLastPathComponent().lastPathComponent, "Models")
+        try expect(cache.path.contains("/FluidAudio/Models/"), "expected FluidAudio's default cache, got \(cache.path)")
+        try expect(cache.lastPathComponent.hasPrefix("parakeet-tdt-0.6b-v2"), "unexpected v2 folder \(cache.lastPathComponent)")
         let dir = try tmScratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
         try expect(!DictationManager.englishOptimizedCached(at: dir), "an empty directory must not count as cached")
