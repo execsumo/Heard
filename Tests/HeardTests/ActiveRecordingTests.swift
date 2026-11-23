@@ -414,6 +414,7 @@ private func makeEntry(
         try journal.save(makeEntry(app: kept, mic: recordings.appendingPathComponent("absent_mic.wav")))
         let brokenQueue = PipelineQueueStore(url: dir.appendingPathComponent("missing/queue.json"))
         _ = journal.recover(into: brokenQueue)
+        try expectEqual(journal.pendingEntries().count, 1, "precondition: the unqueued entry must decode")
 
         TempFileCleanup.cleanStaleRecordings(activeJobPaths: journal.retainedAudioPaths, recordingsDir: recordings)
 
@@ -438,6 +439,7 @@ private func makeEntry(
         try journal.save(makeEntry(app: app, mic: mic))
         let queue = PipelineQueueStore(url: dir.appendingPathComponent("queue.json"))
         _ = journal.recover(into: queue)
+        try expectEqual(queue.jobs.count, 1, "precondition: the recovered job must be queued")
         let queuedPaths = Set(queue.jobs.filter { $0.stage != .complete }.flatMap { [$0.appAudioPath, $0.micAudioPath] })
 
         TempFileCleanup.cleanStaleRecordings(activeJobPaths: queuedPaths, recordingsDir: recordings)
@@ -467,6 +469,7 @@ private func makeEntry(
         try expectEqual(job.meetingTitle, "Recovered recording")
         try expect(job.rosterNames.isEmpty)
 
+        try expectEqual(queue.jobs.count, 1, "precondition: the orphan must be queued")
         TempFileCleanup.cleanStaleRecordings(activeJobPaths: Set(queue.jobs.flatMap { [$0.appAudioPath, $0.micAudioPath] }), recordingsDir: recordings)
         try expect(FileManager.default.fileExists(atPath: app.path), "a queued orphan must survive the 48-hour cleanup")
     }
@@ -491,8 +494,10 @@ private func makeEntry(
         finished.stage = .complete
         queue.enqueue(finished)
 
-        try expectEqual(journal.adoptOrphans(in: recordings, referenced: [], into: queue).adopted.count, 1)
-        let inUse = Set(queue.jobs.flatMap { [$0.appAudioPath, $0.micAudioPath] })
+        // AppModel passes every queue job (any stage) and journal entry as referenced paths.
+        let referencedBefore = Set(queue.jobs.flatMap { [$0.appAudioPath, $0.micAudioPath] }).union(journal.retainedAudioPaths)
+        try expectEqual(journal.adoptOrphans(in: recordings, referenced: referencedBefore, into: queue).adopted.count, 1)
+        let inUse = Set(queue.jobs.flatMap { [$0.appAudioPath, $0.micAudioPath] }).union(journal.retainedAudioPaths)
         try expectEqual(journal.adoptOrphans(in: recordings, referenced: inUse, into: queue).adopted, [])
 
         try expectEqual(queue.jobs.count, 2)
@@ -695,6 +700,27 @@ private func makeEntry(
         defer { source.cleanup() }
         let repaired = try Data(contentsOf: source.url)
         try expectEqual(try unwrap(WAVHeaderFinalizer.layout(in: repaired)).dataSize, 4_000)
+    }
+
+    test("cleanup keeps audio that a journal entry names through a symlink alias") {
+        let dir = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let real = dir.appendingPathComponent("real", isDirectory: true)
+        let alias = dir.appendingPathComponent("alias", isDirectory: true)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: real)
+        let audio = real.appendingPathComponent("20240101_120000_app.wav")
+        try writeAudio(audio, bytes: 4096)
+        try age(audio, days: 3)
+        // The journal names the file through the alias; cleanup enumerates the real directory.
+        let journal = ActiveRecordingStore(directory: dir.appendingPathComponent("active_recordings"))
+        try journal.save(makeEntry(app: alias.appendingPathComponent("20240101_120000_app.wav"),
+                                   mic: alias.appendingPathComponent("absent_mic.wav")))
+        try expectEqual(journal.pendingEntries().count, 1, "precondition: the entry must decode")
+
+        TempFileCleanup.cleanStaleRecordings(activeJobPaths: journal.retainedAudioPaths, recordingsDir: real)
+
+        try expect(FileManager.default.fileExists(atPath: audio.path), "audio reached through an alias must survive cleanup")
     }
 
     test("a queue file that cannot be decoded is reported as moved aside") {

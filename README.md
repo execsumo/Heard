@@ -299,7 +299,7 @@ Only Microphone is strictly required; everything else degrades gracefully. Permi
 ~/Library/Application Support/FluidAudio/Models/
 ├── silero-vad-coreml/
 ├── parakeet-tdt-0.6b-v2-coreml/      # or parakeet-tdt-0.6b-v3-coreml/ if V3 selected
-├── parakeet-unified-en-0.6b-coreml/  # English Unified (Beta), when selected
+├── parakeet-unified-en-0.6b/         # English Unified (Beta), when selected
 ├── speaker-diarization-coreml/
 └── parakeet-tdt-0.6b-v2-ctc-110m-coreml/
 

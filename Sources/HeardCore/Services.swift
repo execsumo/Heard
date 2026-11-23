@@ -2574,10 +2574,12 @@ public enum TempFileCleanup {
         ) else { return }
 
         let cutoff = Date().addingTimeInterval(-48 * 3600)
+        // Canonical paths: the listing and the job paths can name one file differently.
+        let protected = AudioPathIdentity.canonicalSet(activeJobPaths)
 
         for fileURL in contents where fileURL.pathExtension == "wav" {
             // Don't delete files referenced by active pipeline jobs
-            if activeJobPaths.contains(fileURL) { continue }
+            if protected.contains(AudioPathIdentity.canonical(fileURL)) { continue }
 
             guard let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
                   let modified = attrs[.modificationDate] as? Date,

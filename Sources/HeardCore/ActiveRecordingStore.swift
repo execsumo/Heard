@@ -158,6 +158,18 @@ public struct OrphanScanResult: Equatable {
     public var unjournaled: [OrphanRecordingGroup] = []
 }
 
+/// One identity for an audio file across the directory listing, queue jobs, and journal entries.
+/// Symlinks resolve, so an alias directory and its target name one file.
+public enum AudioPathIdentity {
+    public static func canonical(_ url: URL) -> URL {
+        url.resolvingSymlinksInPath().standardizedFileURL
+    }
+
+    public static func canonicalSet<S: Sequence>(_ urls: S) -> Set<URL> where S.Element == URL {
+        Set(urls.map(canonical))
+    }
+}
+
 /// One JSON file per recording that is not queued yet. Without it a meeting that was
 /// never stopped (quit, crash) has no record on disk that the pipeline can find.
 @MainActor
@@ -182,7 +194,7 @@ public final class ActiveRecordingStore {
 
     /// Audio that journaled recordings still depend on. Cleanup must keep it.
     public var retainedAudioPaths: Set<URL> {
-        Set(pendingEntries().flatMap { [$0.appAudioPath, $0.micAudioPath] })
+        AudioPathIdentity.canonicalSet(pendingEntries().flatMap { [$0.appAudioPath, $0.micAudioPath] })
     }
 
     public func save(_ entry: ActiveRecordingEntry) throws {
@@ -218,9 +230,10 @@ public final class ActiveRecordingStore {
     /// Queues WAV pairs that no journal entry or queue job references. Never deletes a file.
     public func adoptOrphans(in recordingsDir: URL, referenced: Set<URL>, into queue: PipelineQueueStore) -> OrphanScanResult {
         var result = OrphanScanResult()
+        let inUse = AudioPathIdentity.canonicalSet(referenced)
         let names = (try? FileManager.default.contentsOfDirectory(atPath: recordingsDir.path)) ?? []
         for group in OrphanRecordingScanner.groups(fileNames: names, directory: recordingsDir) {
-            guard group.audioPaths.allSatisfy({ !referenced.contains($0) }),
+            guard group.audioPaths.allSatisfy({ !inUse.contains(AudioPathIdentity.canonical($0)) }),
                   group.audioPaths.contains(where: Self.isUsable)
             else { continue }
             let entry = ActiveRecordingEntry(

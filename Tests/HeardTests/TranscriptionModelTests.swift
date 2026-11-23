@@ -96,7 +96,7 @@ private func tmScratchDirectory() throws -> URL {
             "parakeet_unified_joint_decision_single_step.mlmodelc",
             "vocab.json",
         ])
-        try expectEqual(UnifiedModelAssets.cacheDirectory.lastPathComponent, "parakeet-unified-en-0.6b-coreml")
+        try expectEqual(UnifiedModelAssets.cacheDirectory.lastPathComponent, "parakeet-unified-en-0.6b")
     }
 
     test("Unified readiness requires every file") {
